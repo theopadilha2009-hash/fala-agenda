@@ -8,7 +8,6 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import com.theopadilha.falaagenda.MainActivity
 import com.theopadilha.falaagenda.R
 
 object NotificationHelper {
@@ -33,11 +32,8 @@ object NotificationHelper {
         ensureChannel(context)
         val open = PendingIntent.getActivity(
             context,
-            AlarmIds.requestCode(occurrenceId, "open"),
-            Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(AlarmIds.EXTRA_OCCURRENCE_ID, occurrenceId)
-            },
+            AlarmIds.requestCode(occurrenceId, AlarmIds.ACTION_OPEN),
+            AlarmIds.openIntent(context, occurrenceId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val complete = actionPending(context, occurrenceId, seriesId, AlarmIds.ACTION_COMPLETE)
@@ -45,7 +41,7 @@ object NotificationHelper {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
-            .setContentText("Está na hora.")
+            .setContentText("Está na hora. Toque para ver, ou conclua / adie daqui.")
             .setContentIntent(open)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

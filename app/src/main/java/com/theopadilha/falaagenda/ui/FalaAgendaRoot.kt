@@ -27,7 +27,11 @@ import com.theopadilha.falaagenda.ui.onboarding.OnboardingScreen
 import com.theopadilha.falaagenda.ui.settings.SettingsScreen
 
 @Composable
-fun FalaAgendaRoot(container: AppContainer) {
+fun FalaAgendaRoot(
+    container: AppContainer,
+    openOccurrenceId: String? = null,
+    onOpenOccurrenceConsumed: () -> Unit = {},
+) {
     val nav = rememberNavController()
     var onboardingReady by remember { mutableStateOf(false) }
     var onboardingDone by remember { mutableStateOf(false) }
@@ -104,6 +108,8 @@ fun FalaAgendaRoot(container: AppContainer) {
                 },
                 statusMessage = statusMessage,
                 onStatusConsumed = { statusMessage = null },
+                openOccurrenceId = openOccurrenceId,
+                onOpenOccurrenceConsumed = onOpenOccurrenceConsumed,
             )
         }
         composable("confirm") {

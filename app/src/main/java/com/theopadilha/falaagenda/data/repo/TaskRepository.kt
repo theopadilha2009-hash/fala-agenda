@@ -123,6 +123,39 @@ class TaskRepository(
         spawnNextIfNeeded(series, done.localDate, now)
     }
 
+    suspend fun uncomplete(item: AgendaItem) {
+        val now = clock.instant()
+        val series = item.series.copy(endedAt = null, updatedAt = now)
+        seriesDao.upsert(series.toEntity())
+        when (item.occurrence.status) {
+            OccurrenceStatus.MISSED -> {
+                occurrenceDao.upsert(item.occurrence.toEntity())
+            }
+            OccurrenceStatus.PENDING -> {
+                var occ = item.occurrence.copy(completedAt = null)
+                val next = occ.nextReminderAt
+                val stillArmed = next != null && !next.isBefore(now)
+                val stillOnClock = !occ.scheduledAt.isBefore(now)
+                if (!stillArmed && !stillOnClock) {
+                    val quiet = scheduler.quietHours()
+                    val plan = ReminderPolicy.snooze(now, 1, series.zoneId, quiet, respectQuietHours = false)
+                    occ = occ.copy(
+                        snoozedUntil = plan.fireAt,
+                        nextReminderAt = plan.fireAt,
+                        reminderStep = plan.step,
+                    )
+                }
+                val scheduled = scheduler.schedule(
+                    occ,
+                    series,
+                    first = occ.reminderStep == 0 && occ.lastReminderAt == null && occ.snoozedUntil == null,
+                )
+                occurrenceDao.upsert(occ.copy(inexactAlarm = scheduled.inexact).toEntity())
+            }
+            else -> Unit
+        }
+    }
+
     suspend fun deleteOccurrence(occurrenceId: String) {
         val row = occurrenceDao.get(occurrenceId) ?: return
         scheduler.cancel(occurrenceId)

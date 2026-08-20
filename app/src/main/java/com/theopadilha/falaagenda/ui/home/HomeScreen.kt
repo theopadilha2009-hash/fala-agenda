@@ -53,7 +53,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -68,7 +70,9 @@ import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalTime
 
 @Composable
 fun HomeScreen(
@@ -87,8 +91,23 @@ fun HomeScreen(
     val inexact by viewModel.inexactWarning.collectAsState()
     val busy by viewModel.busy.collectAsState()
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val completeWithUndo: (AgendaItem) -> Unit = { item ->
+        viewModel.complete(item) {
+            scope.launch {
+                val result = snackbar.showSnackbar(
+                    message = "Feito.",
+                    actionLabel = "Desfazer",
+                    duration = SnackbarDuration.Long,
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    viewModel.undoComplete()
+                }
+            }
+        }
+    }
     var writing by remember { mutableStateOf(false) }
     var writeText by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<AgendaItem?>(null) }
@@ -150,13 +169,26 @@ fun HomeScreen(
                     .padding(top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    "Fala Agenda",
-                    style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier
-                        .weight(1f)
-                        .semantics { heading() },
-                )
+                val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Fala Agenda",
+                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.semantics { heading() },
+                    )
+                    Text(
+                        AgendaFormat.headline(
+                            nowTime = LocalTime.now(),
+                            today = LocalDate.now(),
+                            nextTitle = next?.series?.title,
+                            nextDate = next?.occurrence?.localDate,
+                            nextTime = next?.series?.localTime,
+                            missedCount = agenda.missed.size,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (busy) {
                     CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                 }
@@ -175,6 +207,7 @@ fun HomeScreen(
             ) {
                 item {
                     VoicePanel(voiceUi.state, voiceUi.partial, voiceUi.error) {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         if (voiceUi.state == VoiceState.LISTENING || voiceUi.state == VoiceState.UNDERSTANDING) {
                             voice.cancel()
                         } else {
@@ -215,21 +248,31 @@ fun HomeScreen(
                     "Hoje",
                     agenda.today,
                     empty = "Nada para hoje. Toque no microfone para falar um recado.",
+                    showWhenEmpty = true,
                     onClick = { selected = it },
-                    onComplete = { viewModel.complete(it.occurrence.id) },
+                    onComplete = completeWithUndo,
                 )
                 section(
                     "Próximas",
                     agenda.upcoming,
                     empty = "Nenhuma próxima tarefa.",
+                    showWhenEmpty = false,
                     onClick = { selected = it },
-                    onComplete = { viewModel.complete(it.occurrence.id) },
+                    onComplete = completeWithUndo,
                 )
-                section("Concluídas", agenda.completed, empty = "Nenhuma concluída ainda.") { selected = it }
+                section(
+                    "Concluídas",
+                    agenda.completed,
+                    empty = "Nenhuma concluída ainda.",
+                    showWhenEmpty = false,
+                    onClick = { selected = it },
+                )
                 section(
                     "Não realizadas",
                     agenda.missed,
                     empty = "Nada ficou para trás.",
+                    showWhenEmpty = false,
+                    emphasize = true,
                     onRetry = { item ->
                         viewModel.retryMissed(item.occurrence.id) { message ->
                             scope.launch { snackbar.showSnackbar(message) }
@@ -291,7 +334,7 @@ fun HomeScreen(
                     ) {
                         TextButton(
                             onClick = {
-                                viewModel.complete(item.occurrence.id)
+                                completeWithUndo(item)
                                 selected = null
                             },
                             modifier = Modifier
@@ -302,7 +345,9 @@ fun HomeScreen(
                     if (item.occurrence.status == OccurrenceStatus.PENDING) {
                         Text("Adiar", style = MaterialTheme.typography.bodyMedium)
                         SnoozeChips { minutes ->
-                            viewModel.snooze(item.occurrence.id, minutes)
+                            viewModel.snooze(item.occurrence.id, minutes) { message ->
+                                scope.launch { snackbar.showSnackbar(message) }
+                            }
                             selected = null
                         }
                     }
@@ -462,23 +507,27 @@ private fun SnoozeChips(onPick: (Long) -> Unit) {
 }
 
 private val VOICE_EXAMPLES = listOf(
-    "tomar remédio amanhã às 8h",
+    "tomar remédio daqui 10 minutos",
     "ligar para o médico na sexta às 14h",
-    "pagar a conta hoje às 18h",
+    "pagar a conta amanhã às 8h",
 )
 
 private fun androidx.compose.foundation.lazy.LazyListScope.section(
     title: String,
     items: List<AgendaItem>,
     empty: String,
+    showWhenEmpty: Boolean = true,
+    emphasize: Boolean = false,
     onComplete: ((AgendaItem) -> Unit)? = null,
     onRetry: ((AgendaItem) -> Unit)? = null,
     onClick: (AgendaItem) -> Unit,
 ) {
+    if (items.isEmpty() && !showWhenEmpty) return
     item {
         Text(
             title,
             style = MaterialTheme.typography.titleMedium,
+            color = if (emphasize) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground,
             modifier = Modifier
                 .padding(top = 8.dp)
                 .semantics { heading() },
@@ -493,10 +542,23 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
             val today = LocalDate.now()
             val date = AgendaFormat.dateLabel(item.occurrence.localDate, today)
             val time = AgendaFormat.time(item.series.localTime)
+            val relative = AgendaFormat.fromNow(item.occurrence.scheduledAt, Instant.now())
+            val detail = buildString {
+                append(date)
+                append(" · ")
+                append(time)
+                if (relative != null && item.occurrence.status == OccurrenceStatus.PENDING) {
+                    append(" · ")
+                    append(relative)
+                } else {
+                    append(" · ")
+                    append(item.series.recurrence.describePtBr())
+                }
+            }
             QuietCard(
                 onClick = { onClick(item) },
                 modifier = Modifier.semantics {
-                    contentDescription = "${item.series.title}, $date às $time, ${item.series.recurrence.describePtBr()}. Toque para ver. Concluir fica ao lado."
+                    contentDescription = "${item.series.title}, $detail. Toque para ver."
                 },
             ) {
                 Row(
@@ -504,8 +566,16 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(item.series.title, style = MaterialTheme.typography.titleMedium)
-                        Text("$date · $time · ${item.series.recurrence.describePtBr()}")
+                        Text(
+                            item.series.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (item.occurrence.status == OccurrenceStatus.MISSED) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                        Text(detail)
                     }
                     if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
                         TextButton(

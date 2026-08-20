@@ -187,6 +187,21 @@ class LocalTaskParserTest {
     }
 
     @Test
+    fun daquiDezMinutosSemA() {
+        val draft = parser.parse("tomar remédio daqui 10 minutos")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(10, 10))
+        assertThat(draft.title.lowercase()).contains("tomar")
+    }
+
+    @Test
+    fun daquiMeiaHoraSemA() {
+        val draft = parser.parse("daqui meia hora")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(10, 30))
+    }
+
+    @Test
     fun hojeANoiteNaoInventaHora() {
         val draft = parser.parse("hoje à noite")
         assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))

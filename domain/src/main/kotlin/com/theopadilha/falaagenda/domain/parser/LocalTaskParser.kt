@@ -293,7 +293,7 @@ class LocalTaskParser(
     private data class RelativeHit(val time: LocalTime, val date: LocalDate, val remaining: String)
 
     private fun extractRelative(text: String): RelativeHit? {
-        val meiaHora = Regex("""\b(?:daqui\s+a|em)\s+meia\s+hora\b""")
+        val meiaHora = Regex("""\b(?:daqui(?:\s+a)?|em)\s+meia\s+hora\b""")
         meiaHora.find(text)?.let { m ->
             val target = clock.now().plusMinutes(30)
             return RelativeHit(
@@ -303,7 +303,7 @@ class LocalTaskParser(
             )
         }
         val amount = Regex(
-            """\b(?:daqui\s+a|em)\s+(\d+|uma|um|duas|dois|quinze|trinta|quarenta|quarenta\s+e\s+cinco)\s+(minutos?|horas?)\b""",
+            """\b(?:daqui(?:\s+a)?|em)\s+(\d+|uma|um|duas|dois|quinze|trinta|quarenta|quarenta\s+e\s+cinco)\s+(minutos?|horas?)\b""",
         )
         amount.find(text)?.let { m ->
             val raw = m.groupValues[1]

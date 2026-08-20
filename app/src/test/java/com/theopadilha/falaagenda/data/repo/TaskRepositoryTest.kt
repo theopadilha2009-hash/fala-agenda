@@ -149,6 +149,81 @@ class TaskRepositoryTest {
         assertThat(scheduler.scheduled).contains(saved.occurrence.id)
     }
 
+    @Test
+    fun completeNaoMexemJaConcluida() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Remédio", LocalDate.of(2026, 8, 21), LocalTime.of(8, 0)))
+        repo.complete(saved.occurrence.id)
+        val first = occurrenceDao.get(saved.occurrence.id)!!
+        repo.complete(saved.occurrence.id)
+        val second = occurrenceDao.get(saved.occurrence.id)!!
+        assertThat(second.completedAtEpochMs).isEqualTo(first.completedAtEpochMs)
+        assertThat(second.status).isEqualTo(OccurrenceStatus.COMPLETED.name)
+    }
+
+    @Test
+    fun completeTambemFechaNaoRealizada() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Já passou", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0)))
+        assertThat(saved.occurrence.status).isEqualTo(OccurrenceStatus.MISSED)
+        repo.complete(saved.occurrence.id)
+        assertThat(occurrenceDao.get(saved.occurrence.id)!!.status).isEqualTo(OccurrenceStatus.COMPLETED.name)
+    }
+
+    @Test
+    fun retryMissedComHorarioAbertoFicaHoje() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Já passou", LocalDate.of(2026, 8, 19), LocalTime.of(14, 0)))
+        assertThat(saved.occurrence.status).isEqualTo(OccurrenceStatus.MISSED)
+        scheduler.scheduled.clear()
+        val result = repo.retryMissed(saved.occurrence.id)
+        assertThat(result).isNotNull()
+        assertThat(result!!.date).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(result.time).isEqualTo(LocalTime.of(14, 0))
+        assertThat(occurrenceDao.get(saved.occurrence.id)).isNull()
+        val fresh = occurrenceDao.getAll().single()
+        assertThat(fresh.status).isEqualTo(OccurrenceStatus.PENDING.name)
+        assertThat(fresh.localDate).isEqualTo("2026-08-20")
+        assertThat(scheduler.scheduled).contains(fresh.id)
+    }
+
+    @Test
+    fun retryMissedComHorarioPassadoVaiAmanha() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Manhã", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0)))
+        val result = repo.retryMissed(saved.occurrence.id)
+        assertThat(result!!.date).isEqualTo(LocalDate.of(2026, 8, 21))
+        val fresh = occurrenceDao.getAll().single()
+        assertThat(fresh.localDate).isEqualTo("2026-08-21")
+        assertThat(fresh.status).isEqualTo(OccurrenceStatus.PENDING.name)
+    }
+
+    @Test
+    fun retryMissedIgnoraRecorrente() = runBlocking {
+        val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0))
+            .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+        val saved = repo.saveDraft(draft)
+        val pending = occurrenceDao.getAll().single()
+        occurrenceDao.upsert(pending.copy(status = OccurrenceStatus.MISSED.name, missedAtEpochMs = clock.instant().toEpochMilli()))
+        val result = repo.retryMissed(pending.id)
+        assertThat(result).isNull()
+        assertThat(occurrenceDao.get(pending.id)!!.status).isEqualTo(OccurrenceStatus.MISSED.name)
+        assertThat(saved.series.recurrence.kind).isEqualTo(RecurrenceKind.DAILY)
+    }
+
+    @Test
+    fun retryMissedIgnoraPendente() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Consulta", LocalDate.of(2026, 8, 22), LocalTime.of(10, 0)))
+        assertThat(repo.retryMissed(saved.occurrence.id)).isNull()
+        assertThat(occurrenceDao.get(saved.occurrence.id)!!.status).isEqualTo(OccurrenceStatus.PENDING.name)
+    }
+
+    @Test
+    fun snoozeDezMinutos() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Remédio", LocalDate.of(2026, 8, 21), LocalTime.of(8, 0)))
+        repo.snooze(saved.occurrence.id, 10)
+        val row = occurrenceDao.get(saved.occurrence.id)!!
+        val expected = clock.instant().plusSeconds(10 * 60).toEpochMilli()
+        assertThat(row.snoozedUntilEpochMs).isEqualTo(expected)
+        assertThat(row.nextReminderAtEpochMs).isEqualTo(expected)
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,

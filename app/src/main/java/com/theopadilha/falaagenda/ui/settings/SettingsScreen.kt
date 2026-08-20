@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -16,8 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -25,12 +29,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.QuietHours
 import com.theopadilha.falaagenda.BuildConfig
+import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import kotlinx.coroutines.Dispatchers
@@ -47,8 +55,7 @@ fun SettingsScreen(
     val quiet by container.settings.quietHours.collectAsState(
         initial = QuietHours(LocalTime.of(22, 0), LocalTime.of(8, 0)),
     )
-    var startText by remember(quiet) { mutableStateOf(quiet.start.toString().take(5)) }
-    var endText by remember(quiet) { mutableStateOf(quiet.end.toString().take(5)) }
+    var picking by remember { mutableStateOf<String?>(null) }
     var code by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
     val token = container.tokenStore.token()
@@ -83,29 +90,29 @@ fun SettingsScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Horário de silêncio", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Das 22h às 8h as repetições pausam. O primeiro lembrete no horário que você escolheu ainda toca. As repetições voltam às 8h.",
+                        "Nesse período as repetições pausam. O primeiro lembrete no horário que você escolheu ainda toca. As repetições voltam no fim do silêncio.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    OutlinedTextField(
-                        value = startText,
-                        onValueChange = { startText = it },
-                        label = { Text("Início (HH:mm)") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = endText,
-                        onValueChange = { endText = it },
-                        label = { Text("Fim (HH:mm)") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    PrimaryButton("Salvar horário de silêncio") {
-                        val start = runCatching { LocalTime.parse(startText) }.getOrNull()
-                        val end = runCatching { LocalTime.parse(endText) }.getOrNull()
-                        if (start != null && end != null) {
-                            scope.launch { container.settings.setQuietHours(QuietHours(start, end)) }
-                            message = "Horário de silêncio atualizado."
-                        } else {
-                            message = "Use o formato 22:00."
+                    QuietCard(
+                        onClick = { picking = "start" },
+                        modifier = Modifier.semantics {
+                            contentDescription = "Início do silêncio ${AgendaFormat.time(quiet.start)}. Toque para mudar."
+                        },
+                    ) {
+                        Column(Modifier.padding(16.dp).fillMaxWidth()) {
+                            Text("Começa", style = MaterialTheme.typography.labelLarge)
+                            Text(AgendaFormat.time(quiet.start), style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                    QuietCard(
+                        onClick = { picking = "end" },
+                        modifier = Modifier.semantics {
+                            contentDescription = "Fim do silêncio ${AgendaFormat.time(quiet.end)}. Toque para mudar."
+                        },
+                    ) {
+                        Column(Modifier.padding(16.dp).fillMaxWidth()) {
+                            Text("Termina", style = MaterialTheme.typography.labelLarge)
+                            Text(AgendaFormat.time(quiet.end), style = MaterialTheme.typography.titleMedium)
                         }
                     }
                 }
@@ -149,5 +156,41 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+    }
+
+    val which = picking
+    if (which != null) {
+        val current = if (which == "start") quiet.start else quiet.end
+        val state = rememberTimePickerState(
+            initialHour = current.hour,
+            initialMinute = current.minute,
+            is24Hour = true,
+        )
+        AlertDialog(
+            onDismissRequest = { picking = null },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val chosen = LocalTime.of(state.hour, state.minute)
+                        val updated = if (which == "start") {
+                            QuietHours(chosen, quiet.end)
+                        } else {
+                            QuietHours(quiet.start, chosen)
+                        }
+                        scope.launch { container.settings.setQuietHours(updated) }
+                        message = "Horário de silêncio atualizado."
+                        picking = null
+                    },
+                    modifier = Modifier.height(48.dp),
+                ) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { picking = null }, modifier = Modifier.height(48.dp)) {
+                    Text("Cancelar")
+                }
+            },
+            title = { Text(if (which == "start") "Começa" else "Termina") },
+            text = { TimePicker(state = state) },
+        )
     }
 }

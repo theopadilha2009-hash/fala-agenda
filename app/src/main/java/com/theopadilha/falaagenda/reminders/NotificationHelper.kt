@@ -41,7 +41,7 @@ object NotificationHelper {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
-            .setContentText("Está na hora. Toque para ver, ou conclua / adie daqui.")
+            .setContentText("Está na hora. Pode concluir ou adiar daqui, sem abrir o aplicativo.")
             .setContentIntent(open)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

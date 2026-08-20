@@ -30,6 +30,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -70,6 +72,7 @@ fun ConfirmDraftScreen(
     var showDate by remember { mutableStateOf(false) }
     var showTime by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val haptic = LocalHapticFeedback.current
 
     val missing = remember(title, date, time) {
         buildList {
@@ -195,11 +198,23 @@ fun ConfirmDraftScreen(
                     }
                 }
             }
-            Text(
-                previewRule.describePtBr(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            val recapDate = date
+            val recapTime = time
+            if (recapDate != null && recapTime != null) {
+                QuietCard {
+                    Text(
+                        AgendaFormat.recap(recapDate, recapTime, previewRule),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+            } else {
+                Text(
+                    previewRule.describePtBr(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (missing.isNotEmpty()) {
                 Text("Falta preencher: ${missing.joinToString(", ")}.", color = MaterialTheme.colorScheme.error)
@@ -220,6 +235,7 @@ fun ConfirmDraftScreen(
                         error = "Complete os campos em vermelho."
                         return@PrimaryButton
                     }
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onSave(
                         initial.withManual(
                             title = title,

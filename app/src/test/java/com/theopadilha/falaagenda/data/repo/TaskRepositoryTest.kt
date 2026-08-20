@@ -224,6 +224,31 @@ class TaskRepositoryTest {
         assertThat(row.nextReminderAtEpochMs).isEqualTo(expected)
     }
 
+    @Test
+    fun desfazerConcluirFuturaReagenda() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Consulta", LocalDate.of(2026, 8, 22), LocalTime.of(10, 0)))
+        val item = AgendaItem(saved.occurrence, saved.series)
+        repo.complete(saved.occurrence.id)
+        scheduler.scheduled.clear()
+        repo.uncomplete(item)
+        val row = occurrenceDao.get(saved.occurrence.id)!!
+        assertThat(row.status).isEqualTo(OccurrenceStatus.PENDING.name)
+        assertThat(scheduler.scheduled).contains(saved.occurrence.id)
+    }
+
+    @Test
+    fun desfazerConcluirNaoRealizadaVoltaAtrasada() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Já passou", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0)))
+        assertThat(saved.occurrence.status).isEqualTo(OccurrenceStatus.MISSED)
+        val item = AgendaItem(saved.occurrence, saved.series)
+        repo.complete(saved.occurrence.id)
+        scheduler.scheduled.clear()
+        repo.uncomplete(item)
+        val row = occurrenceDao.get(saved.occurrence.id)!!
+        assertThat(row.status).isEqualTo(OccurrenceStatus.MISSED.name)
+        assertThat(scheduler.scheduled).isEmpty()
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,

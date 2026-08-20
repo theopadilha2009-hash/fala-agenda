@@ -50,10 +50,19 @@ class HomeViewModel(
         }
     }
 
-    fun complete(id: String) = viewModelScope.launch {
-        withContext(Dispatchers.IO) { container.tasks.complete(id) }
+    fun complete(item: AgendaItem, onDone: () -> Unit = {}) = viewModelScope.launch {
+        lastCompleted = item
+        withContext(Dispatchers.IO) { container.tasks.complete(item.occurrence.id) }
+        onDone()
     }
 
+    fun undoComplete() = viewModelScope.launch {
+        val item = lastCompleted ?: return@launch
+        lastCompleted = null
+        withContext(Dispatchers.IO) { container.tasks.uncomplete(item) }
+    }
+
+    private var lastCompleted: AgendaItem? = null
     private var lastDeleted: AgendaItem? = null
 
     fun delete(item: AgendaItem, onDeleted: () -> Unit = {}) = viewModelScope.launch {
@@ -70,8 +79,10 @@ class HomeViewModel(
     fun endSeries(seriesId: String) = viewModelScope.launch {
         withContext(Dispatchers.IO) { container.tasks.endSeries(seriesId) }
     }
-    fun snooze(id: String, minutes: Long = 30) = viewModelScope.launch {
+    fun snooze(id: String, minutes: Long = 30, onDone: (String) -> Unit = {}) = viewModelScope.launch {
         withContext(Dispatchers.IO) { container.tasks.snooze(id, minutes) }
+        val at = java.time.ZonedDateTime.now().plusMinutes(minutes)
+        onDone(AgendaFormat.announce(at.toLocalDate(), at.toLocalTime().withSecond(0).withNano(0), LocalDate.now()))
     }
 
     fun retryMissed(id: String, onDone: (String) -> Unit = {}) = viewModelScope.launch {

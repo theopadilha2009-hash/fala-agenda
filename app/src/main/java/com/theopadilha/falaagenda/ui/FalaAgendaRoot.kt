@@ -25,6 +25,7 @@ import com.theopadilha.falaagenda.ui.home.HomeScreen
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
 import com.theopadilha.falaagenda.ui.onboarding.OnboardingScreen
 import com.theopadilha.falaagenda.ui.settings.SettingsScreen
+import java.time.LocalDate
 
 @Composable
 fun FalaAgendaRoot(
@@ -132,11 +133,17 @@ fun FalaAgendaRoot(
                         if (editId != null && date != null && time != null) {
                             homeVm.edit(editId, confirmed.title, date, time, confirmed.recurrence)
                             editingOccurrenceId = null
-                            statusMessage = "Tarefa atualizada."
+                            statusMessage = AgendaFormat.announce(date, time, LocalDate.now())
                             nav.popBackStack()
                         } else {
                             homeVm.saveDraft(confirmed, onDone = { usedInexact ->
-                                statusMessage = "Tarefa salva."
+                                val savedDate = confirmed.localDate
+                                val savedTime = confirmed.localTime
+                                statusMessage = if (savedDate != null && savedTime != null) {
+                                    AgendaFormat.announce(savedDate, savedTime, LocalDate.now())
+                                } else {
+                                    "Tarefa salva."
+                                }
                                 nav.popBackStack()
                                 homeVm.setInexactWarning(usedInexact)
                             })

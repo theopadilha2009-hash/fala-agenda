@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.ui.AgendaFormat
@@ -105,6 +106,25 @@ class HomeViewModel(
         withContext(Dispatchers.IO) {
             container.tasks.editOccurrence(id, title, date, time, recurrence)
         }
+    }
+
+    fun repeatTomorrow(item: AgendaItem, onDone: (String) -> Unit = {}) {
+        val tomorrow = LocalDate.now().plusDays(1)
+        val draft = ParsedTaskDraft(
+            title = item.series.title,
+            localDate = tomorrow,
+            localTime = item.series.localTime,
+            recurrence = RecurrenceRule(),
+            confidence = 1.0,
+            missingFields = emptySet(),
+            ambiguous = false,
+            transcript = "",
+            source = DraftSource.MANUAL,
+        )
+        saveDraft(draft, onDone = { usedInexact ->
+            setInexactWarning(usedInexact)
+            onDone(AgendaFormat.announce(tomorrow, item.series.localTime, LocalDate.now()))
+        })
     }
 
     suspend fun parse(text: String): ParsedTaskDraft =

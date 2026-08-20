@@ -67,6 +67,14 @@ data class ParsedTaskDraft(
     val isComplete: Boolean
         get() = missingFields.isEmpty() && title.isNotBlank() && localDate != null && localTime != null
 
+    fun canQuickConfirm(now: Instant, zone: ZoneId): Boolean {
+        if (!isComplete || ambiguous) return false
+        val date = localDate ?: return false
+        val time = localTime ?: return false
+        val at = date.atTime(time).atZone(zone).toInstant()
+        return !at.isBefore(now) || recurrence.isRecurring
+    }
+
     fun withManual(
         title: String = this.title,
         localDate: LocalDate? = this.localDate,

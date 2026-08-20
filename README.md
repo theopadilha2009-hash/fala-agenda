@@ -2,7 +2,7 @@
 
 Agenda por voz para Android. Você fala o recado, confere o que foi entendido e o aviso toca no horário. As tarefas ficam **só no aparelho**.
 
-Versão **0.2.4** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
+Versão **0.2.5** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
 
 ## O que o aplicativo faz
 
@@ -21,6 +21,9 @@ Versão **0.2.4** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo 
 - Tela inicial com saudação e o próximo aviso. Cartões dizem “daqui X min”.
 - Depois de salvar, o recado diz **quando** vai avisar. Concluir tem desfazer.
 - “daqui 10 minutos” (com ou sem “a”) vira horário.
+- Se o recado já veio completo, um diálogo **Pode salvar?** confirma em um toque. **Mudar** abre a tela cheia.
+- No cartão pendente: **10 min**. No concluído único: **Amanhã**.
+- O microfone encerra um pouco mais rápido depois do silêncio.
 
 ## Arquitetura
 

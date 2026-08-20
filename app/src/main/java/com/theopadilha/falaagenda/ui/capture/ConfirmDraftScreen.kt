@@ -226,7 +226,12 @@ fun ConfirmDraftScreen(
             }
 
             PrimaryButton(
-                text = if (saving) "Salvando…" else "Salvar",
+                text = when {
+                    saving -> "Salvando…"
+                    recapDate != null && recapTime != null ->
+                        "Salvar · ${AgendaFormat.dateLabel(recapDate, LocalDate.now()).lowercase()} ${AgendaFormat.time(recapTime)}"
+                    else -> "Salvar"
+                },
                 enabled = missing.isEmpty() && !saving,
                 onClick = {
                     val chosenDate = date

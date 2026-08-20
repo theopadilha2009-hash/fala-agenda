@@ -79,7 +79,7 @@ object OccurrenceLifecycle {
             series.recurrence,
             series.startLocalDate,
             todayInSeriesZone,
-        ) ?: return LifecycleChange()
+        )
 
         val byDate = existing.associateBy { it.localDate }
         val markMissed = mutableListOf<TaskOccurrence>()
@@ -87,7 +87,7 @@ object OccurrenceLifecycle {
         val cancel = mutableListOf<String>()
 
         existing.filter {
-            it.status == OccurrenceStatus.PENDING && it.localDate.isBefore(dueDate)
+            it.status == OccurrenceStatus.PENDING && it.localDate.isBefore(todayInSeriesZone)
         }.forEach { stale ->
             val missed = stale.copy(
                 status = OccurrenceStatus.MISSED,
@@ -97,6 +97,14 @@ object OccurrenceLifecycle {
             markMissed += missed
             upserts += missed
             cancel += stale.id
+        }
+
+        if (dueDate == null) {
+            return LifecycleChange(
+                upserts = upserts,
+                markMissed = markMissed,
+                cancelAlarmsOf = cancel,
+            )
         }
 
         val currentExisting = byDate[dueDate]

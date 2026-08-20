@@ -40,7 +40,7 @@ object RecurrenceEngine {
     ): LocalDate? {
         val from = if (onOrAfter.isBefore(seriesStart)) seriesStart else onOrAfter
         return when (rule.kind) {
-            RecurrenceKind.NONE -> if (!from.isBefore(seriesStart)) seriesStart else null
+            RecurrenceKind.NONE -> if (!seriesStart.isBefore(onOrAfter)) seriesStart else null
             RecurrenceKind.DAILY -> from
             RecurrenceKind.WEEKDAYS -> nextWeekDay(from, WEEKDAYS)
             RecurrenceKind.WEEKLY -> {

@@ -84,6 +84,70 @@ class RecurrenceEngineTest {
     }
 
     @Test
+    fun unicaAtrasadaViraNaoRealizadaNoAdvance() {
+        val series = TaskSeries(
+            id = "u1",
+            title = "Única",
+            zoneId = zone,
+            localTime = LocalTime.of(9, 0),
+            startLocalDate = LocalDate.of(2026, 8, 20),
+            recurrence = RecurrenceRule(),
+            createdAt = java.time.Instant.parse("2026-08-20T11:00:00Z"),
+            updatedAt = java.time.Instant.parse("2026-08-20T11:00:00Z"),
+        )
+        val first = OccurrenceLifecycle.materialize(
+            series,
+            LocalDate.of(2026, 8, 20),
+            java.time.Instant.parse("2026-08-20T11:00:00Z"),
+        )
+        val change = OccurrenceLifecycle.advance(
+            series = series,
+            existing = listOf(first),
+            now = java.time.Instant.parse("2026-08-21T12:00:00Z"),
+            todayInSeriesZone = LocalDate.of(2026, 8, 21),
+        )
+        assertThat(change.markMissed).hasSize(1)
+        assertThat(change.markMissed.first().status).isEqualTo(OccurrenceStatus.MISSED)
+        assertThat(change.cancelAlarmsOf).contains(first.id)
+        assertThat(change.upserts.none { it.status == OccurrenceStatus.PENDING }).isTrue()
+    }
+
+    @Test
+    fun unicaDeHojePermanecePendente() {
+        val series = TaskSeries(
+            id = "u2",
+            title = "Única",
+            zoneId = zone,
+            localTime = LocalTime.of(9, 0),
+            startLocalDate = LocalDate.of(2026, 8, 20),
+            recurrence = RecurrenceRule(),
+            createdAt = java.time.Instant.parse("2026-08-20T11:00:00Z"),
+            updatedAt = java.time.Instant.parse("2026-08-20T11:00:00Z"),
+        )
+        val first = OccurrenceLifecycle.materialize(
+            series,
+            LocalDate.of(2026, 8, 20),
+            java.time.Instant.parse("2026-08-20T11:00:00Z"),
+        )
+        val change = OccurrenceLifecycle.advance(
+            series = series,
+            existing = listOf(first),
+            now = java.time.Instant.parse("2026-08-20T14:00:00Z"),
+            todayInSeriesZone = LocalDate.of(2026, 8, 20),
+        )
+        assertThat(change.markMissed).isEmpty()
+    }
+
+    @Test
+    fun firstOnOrAfterNoneNaoDevolveDataPassada() {
+        val none = RecurrenceRule()
+        val start = LocalDate.of(2026, 8, 20)
+        assertThat(RecurrenceEngine.firstOnOrAfter(none, start, start)).isEqualTo(start)
+        assertThat(RecurrenceEngine.firstOnOrAfter(none, start, start.plusDays(1))).isNull()
+        assertThat(RecurrenceEngine.firstOnOrAfter(none, start, start.minusDays(1))).isEqualTo(start)
+    }
+
+    @Test
     fun materializeNaoResetaSnoozeNemEscada() {
         val series = TaskSeries(
             id = "s1",

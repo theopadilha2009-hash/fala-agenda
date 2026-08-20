@@ -12,8 +12,17 @@ object AlarmIds {
     const val EXTRA_ACTION = "action"
 
     fun requestCode(occurrenceId: String, action: String): Int {
+        val lane = when (action) {
+            ACTION_FIRE -> 1
+            ACTION_COMPLETE -> 2
+            ACTION_SNOOZE -> 3
+            "open" -> 4
+            "notif" -> 5
+            else -> 6
+        }
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest("$occurrenceId|$action".toByteArray(Charsets.UTF_8))
-        return ByteBuffer.wrap(digest, 0, 4).int and 0x7FFFFFFF
+            .digest(occurrenceId.toByteArray(Charsets.UTF_8))
+        val base = ByteBuffer.wrap(digest, 0, 4).int and 0x0FFFFFFF
+        return (lane shl 28) or base
     }
 }

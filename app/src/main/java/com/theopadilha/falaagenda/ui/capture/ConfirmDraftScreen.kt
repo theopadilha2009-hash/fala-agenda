@@ -12,7 +12,9 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -30,7 +32,6 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
-import com.theopadilha.falaagenda.ui.theme.OffWhite
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -43,6 +44,7 @@ fun ConfirmDraftScreen(
     initial: ParsedTaskDraft,
     onCancel: () -> Unit,
     onSave: (ParsedTaskDraft) -> Unit,
+    saving: Boolean = false,
 ) {
     var title by remember { mutableStateOf(initial.title) }
     var dateText by remember { mutableStateOf(initial.localDate?.format(DATE) ?: "") }
@@ -59,7 +61,7 @@ fun ConfirmDraftScreen(
         }
     }
 
-    Scaffold(containerColor = OffWhite) { padding ->
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -79,6 +81,12 @@ fun ConfirmDraftScreen(
             )
             if (initial.transcript.isNotBlank()) {
                 Text("Você disse: “${initial.transcript}”", style = MaterialTheme.typography.bodyMedium)
+            }
+            if (initial.ambiguous) {
+                Text(
+                    "Alguma parte ficou em dúvida. Confira os campos antes de salvar.",
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             initial.notes.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
 
@@ -114,7 +122,7 @@ fun ConfirmDraftScreen(
                     label = { Text("Repetir") },
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
                     modifier = Modifier
-                        .menuAnchor()
+                        .menuAnchor(type = MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth(),
                 )
                 ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -134,10 +142,14 @@ fun ConfirmDraftScreen(
                 Text("Falta preencher: ${missing.joinToString(", ")}.", color = MaterialTheme.colorScheme.error)
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (saving) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text("Salvando…", style = MaterialTheme.typography.bodyMedium)
+            }
 
             PrimaryButton(
-                text = "Salvar",
-                enabled = missing.isEmpty(),
+                text = if (saving) "Salvando…" else "Salvar",
+                enabled = missing.isEmpty() && !saving,
                 onClick = {
                     val date = parseDate(dateText)
                     val time = parseTime(timeText)
@@ -174,7 +186,7 @@ fun ConfirmDraftScreen(
     }
 }
 
-private val DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/uuuu", Locale("pt", "BR"))
+private val DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/uuuu", Locale.forLanguageTag("pt-BR"))
 private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 private fun parseDate(text: String): LocalDate? = try {

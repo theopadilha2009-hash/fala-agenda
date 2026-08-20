@@ -25,9 +25,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -55,11 +57,8 @@ import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
-import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
-import com.theopadilha.falaagenda.ui.theme.DeepGreen
-import com.theopadilha.falaagenda.ui.theme.OffWhite
 import kotlinx.coroutines.launch
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -71,10 +70,13 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
+    statusMessage: String? = null,
+    onStatusConsumed: () -> Unit = {},
 ) {
     val agenda by viewModel.agenda.collectAsState()
     val voiceUi by voice.ui.collectAsState()
     val inexact by viewModel.inexactWarning.collectAsState()
+    val busy by viewModel.busy.collectAsState()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -107,8 +109,14 @@ fun HomeScreen(
         }
     }
 
+    LaunchedEffect(statusMessage) {
+        val message = statusMessage ?: return@LaunchedEffect
+        snackbar.showSnackbar(message)
+        onStatusConsumed()
+    }
+
     Scaffold(
-        containerColor = OffWhite,
+        containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(
@@ -130,6 +138,9 @@ fun HomeScreen(
                         .weight(1f)
                         .semantics { heading() },
                 )
+                if (busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                }
                 IconButton(
                     onClick = onOpenSettings,
                     modifier = Modifier.size(48.dp),
@@ -189,7 +200,7 @@ fun HomeScreen(
             onDismissRequest = { writing = false },
             title = { Text("Escrever tarefa") },
             text = {
-                androidx.compose.material3.OutlinedTextField(
+                OutlinedTextField(
                     value = writeText,
                     onValueChange = { writeText = it },
                     modifier = Modifier.fillMaxWidth(),
@@ -197,14 +208,21 @@ fun HomeScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val text = writeText
-                    writing = false
-                    writeText = ""
-                    scope.launch { onDraftReady(viewModel.parse(text)) }
-                }) { Text("Continuar") }
+                TextButton(
+                    onClick = {
+                        val text = writeText
+                        writing = false
+                        writeText = ""
+                        scope.launch { onDraftReady(viewModel.parse(text)) }
+                    },
+                    modifier = Modifier.height(48.dp),
+                ) { Text("Continuar") }
             },
-            dismissButton = { TextButton(onClick = { writing = false }) { Text("Cancelar") } },
+            dismissButton = {
+                TextButton(onClick = { writing = false }, modifier = Modifier.height(48.dp)) {
+                    Text("Cancelar")
+                }
+            },
         )
     }
 
@@ -284,25 +302,33 @@ private fun VoicePanel(state: VoiceState, partial: String, error: String?, onMic
         VoiceState.ERROR -> error ?: "Não consegui ouvir"
         VoiceState.IDLE -> "Toque para falar uma tarefa"
     }
+    val action = when (state) {
+        VoiceState.LISTENING, VoiceState.UNDERSTANDING -> "Parar de ouvir"
+        VoiceState.ERROR -> "Tentar de novo. $label"
+        VoiceState.IDLE -> "Falar uma tarefa"
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
         IconButton(
             onClick = onMic,
             modifier = Modifier
-                .size(88.dp)
+                .size(96.dp)
                 .clip(CircleShape)
-                .background(DeepGreen)
-                .semantics { contentDescription = "Falar uma tarefa" },
+                .background(MaterialTheme.colorScheme.primary)
+                .semantics { contentDescription = action },
         ) {
             Icon(
                 Icons.Outlined.Mic,
                 contentDescription = null,
-                tint = OffWhite,
-                modifier = Modifier.size(36.dp),
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(40.dp),
             )
         }
         Spacer(Modifier.height(12.dp))
         Text(label, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-        if (partial.isNotBlank() && state == VoiceState.LISTENING) {
+        if (state == VoiceState.ERROR) {
+            Text("Toque de novo para tentar, ou escreva a tarefa.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+        }
+        if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
             Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
         }
     }
@@ -329,19 +355,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
         }
     } else {
         items(items, key = { it.occurrence.id }) { item ->
-            QuietCard {
-                Column(
-                    Modifier
-                        .padding(16.dp)
-                        .fillMaxWidth(),
-                ) {
+            val locale = Locale.forLanguageTag("pt-BR")
+            val time = item.series.localTime.format(DateTimeFormatter.ofPattern("HH:mm", locale))
+            val date = item.occurrence.localDate.format(DateTimeFormatter.ofPattern("dd/MM", locale))
+            QuietCard(
+                onClick = { onClick(item) },
+                modifier = Modifier.semantics {
+                    contentDescription = "${item.series.title}, $date às $time, ${item.series.recurrence.describePtBr()}. Toque para concluir, editar ou excluir."
+                },
+            ) {
+                Column(Modifier.padding(16.dp).fillMaxWidth()) {
                     Text(item.series.title, style = MaterialTheme.typography.titleMedium)
-                    val time = item.series.localTime.format(DateTimeFormatter.ofPattern("HH:mm", Locale("pt", "BR")))
-                    val date = item.occurrence.localDate.format(DateTimeFormatter.ofPattern("dd/MM", Locale("pt", "BR")))
                     Text("$date · $time · ${item.series.recurrence.describePtBr()}")
-                    TextButton(onClick = { onClick(item) }, modifier = Modifier.height(48.dp)) {
-                        Text("Abrir")
-                    }
                 }
             }
         }

@@ -28,10 +28,19 @@ object OccurrenceLifecycle {
     ): TaskOccurrence {
         val scheduledAt = scheduledInstant(series, localDate)
         val first = ReminderPolicy.firstReminder(scheduledAt)
-        return existing?.copy(
-            scheduledAt = scheduledAt,
-            nextReminderAt = if (existing.status == OccurrenceStatus.PENDING) first.fireAt else existing.nextReminderAt,
-        ) ?: TaskOccurrence(
+        if (existing != null) {
+            val keepProgress = existing.status == OccurrenceStatus.PENDING &&
+                (existing.lastReminderAt != null || existing.snoozedUntil != null || existing.reminderStep > 0)
+            return existing.copy(
+                scheduledAt = scheduledAt,
+                nextReminderAt = when {
+                    existing.status != OccurrenceStatus.PENDING -> existing.nextReminderAt
+                    keepProgress -> existing.nextReminderAt
+                    else -> first.fireAt
+                },
+            )
+        }
+        return TaskOccurrence(
             id = OccurrenceIds.of(series.id, localDate),
             seriesId = series.id,
             localDate = localDate,

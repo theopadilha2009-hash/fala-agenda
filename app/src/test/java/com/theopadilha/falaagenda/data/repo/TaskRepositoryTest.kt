@@ -85,6 +85,43 @@ class TaskRepositoryTest {
         assertThat(scheduler.scheduled).isNotEmpty()
     }
 
+    @Test
+    fun duasTarefasNoMesmoHorarioNaoColidem() = runBlocking<Unit> {
+        val a = repo.saveDraft(completeDraft("A", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        val b = repo.saveDraft(completeDraft("B", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        assertThat(a.occurrence.id).isNotEqualTo(b.occurrence.id)
+        assertThat(scheduler.scheduled).containsExactly(a.occurrence.id, b.occurrence.id)
+    }
+
+    @Test
+    fun reschedulePreservaSnooze() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Remédio", LocalDate.of(2026, 8, 21), LocalTime.of(8, 0)))
+        repo.snooze(saved.occurrence.id, 30)
+        val afterSnooze = occurrenceDao.get(saved.occurrence.id)!!
+        scheduler.scheduled.clear()
+        repo.rescheduleAll()
+        val again = occurrenceDao.get(saved.occurrence.id)!!
+        assertThat(again.nextReminderAtEpochMs).isEqualTo(afterSnooze.nextReminderAtEpochMs)
+        assertThat(again.reminderStep).isEqualTo(afterSnooze.reminderStep)
+        assertThat(scheduler.scheduled).contains(saved.occurrence.id)
+    }
+
+    @Test
+    fun alarmeDeOcorrenciaConcluidaNaoNotifica() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Remédio", LocalDate.of(2026, 8, 21), LocalTime.of(8, 0)))
+        repo.complete(saved.occurrence.id)
+        val result = repo.onAlarmFired(saved.occurrence.id)
+        assertThat(result.notify).isFalse()
+    }
+
+    @Test
+    fun deleteCancelaAlarme() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Consulta", LocalDate.of(2026, 8, 22), LocalTime.of(10, 0)))
+        repo.deleteOccurrence(saved.occurrence.id)
+        assertThat(scheduler.cancelled).contains(saved.occurrence.id)
+        assertThat(occurrenceDao.get(saved.occurrence.id)).isNull()
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,

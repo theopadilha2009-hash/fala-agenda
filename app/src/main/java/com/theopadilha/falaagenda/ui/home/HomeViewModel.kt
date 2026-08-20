@@ -48,10 +48,18 @@ class HomeViewModel(
         }
     }
 
-    fun complete(id: String) = viewModelScope.launch { container.tasks.complete(id) }
-    fun delete(id: String) = viewModelScope.launch { container.tasks.deleteOccurrence(id) }
-    fun endSeries(seriesId: String) = viewModelScope.launch { container.tasks.endSeries(seriesId) }
-    fun snooze(id: String) = viewModelScope.launch { container.tasks.snooze(id) }
+    fun complete(id: String) = viewModelScope.launch {
+        withContext(Dispatchers.IO) { container.tasks.complete(id) }
+    }
+    fun delete(id: String) = viewModelScope.launch {
+        withContext(Dispatchers.IO) { container.tasks.deleteOccurrence(id) }
+    }
+    fun endSeries(seriesId: String) = viewModelScope.launch {
+        withContext(Dispatchers.IO) { container.tasks.endSeries(seriesId) }
+    }
+    fun snooze(id: String) = viewModelScope.launch {
+        withContext(Dispatchers.IO) { container.tasks.snooze(id) }
+    }
 
     fun edit(
         id: String,

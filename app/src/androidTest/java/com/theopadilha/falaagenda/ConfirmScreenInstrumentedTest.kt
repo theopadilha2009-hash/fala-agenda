@@ -42,5 +42,8 @@ class ConfirmScreenInstrumentedTest {
         composeRule.onNodeWithText("Toque para escolher o horário").assertIsDisplayed()
         composeRule.onNodeWithText("Falta preencher: o que precisa ser feito, a data, o horário.", substring = true)
             .assertIsDisplayed()
+        composeRule.onNodeWithText("Só uma vez").assertIsDisplayed()
+        composeRule.onNodeWithText("Todo dia").assertIsDisplayed()
+        composeRule.onNodeWithText("Toda semana").assertIsDisplayed()
     }
 }

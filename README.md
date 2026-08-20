@@ -2,7 +2,7 @@
 
 Agenda por voz para Android. Você fala o recado, confere o que foi entendido e o aviso toca no horário. As tarefas ficam **só no aparelho**.
 
-Versão **0.2.2** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
+Versão **0.2.3** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
 
 ## O que o aplicativo faz
 
@@ -14,6 +14,10 @@ Versão **0.2.2** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo 
 - Cada ocorrência se conclui sozinha. Se a próxima nascer e a anterior ainda estiver pendente, a anterior vira **não realizada** e o aviso dela é cancelado.
 - Lembretes com `AlarmManager`: no horário, depois +15 min, +30 min, depois de hora em hora. Das 22h às 8h as **repetições** pausam; o primeiro aviso no horário combinado ainda toca. A repetição volta às 8h.
 - Na notificação: **Concluir** e **Adiar 30 min**, sem abrir o aplicativo.
+- Confirmação com atalhos de data, horário e repetição (incluindo dias da semana).
+- Tarefa única **não realizada** pode voltar com **Fazer hoje** (hoje se o horário ainda não passou; senão amanhã, no mesmo relógio).
+- No cartão da tarefa pendente: adiar 10 min, 30 min ou 1 hora.
+- Horário de silêncio se escolhe no relógio, sem digitar.
 
 ## Arquitetura
 

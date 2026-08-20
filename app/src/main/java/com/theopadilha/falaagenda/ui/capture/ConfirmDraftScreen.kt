@@ -2,7 +2,8 @@ package com.theopadilha.falaagenda.ui.capture
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -12,14 +13,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -40,16 +37,18 @@ import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.model.toPtBrShort
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ConfirmDraftScreen(
     initial: ParsedTaskDraft,
@@ -61,7 +60,13 @@ fun ConfirmDraftScreen(
     var date by remember { mutableStateOf(initial.localDate) }
     var time by remember { mutableStateOf(initial.localTime) }
     var kind by remember { mutableStateOf(initial.recurrence.kind) }
-    var expanded by remember { mutableStateOf(false) }
+    var weekDays by remember {
+        mutableStateOf(
+            initial.recurrence.weekDays.ifEmpty {
+                initial.localDate?.let { setOf(it.dayOfWeek) } ?: emptySet()
+            },
+        )
+    }
     var showDate by remember { mutableStateOf(false) }
     var showTime by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -72,6 +77,9 @@ fun ConfirmDraftScreen(
             if (date == null) add("a data")
             if (time == null) add("o horário")
         }
+    }
+    val previewRule = remember(kind, date, weekDays) {
+        recurrenceFor(kind, date ?: LocalDate.now(), weekDays)
     }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
@@ -119,7 +127,7 @@ fun ConfirmDraftScreen(
                 onClick = { showDate = true },
             )
             val today = LocalDate.now()
-            QuickRow(
+            ChipRow(
                 options = listOf(
                     "Hoje" to today,
                     "Amanhã" to today.plusDays(1),
@@ -135,7 +143,7 @@ fun ConfirmDraftScreen(
                 description = if (time == null) "Escolher horário" else "Horário ${AgendaFormat.time(time!!)}. Toque para mudar.",
                 onClick = { showTime = true },
             )
-            QuickRow(
+            ChipRow(
                 options = listOf(
                     "8h" to LocalTime.of(8, 0),
                     "12h" to LocalTime.NOON,
@@ -146,36 +154,52 @@ fun ConfirmDraftScreen(
                 onPick = { time = it },
             )
 
-            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
-                OutlinedTextField(
-                    value = kindLabel(kind),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Repetir") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-                    modifier = Modifier
-                        .menuAnchor(type = MenuAnchorType.PrimaryNotEditable)
-                        .fillMaxWidth(),
-                )
-                ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    RecurrenceKind.entries.forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(kindLabel(option)) },
+            Text("Repetir", style = MaterialTheme.typography.titleMedium)
+            ChipRow(
+                options = listOf(
+                    "Só uma vez" to RecurrenceKind.NONE,
+                    "Todo dia" to RecurrenceKind.DAILY,
+                    "Dias úteis" to RecurrenceKind.WEEKDAYS,
+                    "Toda semana" to RecurrenceKind.WEEKLY,
+                    "Todo mês" to RecurrenceKind.MONTHLY,
+                    "Todo ano" to RecurrenceKind.YEARLY,
+                ),
+                selected = kind,
+                onPick = { chosen ->
+                    kind = chosen
+                    if (chosen == RecurrenceKind.WEEKLY && weekDays.isEmpty()) {
+                        weekDays = setOf((date ?: today).dayOfWeek)
+                    }
+                },
+            )
+            if (kind == RecurrenceKind.WEEKLY) {
+                Text("Quais dias?", style = MaterialTheme.typography.bodyMedium)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    DayOfWeek.entries.forEach { day ->
+                        val selected = day in weekDays
+                        FilterChip(
+                            selected = selected,
                             onClick = {
-                                kind = option
-                                expanded = false
+                                weekDays = if (selected) {
+                                    if (weekDays.size <= 1) weekDays else weekDays - day
+                                } else {
+                                    weekDays + day
+                                }
                             },
+                            label = { Text(day.toPtBrShort()) },
                         )
                     }
                 }
             }
-            if (kind == RecurrenceKind.WEEKLY && initial.recurrence.weekDays.isNotEmpty()) {
-                Text(
-                    initial.recurrence.describePtBr(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                previewRule.describePtBr(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             if (missing.isNotEmpty()) {
                 Text("Falta preencher: ${missing.joinToString(", ")}.", color = MaterialTheme.colorScheme.error)
@@ -196,35 +220,21 @@ fun ConfirmDraftScreen(
                         error = "Complete os campos em vermelho."
                         return@PrimaryButton
                     }
-                    val recurrence = when (kind) {
-                        RecurrenceKind.WEEKLY -> initial.recurrence.copy(kind = kind).let {
-                            if (it.weekDays.isEmpty()) RecurrenceRule(kind, weekDays = setOf(chosenDate.dayOfWeek)) else it
-                        }
-                        RecurrenceKind.MONTHLY -> RecurrenceRule(kind, dayOfMonth = chosenDate.dayOfMonth)
-                        RecurrenceKind.YEARLY -> RecurrenceRule(
-                            kind,
-                            dayOfMonth = chosenDate.dayOfMonth,
-                            monthOfYear = chosenDate.monthValue,
-                        )
-                        else -> RecurrenceRule(kind)
-                    }
                     onSave(
                         initial.withManual(
                             title = title,
                             localDate = chosenDate,
                             localTime = chosenTime,
-                            recurrence = recurrence,
+                            recurrence = recurrenceFor(kind, chosenDate, weekDays),
                         ),
                     )
                 },
             )
             SecondaryButton("Cancelar", onClick = onCancel)
-            Row(Modifier.fillMaxWidth()) {
-                Text(
-                    "Os campos ausentes não foram preenchidos automaticamente.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
+            Text(
+                "Os campos ausentes não foram preenchidos automaticamente.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 
@@ -279,13 +289,36 @@ fun ConfirmDraftScreen(
     }
 }
 
+internal fun recurrenceFor(
+    kind: RecurrenceKind,
+    date: LocalDate,
+    weekDays: Set<DayOfWeek>,
+): RecurrenceRule = when (kind) {
+    RecurrenceKind.WEEKLY -> RecurrenceRule(
+        kind,
+        weekDays = weekDays.ifEmpty { setOf(date.dayOfWeek) },
+    )
+    RecurrenceKind.MONTHLY -> RecurrenceRule(kind, dayOfMonth = date.dayOfMonth)
+    RecurrenceKind.YEARLY -> RecurrenceRule(
+        kind,
+        dayOfMonth = date.dayOfMonth,
+        monthOfYear = date.monthValue,
+    )
+    else -> RecurrenceRule(kind)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun <T> QuickRow(
+private fun <T> ChipRow(
     options: List<Pair<String, T>>,
     selected: T?,
     onPick: (T) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         options.forEach { (label, value) ->
             FilterChip(
                 selected = selected == value,
@@ -321,15 +354,6 @@ private fun PickerRow(
             )
         }
     }
-}
-
-private fun kindLabel(kind: RecurrenceKind): String = when (kind) {
-    RecurrenceKind.NONE -> "Só uma vez"
-    RecurrenceKind.DAILY -> "Todos os dias"
-    RecurrenceKind.WEEKDAYS -> "Dias úteis"
-    RecurrenceKind.WEEKLY -> "Semanal"
-    RecurrenceKind.MONTHLY -> "Todo mês"
-    RecurrenceKind.YEARLY -> "Todo ano"
 }
 
 private fun LocalDate.toUtcMillis(): Long =

@@ -12,6 +12,7 @@ import com.theopadilha.falaagenda.domain.model.TaskSeries
 import com.theopadilha.falaagenda.domain.recurrence.OccurrenceLifecycle
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
+import com.theopadilha.falaagenda.domain.reminder.RetryPolicy
 import com.theopadilha.falaagenda.domain.time.AppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
 import kotlinx.coroutines.flow.Flow
@@ -107,6 +108,11 @@ class TaskRepository(
         val row = occurrenceDao.get(occurrenceId) ?: return
         val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
         val occurrence = row.toDomain()
+        if (occurrence.status != OccurrenceStatus.PENDING &&
+            occurrence.status != OccurrenceStatus.MISSED
+        ) {
+            return
+        }
         scheduler.cancel(occurrence.id)
         val done = occurrence.copy(
             status = OccurrenceStatus.COMPLETED,
@@ -201,6 +207,28 @@ class TaskRepository(
         val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
         occurrenceDao.upsert(refreshed.copy(inexactAlarm = scheduled.inexact).toEntity())
         spawnUpcomingPreview(updatedSeries, date)
+    }
+
+    suspend fun retryMissed(occurrenceId: String): RetryResult? {
+        val now = clock.instant()
+        val row = occurrenceDao.get(occurrenceId) ?: return null
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return null
+        val occurrence = row.toDomain()
+        if (occurrence.status != OccurrenceStatus.MISSED) return null
+        if (series.recurrence.isRecurring) return null
+        val date = RetryPolicy.nextOpenDate(clock.today(), series.localTime, now, series.zoneId)
+        scheduler.cancel(occurrence.id)
+        occurrenceDao.delete(occurrence.id)
+        val updatedSeries = series.copy(
+            startLocalDate = date,
+            endedAt = null,
+            updatedAt = now,
+        )
+        seriesDao.upsert(updatedSeries.toEntity())
+        val fresh = OccurrenceLifecycle.materialize(updatedSeries, date, now)
+        val scheduled = scheduler.schedule(fresh, updatedSeries, first = true)
+        occurrenceDao.upsert(fresh.copy(inexactAlarm = scheduled.inexact).toEntity())
+        return RetryResult(date = date, time = series.localTime)
     }
 
     suspend fun snooze(occurrenceId: String, minutes: Long = 30) {
@@ -325,4 +353,9 @@ data class AlarmFireResult(
     val notify: Boolean,
     val title: String = "",
     val seriesId: String = "",
+)
+
+data class RetryResult(
+    val date: java.time.LocalDate,
+    val time: java.time.LocalTime,
 )

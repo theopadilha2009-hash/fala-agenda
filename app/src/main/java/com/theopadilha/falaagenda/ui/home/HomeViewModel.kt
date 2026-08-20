@@ -6,6 +6,7 @@ import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -69,8 +70,18 @@ class HomeViewModel(
     fun endSeries(seriesId: String) = viewModelScope.launch {
         withContext(Dispatchers.IO) { container.tasks.endSeries(seriesId) }
     }
-    fun snooze(id: String) = viewModelScope.launch {
-        withContext(Dispatchers.IO) { container.tasks.snooze(id) }
+    fun snooze(id: String, minutes: Long = 30) = viewModelScope.launch {
+        withContext(Dispatchers.IO) { container.tasks.snooze(id, minutes) }
+    }
+
+    fun retryMissed(id: String, onDone: (String) -> Unit = {}) = viewModelScope.launch {
+        val result = withContext(Dispatchers.IO) { container.tasks.retryMissed(id) }
+        if (result == null) {
+            onDone("Não deu para remarcar esta tarefa.")
+            return@launch
+        }
+        val whenLabel = AgendaFormat.dateLabel(result.date, LocalDate.now()).lowercase()
+        onDone("Vai avisar $whenLabel às ${AgendaFormat.time(result.time)}.")
     }
 
     fun edit(

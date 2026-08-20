@@ -10,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,6 +28,8 @@ import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -178,6 +182,13 @@ fun HomeScreen(
                         }
                     }
                 }
+                if (voiceUi.state == VoiceState.IDLE) {
+                    item {
+                        ExamplePhrases { phrase ->
+                            scope.launch { onDraftReady(viewModel.parse(phrase)) }
+                        }
+                    }
+                }
                 item {
                     SecondaryButton("Escrever tarefa") { writing = true }
                 }
@@ -215,7 +226,17 @@ fun HomeScreen(
                     onComplete = { viewModel.complete(it.occurrence.id) },
                 )
                 section("Concluídas", agenda.completed, empty = "Nenhuma concluída ainda.") { selected = it }
-                section("Não realizadas", agenda.missed, empty = "Nada ficou para trás.") { selected = it }
+                section(
+                    "Não realizadas",
+                    agenda.missed,
+                    empty = "Nada ficou para trás.",
+                    onRetry = { item ->
+                        viewModel.retryMissed(item.occurrence.id) { message ->
+                            scope.launch { snackbar.showSnackbar(message) }
+                        }
+                    },
+                    onClick = { selected = it },
+                )
             }
         }
     }
@@ -265,24 +286,42 @@ fun HomeScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("${AgendaFormat.longDate(item.occurrence.localDate)} às ${AgendaFormat.time(item.series.localTime)}")
                     Text(item.series.recurrence.describePtBr())
-                    TextButton(
-                        onClick = {
-                            viewModel.complete(item.occurrence.id)
+                    if (item.occurrence.status == OccurrenceStatus.PENDING ||
+                        item.occurrence.status == OccurrenceStatus.MISSED
+                    ) {
+                        TextButton(
+                            onClick = {
+                                viewModel.complete(item.occurrence.id)
+                                selected = null
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                        ) { Text("Concluir") }
+                    }
+                    if (item.occurrence.status == OccurrenceStatus.PENDING) {
+                        Text("Adiar", style = MaterialTheme.typography.bodyMedium)
+                        SnoozeChips { minutes ->
+                            viewModel.snooze(item.occurrence.id, minutes)
                             selected = null
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                    ) { Text("Concluir") }
-                    TextButton(
-                        onClick = {
-                            viewModel.snooze(item.occurrence.id)
-                            selected = null
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                    ) { Text("Adiar 30 min") }
+                        }
+                    }
+                    if (item.occurrence.status == OccurrenceStatus.MISSED &&
+                        !item.series.recurrence.isRecurring
+                    ) {
+                        TextButton(
+                            onClick = {
+                                val id = item.occurrence.id
+                                selected = null
+                                viewModel.retryMissed(id) { message ->
+                                    scope.launch { snackbar.showSnackbar(message) }
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                        ) { Text("Fazer hoje") }
+                    }
                     TextButton(
                         onClick = {
                             val current = item
@@ -377,11 +416,63 @@ private fun VoicePanel(state: VoiceState, partial: String, error: String?, onMic
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun ExamplePhrases(onPick: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(
+            "Pode falar assim:",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            VOICE_EXAMPLES.forEach { phrase ->
+                FilterChip(
+                    selected = false,
+                    onClick = { onPick(phrase) },
+                    label = { Text(phrase) },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun SnoozeChips(onPick: (Long) -> Unit) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        listOf(10L to "10 min", 30L to "30 min", 60L to "1 hora").forEach { (minutes, label) ->
+            FilterChip(
+                selected = false,
+                onClick = { onPick(minutes) },
+                label = { Text(label) },
+            )
+        }
+    }
+}
+
+private val VOICE_EXAMPLES = listOf(
+    "tomar remédio amanhã às 8h",
+    "ligar para o médico na sexta às 14h",
+    "pagar a conta hoje às 18h",
+)
+
 private fun androidx.compose.foundation.lazy.LazyListScope.section(
     title: String,
     items: List<AgendaItem>,
     empty: String,
     onComplete: ((AgendaItem) -> Unit)? = null,
+    onRetry: ((AgendaItem) -> Unit)? = null,
     onClick: (AgendaItem) -> Unit,
 ) {
     item {
@@ -421,6 +512,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                             onClick = { onComplete(item) },
                             modifier = Modifier.height(48.dp),
                         ) { Text("Concluir") }
+                    }
+                    if (onRetry != null &&
+                        item.occurrence.status == OccurrenceStatus.MISSED &&
+                        !item.series.recurrence.isRecurring
+                    ) {
+                        TextButton(
+                            onClick = { onRetry(item) },
+                            modifier = Modifier.height(48.dp),
+                        ) { Text("Fazer hoje") }
                     }
                 }
             }

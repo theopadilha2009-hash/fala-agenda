@@ -143,6 +143,16 @@ fun DayOfWeek.toPtBr(): String = when (this) {
     DayOfWeek.SUNDAY -> "domingo"
 }
 
+fun DayOfWeek.toPtBrShort(): String = when (this) {
+    DayOfWeek.MONDAY -> "Seg"
+    DayOfWeek.TUESDAY -> "Ter"
+    DayOfWeek.WEDNESDAY -> "Qua"
+    DayOfWeek.THURSDAY -> "Qui"
+    DayOfWeek.FRIDAY -> "Sex"
+    DayOfWeek.SATURDAY -> "Sáb"
+    DayOfWeek.SUNDAY -> "Dom"
+}
+
 fun Int.toMonthPtBr(): String = when (this) {
     1 -> "janeiro"
     2 -> "fevereiro"

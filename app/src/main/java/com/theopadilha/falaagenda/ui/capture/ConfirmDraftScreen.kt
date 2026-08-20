@@ -14,6 +14,7 @@ import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.LinearProgressIndicator
@@ -117,12 +118,32 @@ fun ConfirmDraftScreen(
                 description = if (date == null) "Escolher data" else "Data ${AgendaFormat.longDate(date!!)}. Toque para mudar.",
                 onClick = { showDate = true },
             )
+            val today = LocalDate.now()
+            QuickRow(
+                options = listOf(
+                    "Hoje" to today,
+                    "Amanhã" to today.plusDays(1),
+                    "Depois" to today.plusDays(2),
+                ),
+                selected = date,
+                onPick = { date = it },
+            )
             PickerRow(
                 label = "Horário",
                 value = time?.let { AgendaFormat.time(it) } ?: "Toque para escolher o horário",
                 missing = time == null,
                 description = if (time == null) "Escolher horário" else "Horário ${AgendaFormat.time(time!!)}. Toque para mudar.",
                 onClick = { showTime = true },
+            )
+            QuickRow(
+                options = listOf(
+                    "8h" to LocalTime.of(8, 0),
+                    "12h" to LocalTime.NOON,
+                    "18h" to LocalTime.of(18, 0),
+                    "20h" to LocalTime.of(20, 0),
+                ),
+                selected = time,
+                onPick = { time = it },
             )
 
             ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
@@ -255,6 +276,23 @@ fun ConfirmDraftScreen(
             title = { Text("Horário") },
             text = { TimePicker(state = state) },
         )
+    }
+}
+
+@Composable
+private fun <T> QuickRow(
+    options: List<Pair<String, T>>,
+    selected: T?,
+    onPick: (T) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        options.forEach { (label, value) ->
+            FilterChip(
+                selected = selected == value,
+                onClick = { onPick(value) },
+                label = { Text(label) },
+            )
+        }
     }
 }
 

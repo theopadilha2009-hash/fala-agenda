@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -51,8 +52,19 @@ class HomeViewModel(
     fun complete(id: String) = viewModelScope.launch {
         withContext(Dispatchers.IO) { container.tasks.complete(id) }
     }
-    fun delete(id: String) = viewModelScope.launch {
-        withContext(Dispatchers.IO) { container.tasks.deleteOccurrence(id) }
+
+    private var lastDeleted: AgendaItem? = null
+
+    fun delete(item: AgendaItem, onDeleted: () -> Unit = {}) = viewModelScope.launch {
+        lastDeleted = item
+        withContext(Dispatchers.IO) { container.tasks.deleteOccurrence(item.occurrence.id) }
+        onDeleted()
+    }
+
+    fun undoDelete() = viewModelScope.launch {
+        val item = lastDeleted ?: return@launch
+        lastDeleted = null
+        withContext(Dispatchers.IO) { container.tasks.restore(item) }
     }
     fun endSeries(seriesId: String) = viewModelScope.launch {
         withContext(Dispatchers.IO) { container.tasks.endSeries(seriesId) }

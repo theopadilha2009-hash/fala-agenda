@@ -31,8 +31,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,6 +56,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.data.repo.AgendaItem
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
@@ -197,10 +200,20 @@ fun HomeScreen(
                         }
                     }
                 }
-                section("Hoje", agenda.today, empty = "Nada para hoje. Toque no microfone para falar um recado.") {
-                    selected = it
-                }
-                section("Próximas", agenda.upcoming, empty = "Nenhuma próxima tarefa.") { selected = it }
+                section(
+                    "Hoje",
+                    agenda.today,
+                    empty = "Nada para hoje. Toque no microfone para falar um recado.",
+                    onClick = { selected = it },
+                    onComplete = { viewModel.complete(it.occurrence.id) },
+                )
+                section(
+                    "Próximas",
+                    agenda.upcoming,
+                    empty = "Nenhuma próxima tarefa.",
+                    onClick = { selected = it },
+                    onComplete = { viewModel.complete(it.occurrence.id) },
+                )
                 section("Concluídas", agenda.completed, empty = "Nenhuma concluída ainda.") { selected = it }
                 section("Não realizadas", agenda.missed, empty = "Nada ficou para trás.") { selected = it }
             }
@@ -282,8 +295,20 @@ fun HomeScreen(
                     ) { Text("Editar") }
                     TextButton(
                         onClick = {
-                            viewModel.delete(item.occurrence.id)
+                            val current = item
                             selected = null
+                            viewModel.delete(current) {
+                                scope.launch {
+                                    val result = snackbar.showSnackbar(
+                                        message = "Tarefa excluída.",
+                                        actionLabel = "Desfazer",
+                                        duration = SnackbarDuration.Long,
+                                    )
+                                    if (result == SnackbarResult.ActionPerformed) {
+                                        viewModel.undoDelete()
+                                    }
+                                }
+                            }
                         },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -356,6 +381,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     title: String,
     items: List<AgendaItem>,
     empty: String,
+    onComplete: ((AgendaItem) -> Unit)? = null,
     onClick: (AgendaItem) -> Unit,
 ) {
     item {
@@ -379,12 +405,23 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
             QuietCard(
                 onClick = { onClick(item) },
                 modifier = Modifier.semantics {
-                    contentDescription = "${item.series.title}, $date às $time, ${item.series.recurrence.describePtBr()}. Toque para concluir, editar ou excluir."
+                    contentDescription = "${item.series.title}, $date às $time, ${item.series.recurrence.describePtBr()}. Toque para ver. Concluir fica ao lado."
                 },
             ) {
-                Column(Modifier.padding(16.dp).fillMaxWidth()) {
-                    Text(item.series.title, style = MaterialTheme.typography.titleMedium)
-                    Text("$date · $time · ${item.series.recurrence.describePtBr()}")
+                Row(
+                    Modifier.padding(16.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(item.series.title, style = MaterialTheme.typography.titleMedium)
+                        Text("$date · $time · ${item.series.recurrence.describePtBr()}")
+                    }
+                    if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
+                        TextButton(
+                            onClick = { onComplete(item) },
+                            modifier = Modifier.height(48.dp),
+                        ) { Text("Concluir") }
+                    }
                 }
             }
         }

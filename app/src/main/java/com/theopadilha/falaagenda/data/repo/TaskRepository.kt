@@ -127,6 +127,25 @@ class TaskRepository(
         }
     }
 
+    suspend fun restore(item: AgendaItem) {
+        val now = clock.instant()
+        val series = item.series.copy(endedAt = null, updatedAt = now)
+        seriesDao.upsert(series.toEntity())
+        val fresh = OccurrenceLifecycle.materialize(series, item.occurrence.localDate, now)
+        if (fresh.scheduledAt.isBefore(now) && !series.recurrence.isRecurring) {
+            occurrenceDao.upsert(
+                fresh.copy(
+                    status = OccurrenceStatus.MISSED,
+                    missedAt = now,
+                    nextReminderAt = null,
+                ).toEntity(),
+            )
+            return
+        }
+        val scheduled = scheduler.schedule(fresh, series, first = true)
+        occurrenceDao.upsert(fresh.copy(inexactAlarm = scheduled.inexact).toEntity())
+    }
+
     suspend fun endSeries(seriesId: String) {
         val now = clock.instant()
         val series = seriesDao.get(seriesId)?.toDomain() ?: return

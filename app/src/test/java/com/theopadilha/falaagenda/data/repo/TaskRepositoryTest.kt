@@ -137,6 +137,18 @@ class TaskRepositoryTest {
         assertThat(occurrenceDao.get(saved.occurrence.id)).isNull()
     }
 
+    @Test
+    fun desfazerExclusaoReagenda() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Farmácia", LocalDate.of(2026, 8, 22), LocalTime.of(11, 0)))
+        val item = AgendaItem(saved.occurrence, saved.series)
+        repo.deleteOccurrence(saved.occurrence.id)
+        scheduler.scheduled.clear()
+        repo.restore(item)
+        assertThat(occurrenceDao.get(saved.occurrence.id)).isNotNull()
+        assertThat(occurrenceDao.get(saved.occurrence.id)!!.status).isEqualTo(OccurrenceStatus.PENDING.name)
+        assertThat(scheduler.scheduled).contains(saved.occurrence.id)
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,

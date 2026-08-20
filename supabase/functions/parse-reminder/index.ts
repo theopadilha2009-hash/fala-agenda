@@ -37,29 +37,20 @@ export async function parseReminder(req: Request, deps: ParseDeps): Promise<Resp
   if (!installation) return json({ error: "unauthorized" }, 401);
 
   const today = deps.today ?? new Date().toISOString().slice(0, 10);
-  const usage = await rest<Array<{ id: string; use_count: number }>>(
+  const usage = await rest<number | null>(
     deps.db,
-    `ai_usage?installation_id=eq.${installation.id}&used_on=eq.${today}&select=id,use_count`,
-  );
-  const current = usage.json[0];
-  if ((current?.use_count ?? 0) >= DAILY_LIMIT) {
-    return json({ error: "quota_exceeded" }, 429);
-  }
-
-  if (current) {
-    await rest(deps.db, `ai_usage?id=eq.${current.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ use_count: current.use_count + 1 }),
-    });
-  } else {
-    await rest(deps.db, "ai_usage", {
+    "rpc/try_increment_ai_usage",
+    {
       method: "POST",
       body: JSON.stringify({
-        installation_id: installation.id,
-        used_on: today,
-        use_count: 1,
+        p_installation_id: installation.id,
+        p_used_on: today,
+        p_limit: DAILY_LIMIT,
       }),
-    });
+    },
+  );
+  if (usage.status >= 400 || usage.json == null) {
+    return json({ error: "quota_exceeded" }, 429);
   }
 
   await rest(deps.db, `installations?id=eq.${installation.id}`, {

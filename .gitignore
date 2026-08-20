@@ -14,8 +14,10 @@ google-services.json
 
 # IDE
 .idea/
+.kotlin/
 *.iml
 .DS_Store
+ENTREGA-LOCAL.txt
 captures/
 .cxx/
 *.apk

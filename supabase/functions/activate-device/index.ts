@@ -18,39 +18,19 @@ export async function activateDevice(req: Request, deps: ActivateDeps): Promise<
   if (code.length < 8) return json({ error: "invalid_code" }, 400);
 
   const codeHash = await hashActivationCode(code, deps.pepper);
-  const found = await rest<Array<{ id: string; used_at: string | null }>>(
-    deps.db,
-    `activation_codes?code_hash=eq.${codeHash}&select=id,used_at`,
-  );
-  const row = found.json[0];
-  if (!row || row.used_at) return json({ error: "invalid_code" }, 400);
-
   const token = randomToken(32);
   const tokenHash = await sha256Hex(token);
-  const inserted = await rest<Array<{ id: string }>>(
+  const consumed = await rest<string | null>(
     deps.db,
-    "installations",
+    "rpc/consume_activation_code",
     {
       method: "POST",
-      headers: { Prefer: "return=representation" },
-      body: JSON.stringify({ token_hash: tokenHash }),
+      body: JSON.stringify({ p_code_hash: codeHash, p_token_hash: tokenHash }),
     },
   );
-  const installation = inserted.json[0];
-  if (!installation?.id) return json({ error: "activation_failed" }, 500);
-
-  await rest(
-    deps.db,
-    `activation_codes?id=eq.${row.id}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({
-        used_at: new Date().toISOString(),
-        used_by_installation_id: installation.id,
-      }),
-    },
-  );
-
+  if (consumed.status >= 400 || !consumed.json) {
+    return json({ error: "invalid_code" }, 400);
+  }
   return json({ token });
 }
 

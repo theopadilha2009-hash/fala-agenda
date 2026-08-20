@@ -9,7 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.LocalTime
 
@@ -32,12 +34,14 @@ class HomeViewModel(
         _inexactWarning.value = value
     }
 
-    fun saveDraft(draft: ParsedTaskDraft, onDone: (Boolean) -> Unit) {
+    fun saveDraft(draft: ParsedTaskDraft, onDone: (Boolean) -> Unit, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
             _busy.value = true
             try {
-                val result = container.tasks.saveDraft(draft)
+                val result = withContext(Dispatchers.IO) { container.tasks.saveDraft(draft) }
                 onDone(result.usedInexactAlarm)
+            } catch (error: Exception) {
+                onError(error.message ?: "Não foi possível salvar.")
             } finally {
                 _busy.value = false
             }
@@ -56,8 +60,11 @@ class HomeViewModel(
         time: LocalTime,
         recurrence: RecurrenceRule,
     ) = viewModelScope.launch {
-        container.tasks.editOccurrence(id, title, date, time, recurrence)
+        withContext(Dispatchers.IO) {
+            container.tasks.editOccurrence(id, title, date, time, recurrence)
+        }
     }
 
-    suspend fun parse(text: String): ParsedTaskDraft = container.hybridParser.parse(text)
+    suspend fun parse(text: String): ParsedTaskDraft =
+        withContext(Dispatchers.IO) { container.hybridParser.parse(text) }
 }

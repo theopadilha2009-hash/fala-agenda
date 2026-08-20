@@ -34,6 +34,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -69,6 +70,7 @@ fun HomeScreen(
     voice: VoiceCaptureController,
     onOpenSettings: () -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
+    onEditItem: (AgendaItem) -> Unit,
 ) {
     val agenda by viewModel.agenda.collectAsState()
     val voiceUi by voice.ui.collectAsState()
@@ -79,6 +81,10 @@ fun HomeScreen(
     var writing by remember { mutableStateOf(false) }
     var writeText by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<AgendaItem?>(null) }
+
+    DisposableEffect(voice) {
+        onDispose { voice.cancel() }
+    }
 
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -137,7 +143,15 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                item { VoicePanel(voiceUi.state, voiceUi.partial, voiceUi.error) { micLauncher.launch(Manifest.permission.RECORD_AUDIO) } }
+                item {
+                    VoicePanel(voiceUi.state, voiceUi.partial, voiceUi.error) {
+                        if (voiceUi.state == VoiceState.LISTENING || voiceUi.state == VoiceState.UNDERSTANDING) {
+                            voice.cancel()
+                        } else {
+                            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                }
                 item {
                     SecondaryButton("Escrever tarefa") { writing = true }
                 }
@@ -199,35 +213,64 @@ fun HomeScreen(
             onDismissRequest = { selected = null },
             title = { Text(item.series.title) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("${item.occurrence.localDate} às ${item.series.localTime}")
                     Text(item.series.recurrence.describePtBr())
+                    TextButton(
+                        onClick = {
+                            viewModel.complete(item.occurrence.id)
+                            selected = null
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                    ) { Text("Concluir") }
+                    TextButton(
+                        onClick = {
+                            viewModel.snooze(item.occurrence.id)
+                            selected = null
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                    ) { Text("Adiar 30 min") }
+                    TextButton(
+                        onClick = {
+                            val current = item
+                            selected = null
+                            onEditItem(current)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                    ) { Text("Editar") }
+                    TextButton(
+                        onClick = {
+                            viewModel.delete(item.occurrence.id)
+                            selected = null
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                    ) { Text("Excluir") }
+                    if (item.series.recurrence.isRecurring) {
+                        TextButton(
+                            onClick = {
+                                viewModel.endSeries(item.series.id)
+                                selected = null
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                        ) { Text("Encerrar série") }
+                    }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    viewModel.complete(item.occurrence.id)
-                    selected = null
-                }) { Text("Concluir") }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        viewModel.snooze(item.occurrence.id)
-                        selected = null
-                    }) { Text("Adiar 30 min") }
-                    TextButton(onClick = {
-                        viewModel.delete(item.occurrence.id)
-                        selected = null
-                    }) { Text("Excluir") }
-                    if (item.series.recurrence.isRecurring) {
-                        TextButton(onClick = {
-                            viewModel.endSeries(item.series.id)
-                            selected = null
-                        }) { Text("Encerrar série") }
-                    }
-                    TextButton(onClick = { selected = null }) { Text("Fechar") }
-                }
+                TextButton(
+                    onClick = { selected = null },
+                    modifier = Modifier.height(48.dp),
+                ) { Text("Fechar") }
             },
         )
     }

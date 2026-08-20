@@ -37,11 +37,8 @@ Deno.test("parse-reminder chama OpenAI mockado e incrementa cota", async () => {
       if (url.includes("/rest/v1/installations?token_hash")) {
         return jsonResponse([{ id: "inst-1" }]);
       }
-      if (url.includes("/rest/v1/ai_usage?installation_id")) {
-        return jsonResponse([]);
-      }
-      if (url.includes("/rest/v1/ai_usage") && init?.method === "POST") {
-        return jsonResponse([], 201);
+      if (url.includes("/rest/v1/rpc/try_increment_ai_usage")) {
+        return jsonResponse(1);
       }
       if (url.includes("/rest/v1/installations?id=")) {
         return jsonResponse([]);
@@ -96,8 +93,8 @@ Deno.test("parse-reminder respeita cota diária 30", async () => {
       if (url.includes("/rest/v1/installations?token_hash")) {
         return jsonResponse([{ id: "inst-1" }]);
       }
-      if (url.includes("/rest/v1/ai_usage?installation_id")) {
-        return jsonResponse([{ id: "u1", use_count: 30 }]);
+      if (url.includes("/rest/v1/rpc/try_increment_ai_usage")) {
+        return jsonResponse(null);
       }
       throw new Error("não deveria chamar openai");
     },

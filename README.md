@@ -59,10 +59,16 @@ Não copie segredos reais para o Git. Use `.env.example` como modelo das variáv
 
 ## Build e testes
 
+Rode os alvos **separados** (evita OOM em máquinas justas):
+
 ```bash
 export JAVA_HOME="$( /usr/libexec/java_home 2>/dev/null || echo /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home )"
 export ANDROID_HOME="$HOME/Library/Android/sdk"
-./gradlew clean test lint assembleDebug
+./gradlew :domain:test
+./gradlew :app:testDebugUnitTest
+./gradlew :app:lintDebug
+./gradlew :app:assembleDebug
+./gradlew :app:compileDebugAndroidTestKotlin
 ```
 
 APK debug (instalável):
@@ -89,7 +95,7 @@ O APK debug usa o sufixo `.debug` no applicationId (`com.theopadilha.falaagenda.
 |---|---|
 | Microfone | Só enquanto você segura o botão de falar |
 | Notificações | Aviso na hora, com Concluir / Adiar |
-| Alarmes exatos (`SCHEDULE_EXACT_ALARM`) | Tocar no horário combinado |
+| Alarmes exatos (`SCHEDULE_EXACT_ALARM`) | Tocar no horário combinado. Sem `USE_EXACT_ALARM`. |
 
 Se o alarme exato for recusado, a tarefa **é salva**, o alarme cai no modo inexato e aparece um aviso com atalho para os ajustes.
 
@@ -126,7 +132,8 @@ Secrets de release (o coordenador configura no GitHub): `RELEASE_KEYSTORE_BASE64
 ## Limites conhecidos
 
 - Reconhecimento de fala depende do motor do aparelho (pode precisar de rede do Google, mas o áudio não é enviado ao nosso servidor).
-- Sem emulador neste MVP: a verificação local é `lint` + testes JVM/Robolectric + `assembleDebug`.
+- Sem emulador neste MVP: a verificação local é testes JVM (`:domain:test`, `:app:testDebugUnitTest`), `lintDebug`, `assembleDebug` e `compileDebugAndroidTestKotlin`. O teste instrumentado de confirmação existe, mas não roda sem aparelho/emulador.
+- `android.disallowKotlinSourceSets=false` é necessário no AGP 9.3 enquanto o KSP registra fontes geradas do Room via `kotlin.sourceSets`. Não é um desligamento genérico de checagem.
 - A Edge Function precisa ser publicada pelo coordenador; o app local não faz deploy.
 - Horário de silêncio pausa repetições, não o primeiro aviso.
 - Este repositório é público na forma, mas o código é proprietário.

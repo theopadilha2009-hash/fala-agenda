@@ -18,4 +18,9 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStop() {
+        (application as FalaAgendaApplication).container.voice.cancel()
+        super.onStop()
+    }
 }

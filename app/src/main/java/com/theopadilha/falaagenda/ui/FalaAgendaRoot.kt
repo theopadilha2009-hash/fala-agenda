@@ -27,6 +27,7 @@ fun FalaAgendaRoot(container: AppContainer) {
     val nav = rememberNavController()
     val onboardingDone by container.settings.onboardingComplete.collectAsState(initial = false)
     var draft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
+    var editingOccurrenceId by remember { mutableStateOf<String?>(null) }
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
 
@@ -54,7 +55,22 @@ fun FalaAgendaRoot(container: AppContainer) {
                 voice = container.voice,
                 onOpenSettings = { nav.navigate("settings") },
                 onDraftReady = {
+                    editingOccurrenceId = null
                     draft = it
+                    nav.navigate("confirm")
+                },
+                onEditItem = { item ->
+                    editingOccurrenceId = item.occurrence.id
+                    draft = ParsedTaskDraft(
+                        title = item.series.title,
+                        localDate = item.occurrence.localDate,
+                        localTime = item.series.localTime,
+                        recurrence = item.series.recurrence,
+                        confidence = 1.0,
+                        missingFields = emptySet(),
+                        ambiguous = false,
+                        transcript = "",
+                    )
                     nav.navigate("confirm")
                 },
             )
@@ -66,11 +82,23 @@ fun FalaAgendaRoot(container: AppContainer) {
             } else {
                 ConfirmDraftScreen(
                     initial = current,
-                    onCancel = { nav.popBackStack() },
+                    onCancel = {
+                        editingOccurrenceId = null
+                        nav.popBackStack()
+                    },
                     onSave = { confirmed ->
-                        homeVm.saveDraft(confirmed) { usedInexact ->
+                        val editId = editingOccurrenceId
+                        val date = confirmed.localDate
+                        val time = confirmed.localTime
+                        if (editId != null && date != null && time != null) {
+                            homeVm.edit(editId, confirmed.title, date, time, confirmed.recurrence)
+                            editingOccurrenceId = null
                             nav.popBackStack()
-                            homeVm.setInexactWarning(usedInexact)
+                        } else {
+                            homeVm.saveDraft(confirmed, onDone = { usedInexact ->
+                                nav.popBackStack()
+                                homeVm.setInexactWarning(usedInexact)
+                            })
                         }
                     },
                 )

@@ -23,10 +23,11 @@ Deno.test("activate-device rejeita código curto", async () => {
   assertEquals(res.status, 400);
 });
 
-Deno.test("activate-device troca código válido por token", async () => {
+Deno.test("activate-device troca código válido por token via RPC atômico", async () => {
   const code = "VALIDCODE1234";
   const pepper = "pepper";
   const codeHash = await hashActivationCode(code, pepper);
+  let rpcBody = "";
   const res = await activateDevice(
     new Request("http://local/activate-device", {
       method: "POST",
@@ -39,17 +40,11 @@ Deno.test("activate-device troca código válido por token", async () => {
         serviceKey: "s",
         fetch: async (input, init) => {
           const url = String(input);
-          if (url.includes("activation_codes?code_hash=")) {
-            assertEquals(url.includes(codeHash), true);
-            return jsonResponse([{ id: "code-1", used_at: null }]);
-          }
-          if (url.includes("/rest/v1/installations") && init?.method === "POST") {
-            return jsonResponse([{ id: "inst-1" }], 201);
-          }
-          if (url.includes("activation_codes?id=eq.code-1")) {
-            return jsonResponse([]);
-          }
-          return jsonResponse([]);
+          assertEquals(url.includes("/rest/v1/rpc/consume_activation_code"), true);
+          assertEquals(init?.method, "POST");
+          rpcBody = String(init?.body ?? "");
+          assertEquals(rpcBody.includes(codeHash), true);
+          return jsonResponse("inst-1");
         },
       },
     },
@@ -58,4 +53,22 @@ Deno.test("activate-device troca código válido por token", async () => {
   const body = await res.json();
   assertEquals(typeof body.token, "string");
   assertEquals(body.token.length >= 32, true);
+});
+
+Deno.test("activate-device rejeita código já consumido", async () => {
+  const res = await activateDevice(
+    new Request("http://local/activate-device", {
+      method: "POST",
+      body: JSON.stringify({ code: "USEDCODE1234" }),
+    }),
+    {
+      pepper: "",
+      db: {
+        url: "https://example.supabase.co",
+        serviceKey: "s",
+        fetch: async () => jsonResponse(null),
+      },
+    },
+  );
+  assertEquals(res.status, 400);
 });

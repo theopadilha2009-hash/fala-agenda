@@ -1,0 +1,38 @@
+# Gradle
+.gradle/
+**/build/
+/build/
+
+# Local SDK / secrets
+local.properties
+.env
+.env.local
+*.jks
+*.keystore
+keystore.properties
+google-services.json
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+captures/
+.cxx/
+*.apk
+*.ap_
+*.aab
+app/release/
+output-metadata.json
+
+# OS
+Thumbs.db
+
+# Node / Deno caches (functions)
+node_modules/
+.deno/
+supabase/.temp/
+
+# Test output
+.cxx
+*.exec
+coverage/

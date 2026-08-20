@@ -1,0 +1,6 @@
+# Copie para local.properties (gitignored).
+sdk.dir=/Users/SEU_USUARIO/Library/Android/sdk
+
+# Opcionais. Se ausentes, a IA aparece como não ativada.
+SUPABASE_URL=
+SUPABASE_ANON_KEY=

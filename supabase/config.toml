@@ -1,0 +1,16 @@
+project_id = "fala-agenda"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+
+[db]
+port = 54322
+major_version = 15
+
+[functions.activate-device]
+verify_jwt = false
+
+[functions.parse-reminder]
+verify_jwt = false

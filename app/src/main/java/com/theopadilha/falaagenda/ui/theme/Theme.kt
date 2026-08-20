@@ -1,7 +1,9 @@
 package com.theopadilha.falaagenda.ui.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -21,6 +23,14 @@ val Line = Color(0xFFE4DFD4)
 val Missed = Color(0xFF8B3A2F)
 val SoftGreen = Color(0xFFE7F0EB)
 
+private val NightBg = Color(0xFF121412)
+private val NightSurface = Color(0xFF1C211E)
+private val NightInk = Color(0xFFF4F1EA)
+private val NightMuted = Color(0xFFC2C0B8)
+private val NightLine = Color(0xFF2E3531)
+private val NightPrimary = Color(0xFFB7D2C4)
+private val NightMissed = Color(0xFFE08B7A)
+
 val FigtreeFamily = FontFamily(
     Font(R.font.figtree_regular, FontWeight.Normal),
     Font(R.font.figtree_medium, FontWeight.Medium),
@@ -28,7 +38,7 @@ val FigtreeFamily = FontFamily(
     Font(R.font.figtree_bold, FontWeight.Bold),
 )
 
-private val colors = lightColorScheme(
+private val lightColors = lightColorScheme(
     primary = DeepGreen,
     onPrimary = OffWhite,
     primaryContainer = SoftGreen,
@@ -46,20 +56,41 @@ private val colors = lightColorScheme(
     onError = Color.White,
 )
 
+private val darkColors = darkColorScheme(
+    primary = NightPrimary,
+    onPrimary = NightBg,
+    primaryContainer = DeepGreen,
+    onPrimaryContainer = NightInk,
+    secondary = NightPrimary,
+    onSecondary = NightBg,
+    background = NightBg,
+    onBackground = NightInk,
+    surface = NightSurface,
+    onSurface = NightInk,
+    surfaceVariant = Color(0xFF242A27),
+    onSurfaceVariant = NightMuted,
+    outline = NightLine,
+    error = NightMissed,
+    onError = NightBg,
+)
+
 private val typography = Typography(
-    displaySmall = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 28.sp, color = Ink),
-    headlineMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 22.sp, color = Ink),
-    titleLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = Ink),
-    titleMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 18.sp, color = Ink),
-    bodyLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 17.sp, color = Ink, lineHeight = 24.sp),
-    bodyMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 15.sp, color = Ink, lineHeight = 22.sp),
-    labelLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 16.sp, color = Ink),
+    displaySmall = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 28.sp),
+    headlineMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 22.sp),
+    titleLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 20.sp),
+    titleMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 18.sp),
+    bodyLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 17.sp, lineHeight = 24.sp),
+    bodyMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 22.sp),
+    labelLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 16.sp),
 )
 
 @Composable
-fun FalaAgendaTheme(content: @Composable () -> Unit) {
+fun FalaAgendaTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
     MaterialTheme(
-        colorScheme = colors,
+        colorScheme = if (darkTheme) darkColors else lightColors,
         typography = typography,
         content = content,
     )

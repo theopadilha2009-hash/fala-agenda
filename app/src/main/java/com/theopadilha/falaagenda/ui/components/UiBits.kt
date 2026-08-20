@@ -8,33 +8,51 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import com.theopadilha.falaagenda.ui.theme.CardWhite
-import com.theopadilha.falaagenda.ui.theme.DeepGreen
-import com.theopadilha.falaagenda.ui.theme.Line
-import com.theopadilha.falaagenda.ui.theme.OffWhite
 
 val CardShape = RoundedCornerShape(16.dp)
 
 @Composable
 fun QuietCard(
     modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = CardShape,
-        color = CardWhite,
-        border = BorderStroke(1.dp, Line),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
-        content = content,
-    )
+    val colors = MaterialTheme.colorScheme
+    if (onClick != null) {
+        Surface(
+            onClick = onClick,
+            modifier = modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+                .semantics { role = Role.Button },
+            shape = CardShape,
+            color = colors.surface,
+            border = BorderStroke(1.dp, colors.outline),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+            content = content,
+        )
+    } else {
+        Surface(
+            modifier = modifier.fillMaxWidth(),
+            shape = CardShape,
+            color = colors.surface,
+            border = BorderStroke(1.dp, colors.outline),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+            content = content,
+        )
+    }
 }
 
 @Composable
@@ -52,7 +70,10 @@ fun PrimaryButton(
             .defaultMinSize(minHeight = 48.dp)
             .heightIn(min = 48.dp),
         shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = DeepGreen, contentColor = OffWhite),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+        ),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
     ) {
         Text(text)
@@ -71,8 +92,8 @@ fun SecondaryButton(
             .fillMaxWidth()
             .defaultMinSize(minHeight = 48.dp),
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Line),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = DeepGreen),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
     ) {
         Text(text)
     }

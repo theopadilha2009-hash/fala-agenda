@@ -1,14 +1,18 @@
 package com.theopadilha.falaagenda.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
@@ -25,11 +29,32 @@ import com.theopadilha.falaagenda.ui.settings.SettingsScreen
 @Composable
 fun FalaAgendaRoot(container: AppContainer) {
     val nav = rememberNavController()
-    val onboardingDone by container.settings.onboardingComplete.collectAsState(initial = false)
+    var onboardingReady by remember { mutableStateOf(false) }
+    var onboardingDone by remember { mutableStateOf(false) }
+    LaunchedEffect(container) {
+        container.settings.onboardingComplete.collect { done ->
+            onboardingDone = done
+            onboardingReady = true
+        }
+    }
     var draft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
     var editingOccurrenceId by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
+    val busy by homeVm.busy.collectAsState()
+
+    if (!onboardingReady) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator()
+        }
+        return
+    }
 
     val start = if (onboardingDone) "home" else "onboarding"
     NavHost(
@@ -57,7 +82,9 @@ fun FalaAgendaRoot(container: AppContainer) {
                 onDraftReady = {
                     editingOccurrenceId = null
                     draft = it
-                    nav.navigate("confirm")
+                    nav.navigate("confirm") {
+                        launchSingleTop = true
+                    }
                 },
                 onEditItem = { item ->
                     editingOccurrenceId = item.occurrence.id
@@ -71,17 +98,23 @@ fun FalaAgendaRoot(container: AppContainer) {
                         ambiguous = false,
                         transcript = "",
                     )
-                    nav.navigate("confirm")
+                    nav.navigate("confirm") {
+                        launchSingleTop = true
+                    }
                 },
+                statusMessage = statusMessage,
+                onStatusConsumed = { statusMessage = null },
             )
         }
         composable("confirm") {
             val current = draft
-            if (current == null) {
-                nav.popBackStack()
-            } else {
+            LaunchedEffect(current) {
+                if (current == null) nav.popBackStack()
+            }
+            if (current != null) {
                 ConfirmDraftScreen(
                     initial = current,
+                    saving = busy,
                     onCancel = {
                         editingOccurrenceId = null
                         nav.popBackStack()
@@ -93,9 +126,11 @@ fun FalaAgendaRoot(container: AppContainer) {
                         if (editId != null && date != null && time != null) {
                             homeVm.edit(editId, confirmed.title, date, time, confirmed.recurrence)
                             editingOccurrenceId = null
+                            statusMessage = "Tarefa atualizada."
                             nav.popBackStack()
                         } else {
                             homeVm.saveDraft(confirmed, onDone = { usedInexact ->
+                                statusMessage = "Tarefa salva."
                                 nav.popBackStack()
                                 homeVm.setInexactWarning(usedInexact)
                             })

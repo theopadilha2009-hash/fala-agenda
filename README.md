@@ -2,7 +2,7 @@
 
 Agenda por voz para Android. Você fala o recado, confere o que foi entendido e o aviso toca no horário. As tarefas ficam **só no aparelho**.
 
-Versão **0.1.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
+Versão **0.2.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
 
 ## O que o aplicativo faz
 
@@ -68,6 +68,7 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 ./gradlew :app:testDebugUnitTest
 ./gradlew :app:lintDebug
 ./gradlew :app:assembleDebug
+./gradlew :app:assembleRelease
 ./gradlew :app:compileDebugAndroidTestKotlin
 ```
 
@@ -132,10 +133,11 @@ Secrets de release (o coordenador configura no GitHub): `RELEASE_KEYSTORE_BASE64
 ## Limites conhecidos
 
 - Reconhecimento de fala depende do motor do aparelho (pode precisar de rede do Google, mas o áudio não é enviado ao nosso servidor).
-- Sem emulador neste MVP: a verificação local é testes JVM (`:domain:test`, `:app:testDebugUnitTest`), `lintDebug`, `assembleDebug` e `compileDebugAndroidTestKotlin`. O teste instrumentado de confirmação existe, mas não roda sem aparelho/emulador.
+- Sem emulador/aparelho nesta máquina de build: a verificação local é testes JVM (`:domain:test`, `:app:testDebugUnitTest`), `lintDebug`, `assembleDebug`, `assembleRelease` e `compileDebugAndroidTestKotlin`. O teste instrumentado de confirmação existe, mas não roda sem aparelho/emulador.
 - `android.disallowKotlinSourceSets=false` é necessário no AGP 9.3 enquanto o KSP registra fontes geradas do Room via `kotlin.sourceSets`. Não é um desligamento genérico de checagem.
-- A Edge Function precisa ser publicada pelo coordenador; o app local não faz deploy.
+- A Edge Function precisa ser publicada pelo coordenador na organização pessoal; o app local não faz deploy.
 - Horário de silêncio pausa repetições, não o primeiro aviso.
+- Expressões vagas (“à noite”, “depois do almoço”) abrem a confirmação sem inventar horário.
 - Este repositório é público na forma, mas o código é proprietário.
 
 ## Estrutura

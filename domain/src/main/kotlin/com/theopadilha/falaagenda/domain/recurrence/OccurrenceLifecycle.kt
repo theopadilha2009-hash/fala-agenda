@@ -28,10 +28,19 @@ object OccurrenceLifecycle {
     ): TaskOccurrence {
         val scheduledAt = scheduledInstant(series, localDate)
         val first = ReminderPolicy.firstReminder(scheduledAt)
-        return existing?.copy(
-            scheduledAt = scheduledAt,
-            nextReminderAt = if (existing.status == OccurrenceStatus.PENDING) first.fireAt else existing.nextReminderAt,
-        ) ?: TaskOccurrence(
+        if (existing != null) {
+            val keepProgress = existing.status == OccurrenceStatus.PENDING &&
+                (existing.lastReminderAt != null || existing.snoozedUntil != null || existing.reminderStep > 0)
+            return existing.copy(
+                scheduledAt = scheduledAt,
+                nextReminderAt = when {
+                    existing.status != OccurrenceStatus.PENDING -> existing.nextReminderAt
+                    keepProgress -> existing.nextReminderAt
+                    else -> first.fireAt
+                },
+            )
+        }
+        return TaskOccurrence(
             id = OccurrenceIds.of(series.id, localDate),
             seriesId = series.id,
             localDate = localDate,
@@ -70,7 +79,7 @@ object OccurrenceLifecycle {
             series.recurrence,
             series.startLocalDate,
             todayInSeriesZone,
-        ) ?: return LifecycleChange()
+        )
 
         val byDate = existing.associateBy { it.localDate }
         val markMissed = mutableListOf<TaskOccurrence>()
@@ -78,7 +87,7 @@ object OccurrenceLifecycle {
         val cancel = mutableListOf<String>()
 
         existing.filter {
-            it.status == OccurrenceStatus.PENDING && it.localDate.isBefore(dueDate)
+            it.status == OccurrenceStatus.PENDING && it.localDate.isBefore(todayInSeriesZone)
         }.forEach { stale ->
             val missed = stale.copy(
                 status = OccurrenceStatus.MISSED,
@@ -88,6 +97,14 @@ object OccurrenceLifecycle {
             markMissed += missed
             upserts += missed
             cancel += stale.id
+        }
+
+        if (dueDate == null) {
+            return LifecycleChange(
+                upserts = upserts,
+                markMissed = markMissed,
+                cancelAlarmsOf = cancel,
+            )
         }
 
         val currentExisting = byDate[dueDate]

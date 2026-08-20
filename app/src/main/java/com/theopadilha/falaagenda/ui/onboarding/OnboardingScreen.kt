@@ -29,7 +29,6 @@ import com.theopadilha.falaagenda.data.prefs.SettingsStore
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
-import com.theopadilha.falaagenda.ui.theme.OffWhite
 import kotlinx.coroutines.launch
 
 @Composable
@@ -74,7 +73,7 @@ fun OnboardingScreen(
         ),
     )
 
-    Scaffold(containerColor = OffWhite) { padding ->
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()

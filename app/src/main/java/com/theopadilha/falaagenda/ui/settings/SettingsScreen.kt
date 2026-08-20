@@ -25,13 +25,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.QuietHours
+import com.theopadilha.falaagenda.BuildConfig
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.QuietCard
-import com.theopadilha.falaagenda.ui.theme.OffWhite
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -55,16 +56,18 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
 
     Scaffold(
-        containerColor = OffWhite,
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = { Text("Configurações") },
                 navigationIcon = {
-                    IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Voltar")
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = OffWhite),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                ),
             )
         },
     ) { padding ->
@@ -142,7 +145,7 @@ fun SettingsScreen(
             message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
             Text(
-                "Fala Agenda 0.1.0 · tarefas só neste aparelho.",
+                "Fala Agenda ${BuildConfig.VERSION_NAME} · tarefas só neste aparelho.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }

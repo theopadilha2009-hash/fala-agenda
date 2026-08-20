@@ -150,7 +150,13 @@ class TaskRepository(
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return
         val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
-        scheduler.cancel(occurrenceId)
+        occurrenceDao.forSeries(series.id)
+            .map { it.toDomain() }
+            .filter { it.status == OccurrenceStatus.PENDING }
+            .forEach {
+                scheduler.cancel(it.id)
+                occurrenceDao.delete(it.id)
+            }
         val updatedSeries = series.copy(
             title = title.trim(),
             localTime = time,
@@ -159,10 +165,20 @@ class TaskRepository(
             updatedAt = now,
         )
         seriesDao.upsert(updatedSeries.toEntity())
-        occurrenceDao.delete(occurrenceId)
         val refreshed = OccurrenceLifecycle.materialize(updatedSeries, date, now)
+        if (refreshed.scheduledAt.isBefore(now) && !updatedSeries.recurrence.isRecurring) {
+            occurrenceDao.upsert(
+                refreshed.copy(
+                    status = OccurrenceStatus.MISSED,
+                    missedAt = now,
+                    nextReminderAt = null,
+                ).toEntity(),
+            )
+            return
+        }
         val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
         occurrenceDao.upsert(refreshed.copy(inexactAlarm = scheduled.inexact).toEntity())
+        spawnUpcomingPreview(updatedSeries, date)
     }
 
     suspend fun snooze(occurrenceId: String, minutes: Long = 30) {
@@ -182,18 +198,26 @@ class TaskRepository(
         occurrenceDao.upsert(updated.copy(inexactAlarm = scheduled.inexact).toEntity())
     }
 
-    suspend fun onAlarmFired(occurrenceId: String) {
+    suspend fun onAlarmFired(occurrenceId: String): AlarmFireResult {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
-        val occurrence = row.toDomain()
+        val row = occurrenceDao.get(occurrenceId) ?: return AlarmFireResult(false)
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return AlarmFireResult(false)
+        applyLifecycle(series, now)
+        val occurrence = occurrenceDao.get(occurrenceId)?.toDomain() ?: return AlarmFireResult(false)
         if (occurrence.status != OccurrenceStatus.PENDING) {
             scheduler.cancel(occurrenceId)
-            return
+            return AlarmFireResult(false)
+        }
+        val quiet = scheduler.quietHours()
+        if (occurrence.reminderStep > 0 && ReminderPolicy.isInQuietHours(now, series.zoneId, quiet)) {
+            val resume = ReminderPolicy.shiftOutOfQuietHours(now, series.zoneId, quiet)
+            val deferred = occurrence.copy(nextReminderAt = resume)
+            val scheduled = scheduler.schedule(deferred, series, first = false)
+            occurrenceDao.upsert(deferred.copy(inexactAlarm = scheduled.inexact).toEntity())
+            return AlarmFireResult(false)
         }
         val nextStep = ReminderPolicy.nextStep(occurrence.reminderStep)
         val interval = ReminderPolicy.intervalAfterStep(occurrence.reminderStep)
-        val quiet = scheduler.quietHours()
         val plan = ReminderPolicy.nextRepetition(
             from = now,
             nextStep = nextStep,
@@ -208,25 +232,14 @@ class TaskRepository(
         )
         val scheduled = scheduler.schedule(updated, series, first = false)
         occurrenceDao.upsert(updated.copy(inexactAlarm = scheduled.inexact).toEntity())
+        return AlarmFireResult(notify = true, title = series.title, seriesId = series.id)
     }
 
     suspend fun rescheduleAll() {
         val now = clock.instant()
         val seriesList = seriesDao.getAll().map { it.toDomain() }
-        val occurrences = occurrenceDao.getAll().map { it.toDomain() }.groupBy { it.seriesId }
         seriesList.forEach { series ->
-            val today = OccurrenceLifecycle.todayIn(series.zoneId, now)
-            val change = OccurrenceLifecycle.advance(
-                series,
-                occurrences[series.id].orEmpty(),
-                now,
-                today,
-            )
-            change.cancelAlarmsOf.forEach { scheduler.cancel(it) }
-            change.upserts.forEach { occ ->
-                occurrenceDao.upsert(occ.toEntity())
-            }
-            spawnUpcomingPreview(series, today)
+            applyLifecycle(series, now)
         }
         occurrenceDao.getAll().map { it.toDomain() }
             .filter { it.status == OccurrenceStatus.PENDING }
@@ -239,6 +252,17 @@ class TaskRepository(
                 )
                 occurrenceDao.upsert(occ.copy(inexactAlarm = scheduled.inexact).toEntity())
             }
+    }
+
+    private suspend fun applyLifecycle(series: TaskSeries, now: Instant) {
+        val today = OccurrenceLifecycle.todayIn(series.zoneId, now)
+        val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
+        val change = OccurrenceLifecycle.advance(series, existing, now, today)
+        change.cancelAlarmsOf.forEach { scheduler.cancel(it) }
+        change.upserts.forEach { occ ->
+            occurrenceDao.upsert(occ.toEntity())
+        }
+        spawnUpcomingPreview(series, today)
     }
 
     private suspend fun spawnNextIfNeeded(series: TaskSeries, completedDate: java.time.LocalDate, now: Instant) {
@@ -273,4 +297,10 @@ data class SaveResult(
 data class SchedulerOutcome(
     val inexact: Boolean,
     val scheduled: Boolean,
+)
+
+data class AlarmFireResult(
+    val notify: Boolean,
+    val title: String = "",
+    val seriesId: String = "",
 )

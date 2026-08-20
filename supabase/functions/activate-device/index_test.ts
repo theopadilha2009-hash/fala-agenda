@@ -55,6 +55,56 @@ Deno.test("activate-device troca código válido por token via RPC atômico", as
   assertEquals(body.token.length >= 32, true);
 });
 
+Deno.test("activate-device segundo código simultâneo perde a corrida", async () => {
+  let calls = 0;
+  const res = await activateDevice(
+    new Request("http://local/activate-device", {
+      method: "POST",
+      body: JSON.stringify({ code: "RACECODE1234" }),
+    }),
+    {
+      pepper: "",
+      db: {
+        url: "https://example.supabase.co",
+        serviceKey: "s",
+        fetch: async () => {
+          calls += 1;
+          return jsonResponse(null);
+        },
+      },
+    },
+  );
+  assertEquals(res.status, 400);
+  assertEquals(calls, 1);
+});
+
+Deno.test("activate-device replay de código usado é recusado", async () => {
+  let used = false;
+  const run = () =>
+    activateDevice(
+      new Request("http://local/activate-device", {
+        method: "POST",
+        body: JSON.stringify({ code: "REPLAYCODE123" }),
+      }),
+      {
+        pepper: "",
+        db: {
+          url: "https://example.supabase.co",
+          serviceKey: "s",
+          fetch: async () => {
+            if (used) return jsonResponse(null);
+            used = true;
+            return jsonResponse("inst-1");
+          },
+        },
+      },
+    );
+  const first = await run();
+  const second = await run();
+  assertEquals(first.status, 200);
+  assertEquals(second.status, 400);
+});
+
 Deno.test("activate-device rejeita código já consumido", async () => {
   const res = await activateDevice(
     new Request("http://local/activate-device", {

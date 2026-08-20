@@ -29,7 +29,10 @@ data class AgendaSections(
     val upcoming: List<AgendaItem>,
     val completed: List<AgendaItem>,
     val missed: List<AgendaItem>,
-)
+) {
+    fun find(occurrenceId: String): AgendaItem? =
+        (today + upcoming + completed + missed).firstOrNull { it.occurrence.id == occurrenceId }
+}
 
 class TaskRepository(
     private val seriesDao: SeriesDao,

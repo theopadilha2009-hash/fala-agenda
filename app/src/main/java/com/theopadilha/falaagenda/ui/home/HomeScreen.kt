@@ -57,11 +57,11 @@ import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
+import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
 import kotlinx.coroutines.launch
-import java.time.format.DateTimeFormatter
-import java.util.Locale
+import java.time.LocalDate
 
 @Composable
 fun HomeScreen(
@@ -72,6 +72,8 @@ fun HomeScreen(
     onEditItem: (AgendaItem) -> Unit,
     statusMessage: String? = null,
     onStatusConsumed: () -> Unit = {},
+    openOccurrenceId: String? = null,
+    onOpenOccurrenceConsumed: () -> Unit = {},
 ) {
     val agenda by viewModel.agenda.collectAsState()
     val voiceUi by voice.ui.collectAsState()
@@ -97,7 +99,8 @@ fun HomeScreen(
     }
 
     LaunchedEffect(voiceUi.finalText) {
-        val text = voiceUi.finalText ?: return@LaunchedEffect
+        val text = voiceUi.finalText?.trim().orEmpty()
+        if (text.isEmpty()) return@LaunchedEffect
         voice.consumeFinal()
         val draft = viewModel.parse(text)
         onDraftReady(draft)
@@ -113,6 +116,15 @@ fun HomeScreen(
         val message = statusMessage ?: return@LaunchedEffect
         snackbar.showSnackbar(message)
         onStatusConsumed()
+    }
+
+    LaunchedEffect(openOccurrenceId, agenda) {
+        val id = openOccurrenceId ?: return@LaunchedEffect
+        val item = agenda.find(id)
+        if (item != null) {
+            selected = item
+            onOpenOccurrenceConsumed()
+        }
     }
 
     Scaffold(
@@ -210,7 +222,13 @@ fun HomeScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val text = writeText
+                        val text = writeText.trim()
+                        if (text.isBlank()) {
+                            scope.launch {
+                                snackbar.showSnackbar("Escreva o recado, por exemplo: tomar o remédio amanhã às 9h")
+                            }
+                            return@TextButton
+                        }
                         writing = false
                         writeText = ""
                         scope.launch { onDraftReady(viewModel.parse(text)) }
@@ -232,7 +250,7 @@ fun HomeScreen(
             title = { Text(item.series.title) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("${item.occurrence.localDate} às ${item.series.localTime}")
+                    Text("${AgendaFormat.longDate(item.occurrence.localDate)} às ${AgendaFormat.time(item.series.localTime)}")
                     Text(item.series.recurrence.describePtBr())
                     TextButton(
                         onClick = {
@@ -355,9 +373,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
         }
     } else {
         items(items, key = { it.occurrence.id }) { item ->
-            val locale = Locale.forLanguageTag("pt-BR")
-            val time = item.series.localTime.format(DateTimeFormatter.ofPattern("HH:mm", locale))
-            val date = item.occurrence.localDate.format(DateTimeFormatter.ofPattern("dd/MM", locale))
+            val today = LocalDate.now()
+            val date = AgendaFormat.dateLabel(item.occurrence.localDate, today)
+            val time = AgendaFormat.time(item.series.localTime)
             QuietCard(
                 onClick = { onClick(item) },
                 modifier = Modifier.semantics {

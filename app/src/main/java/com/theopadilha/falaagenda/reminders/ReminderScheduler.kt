@@ -43,11 +43,8 @@ class ReminderScheduler(
         )
         val showIntent = PendingIntent.getActivity(
             context,
-            AlarmIds.requestCode(occurrence.id, "open"),
-            Intent(context, com.theopadilha.falaagenda.MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(AlarmIds.EXTRA_OCCURRENCE_ID, occurrence.id)
-            },
+            AlarmIds.requestCode(occurrence.id, AlarmIds.ACTION_OPEN),
+            AlarmIds.openIntent(context, occurrence.id),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val millis = fireAt.toEpochMilli()

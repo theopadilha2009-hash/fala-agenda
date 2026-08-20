@@ -38,6 +38,8 @@ class ConfirmScreenInstrumentedTest {
             }
         }
         composeRule.onNodeWithText("Confira antes de salvar").assertIsDisplayed()
+        composeRule.onNodeWithText("Toque para escolher a data").assertIsDisplayed()
+        composeRule.onNodeWithText("Toque para escolher o horário").assertIsDisplayed()
         composeRule.onNodeWithText("Falta preencher: o que precisa ser feito, a data, o horário.", substring = true)
             .assertIsDisplayed()
     }

@@ -30,7 +30,10 @@ class VoiceCaptureController(private val context: Context) {
 
     fun start() {
         if (!available()) {
-            _ui.value = VoiceUiState(state = VoiceState.ERROR, error = "unavailable")
+            _ui.value = VoiceUiState(
+                state = VoiceState.ERROR,
+                error = "A fala não está disponível neste aparelho. Use o botão Escrever tarefa.",
+            )
             return
         }
         stopInternal()

@@ -166,6 +166,16 @@ class TaskRepository(
         )
         seriesDao.upsert(updatedSeries.toEntity())
         val refreshed = OccurrenceLifecycle.materialize(updatedSeries, date, now)
+        if (refreshed.scheduledAt.isBefore(now) && !updatedSeries.recurrence.isRecurring) {
+            occurrenceDao.upsert(
+                refreshed.copy(
+                    status = OccurrenceStatus.MISSED,
+                    missedAt = now,
+                    nextReminderAt = null,
+                ).toEntity(),
+            )
+            return
+        }
         val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
         occurrenceDao.upsert(refreshed.copy(inexactAlarm = scheduled.inexact).toEntity())
         spawnUpcomingPreview(updatedSeries, date)

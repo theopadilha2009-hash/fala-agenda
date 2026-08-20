@@ -115,6 +115,21 @@ class TaskRepositoryTest {
     }
 
     @Test
+    fun editParaHorarioPassadoViraNaoRealizada() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Consulta", LocalDate.of(2026, 8, 22), LocalTime.of(14, 0)))
+        repo.editOccurrence(
+            saved.occurrence.id,
+            "Consulta",
+            LocalDate.of(2026, 8, 19),
+            LocalTime.of(9, 0),
+            RecurrenceRule(),
+        )
+        val row = occurrenceDao.getAll().single()
+        assertThat(row.status).isEqualTo(OccurrenceStatus.MISSED.name)
+        assertThat(row.nextReminderAtEpochMs).isNull()
+    }
+
+    @Test
     fun deleteCancelaAlarme() = runBlocking {
         val saved = repo.saveDraft(completeDraft("Consulta", LocalDate.of(2026, 8, 22), LocalTime.of(10, 0)))
         repo.deleteOccurrence(saved.occurrence.id)

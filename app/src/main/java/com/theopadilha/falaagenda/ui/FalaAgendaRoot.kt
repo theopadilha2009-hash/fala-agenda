@@ -108,9 +108,10 @@ fun FalaAgendaRoot(container: AppContainer) {
         }
         composable("confirm") {
             val current = draft
-            if (current == null) {
-                nav.popBackStack()
-            } else {
+            LaunchedEffect(current) {
+                if (current == null) nav.popBackStack()
+            }
+            if (current != null) {
                 ConfirmDraftScreen(
                     initial = current,
                     saving = busy,

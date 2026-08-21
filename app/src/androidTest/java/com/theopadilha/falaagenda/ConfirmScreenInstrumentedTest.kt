@@ -46,4 +46,31 @@ class ConfirmScreenInstrumentedTest {
         composeRule.onNodeWithText("Todo dia").assertIsDisplayed()
         composeRule.onNodeWithText("Toda semana").assertIsDisplayed()
     }
+
+    @Test
+    fun confirmacaoRapidaMostraSalvarEMudar() {
+        composeRule.setContent {
+            FalaAgendaTheme {
+                com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog(
+                    draft = ParsedTaskDraft(
+                        title = "Tomar remédio",
+                        localDate = java.time.LocalDate.of(2026, 8, 21),
+                        localTime = java.time.LocalTime.of(8, 0),
+                        confidence = 1.0,
+                        missingFields = emptySet(),
+                        ambiguous = false,
+                        transcript = "tomar remédio amanhã às 8h",
+                    ),
+                    saving = false,
+                    onSave = {},
+                    onEdit = {},
+                    onCancel = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("Pode salvar?").assertIsDisplayed()
+        composeRule.onNodeWithText("Tomar remédio").assertIsDisplayed()
+        composeRule.onNodeWithText("Salvar").assertIsDisplayed()
+        composeRule.onNodeWithText("Mudar").assertIsDisplayed()
+    }
 }

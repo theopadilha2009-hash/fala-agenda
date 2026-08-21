@@ -33,6 +33,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
@@ -59,6 +61,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.data.repo.AgendaItem
@@ -67,12 +70,14 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
+import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 
 @Composable
 fun HomeScreen(
@@ -111,6 +116,14 @@ fun HomeScreen(
     var writing by remember { mutableStateOf(false) }
     var writeText by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<AgendaItem?>(null) }
+    var quickDraft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
+    val handleDraft: (ParsedTaskDraft) -> Unit = { draft ->
+        if (draft.canQuickConfirm(Instant.now(), ZoneId.systemDefault())) {
+            quickDraft = draft
+        } else {
+            onDraftReady(draft)
+        }
+    }
 
     DisposableEffect(voice) {
         onDispose { voice.cancel() }
@@ -129,7 +142,7 @@ fun HomeScreen(
         if (text.isEmpty()) return@LaunchedEffect
         voice.consumeFinal()
         val draft = viewModel.parse(text)
-        onDraftReady(draft)
+        handleDraft(draft)
     }
 
     LaunchedEffect(inexact) {
@@ -215,10 +228,10 @@ fun HomeScreen(
                         }
                     }
                 }
-                if (voiceUi.state == VoiceState.IDLE) {
+                if (voiceUi.state == VoiceState.IDLE && agenda.today.isEmpty() && agenda.upcoming.isEmpty()) {
                     item {
                         ExamplePhrases { phrase ->
-                            scope.launch { onDraftReady(viewModel.parse(phrase)) }
+                            scope.launch { handleDraft(viewModel.parse(phrase)) }
                         }
                     }
                 }
@@ -251,6 +264,11 @@ fun HomeScreen(
                     showWhenEmpty = true,
                     onClick = { selected = it },
                     onComplete = completeWithUndo,
+                    onSnoozeQuick = { item ->
+                        viewModel.snooze(item.occurrence.id, 10) { message ->
+                            scope.launch { snackbar.showSnackbar(message) }
+                        }
+                    },
                 )
                 section(
                     "Próximas",
@@ -259,12 +277,22 @@ fun HomeScreen(
                     showWhenEmpty = false,
                     onClick = { selected = it },
                     onComplete = completeWithUndo,
+                    onSnoozeQuick = { item ->
+                        viewModel.snooze(item.occurrence.id, 10) { message ->
+                            scope.launch { snackbar.showSnackbar(message) }
+                        }
+                    },
                 )
                 section(
                     "Concluídas",
                     agenda.completed,
                     empty = "Nenhuma concluída ainda.",
                     showWhenEmpty = false,
+                    onRepeat = { item ->
+                        viewModel.repeatTomorrow(item) { message ->
+                            scope.launch { snackbar.showSnackbar(message) }
+                        }
+                    },
                     onClick = { selected = it },
                 )
                 section(
@@ -285,6 +313,18 @@ fun HomeScreen(
     }
 
     if (writing) {
+        val submitWrite: () -> Unit = {
+            val text = writeText.trim()
+            if (text.isBlank()) {
+                scope.launch {
+                    snackbar.showSnackbar("Escreva o recado, por exemplo: tomar o remédio amanhã às 9h")
+                }
+            } else {
+                writing = false
+                writeText = ""
+                scope.launch { handleDraft(viewModel.parse(text)) }
+            }
+        }
         AlertDialog(
             onDismissRequest = { writing = false },
             title = { Text("Escrever tarefa") },
@@ -294,22 +334,14 @@ fun HomeScreen(
                     onValueChange = { writeText = it },
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = { Text("Ex.: tomar remédio amanhã às 9h") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submitWrite() }),
                 )
             },
             confirmButton = {
                 TextButton(
-                    onClick = {
-                        val text = writeText.trim()
-                        if (text.isBlank()) {
-                            scope.launch {
-                                snackbar.showSnackbar("Escreva o recado, por exemplo: tomar o remédio amanhã às 9h")
-                            }
-                            return@TextButton
-                        }
-                        writing = false
-                        writeText = ""
-                        scope.launch { onDraftReady(viewModel.parse(text)) }
-                    },
+                    onClick = submitWrite,
                     modifier = Modifier.height(48.dp),
                 ) { Text("Continuar") }
             },
@@ -367,6 +399,22 @@ fun HomeScreen(
                                 .height(48.dp),
                         ) { Text("Fazer hoje") }
                     }
+                    if (item.occurrence.status == OccurrenceStatus.COMPLETED &&
+                        !item.series.recurrence.isRecurring
+                    ) {
+                        TextButton(
+                            onClick = {
+                                val current = item
+                                selected = null
+                                viewModel.repeatTomorrow(current) { message ->
+                                    scope.launch { snackbar.showSnackbar(message) }
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                        ) { Text("Amanhã de novo") }
+                    }
                     TextButton(
                         onClick = {
                             val current = item
@@ -417,6 +465,32 @@ fun HomeScreen(
                     modifier = Modifier.height(48.dp),
                 ) { Text("Fechar") }
             },
+        )
+    }
+
+    quickDraft?.let { draft ->
+        QuickConfirmDialog(
+            draft = draft,
+            saving = busy,
+            onSave = { confirmed ->
+                viewModel.saveDraft(confirmed, onDone = { usedInexact ->
+                    quickDraft = null
+                    val date = confirmed.localDate
+                    val time = confirmed.localTime
+                    val message = if (date != null && time != null) {
+                        AgendaFormat.announce(date, time, LocalDate.now())
+                    } else {
+                        "Tarefa salva."
+                    }
+                    scope.launch { snackbar.showSnackbar(message) }
+                    viewModel.setInexactWarning(usedInexact)
+                })
+            },
+            onEdit = { current ->
+                quickDraft = null
+                onDraftReady(current)
+            },
+            onCancel = { quickDraft = null },
         )
     }
 }
@@ -520,6 +594,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     emphasize: Boolean = false,
     onComplete: ((AgendaItem) -> Unit)? = null,
     onRetry: ((AgendaItem) -> Unit)? = null,
+    onSnoozeQuick: ((AgendaItem) -> Unit)? = null,
+    onRepeat: ((AgendaItem) -> Unit)? = null,
     onClick: (AgendaItem) -> Unit,
 ) {
     if (items.isEmpty() && !showWhenEmpty) return
@@ -577,20 +653,37 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                         )
                         Text(detail)
                     }
-                    if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
-                        TextButton(
-                            onClick = { onComplete(item) },
-                            modifier = Modifier.height(48.dp),
-                        ) { Text("Concluir") }
-                    }
-                    if (onRetry != null &&
-                        item.occurrence.status == OccurrenceStatus.MISSED &&
-                        !item.series.recurrence.isRecurring
-                    ) {
-                        TextButton(
-                            onClick = { onRetry(item) },
-                            modifier = Modifier.height(48.dp),
-                        ) { Text("Fazer hoje") }
+                    Column(horizontalAlignment = Alignment.End) {
+                        if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
+                            TextButton(
+                                onClick = { onComplete(item) },
+                                modifier = Modifier.height(48.dp),
+                            ) { Text("Concluir") }
+                        }
+                        if (onSnoozeQuick != null && item.occurrence.status == OccurrenceStatus.PENDING) {
+                            TextButton(
+                                onClick = { onSnoozeQuick(item) },
+                                modifier = Modifier.height(48.dp),
+                            ) { Text("10 min") }
+                        }
+                        if (onRetry != null &&
+                            item.occurrence.status == OccurrenceStatus.MISSED &&
+                            !item.series.recurrence.isRecurring
+                        ) {
+                            TextButton(
+                                onClick = { onRetry(item) },
+                                modifier = Modifier.height(48.dp),
+                            ) { Text("Fazer hoje") }
+                        }
+                        if (onRepeat != null &&
+                            item.occurrence.status == OccurrenceStatus.COMPLETED &&
+                            !item.series.recurrence.isRecurring
+                        ) {
+                            TextButton(
+                                onClick = { onRepeat(item) },
+                                modifier = Modifier.height(48.dp),
+                            ) { Text("Amanhã") }
+                        }
                     }
                 }
             }

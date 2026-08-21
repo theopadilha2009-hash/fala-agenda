@@ -14,19 +14,24 @@ import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
     private val openOccurrenceId = MutableStateFlow<String?>(null)
+    private val startSpeak = MutableStateFlow(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         openOccurrenceId.value = intent.occurrenceId()
+        startSpeak.value = intent.wantsSpeak()
         val app = application as FalaAgendaApplication
         setContent {
             val occurrenceId by openOccurrenceId.collectAsState()
+            val speak by startSpeak.collectAsState()
             FalaAgendaTheme {
                 FalaAgendaRoot(
                     container = app.container,
                     openOccurrenceId = occurrenceId,
                     onOpenOccurrenceConsumed = { openOccurrenceId.value = null },
+                    startSpeak = speak,
+                    onStartSpeakConsumed = { startSpeak.value = false },
                 )
             }
         }
@@ -36,6 +41,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         openOccurrenceId.value = intent.occurrenceId()
+        startSpeak.value = intent.wantsSpeak()
     }
 
     override fun onStop() {
@@ -45,3 +51,9 @@ class MainActivity : ComponentActivity() {
 }
 
 private fun Intent.occurrenceId(): String? = getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID)
+
+private fun Intent.wantsSpeak(): Boolean =
+    action == ACTION_SPEAK || getBooleanExtra(EXTRA_SPEAK, false)
+
+const val ACTION_SPEAK = "com.theopadilha.falaagenda.SPEAK"
+const val EXTRA_SPEAK = "speak"

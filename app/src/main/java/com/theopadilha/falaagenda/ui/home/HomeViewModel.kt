@@ -7,6 +7,7 @@ import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.reminder.QuickRemind
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -106,6 +107,19 @@ class HomeViewModel(
         withContext(Dispatchers.IO) {
             container.tasks.editOccurrence(id, title, date, time, recurrence)
         }
+    }
+
+    fun quickRemind(title: String, minutes: Long, onDone: (String) -> Unit = {}) {
+        val now = java.time.ZonedDateTime.now()
+        val draft = QuickRemind.draft(title, minutes, now)
+        if (!draft.isComplete) {
+            onDone("Escreva o que precisa lembrar.")
+            return
+        }
+        saveDraft(draft, onDone = { usedInexact ->
+            setInexactWarning(usedInexact)
+            onDone(AgendaFormat.announce(draft.localDate!!, draft.localTime!!, LocalDate.now()))
+        })
     }
 
     fun repeatTomorrow(item: AgendaItem, onDone: (String) -> Unit = {}) {

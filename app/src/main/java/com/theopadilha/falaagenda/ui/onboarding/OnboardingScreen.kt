@@ -53,7 +53,7 @@ fun OnboardingScreen(
     val pages = listOf(
         Triple(
             "Bem-vinda ao Fala Agenda",
-            "Você fala o que precisa lembrar. Nós anotamos neste aparelho e avisamos na hora. Nada de tarefa vai para a nuvem.",
+            "Você fala o que precisa lembrar. O microfone fica sempre embaixo da tela. Nós anotamos neste aparelho e avisamos na hora. Nada de tarefa vai para a nuvem.",
             "Começar",
         ),
         Triple(

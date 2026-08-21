@@ -14,11 +14,11 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -72,7 +72,6 @@ import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.QuietCard
-import com.theopadilha.falaagenda.ui.components.SecondaryButton
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -83,6 +82,8 @@ import java.time.ZoneId
 fun HomeScreen(
     viewModel: HomeViewModel,
     voice: VoiceCaptureController,
+    startSpeak: Boolean = false,
+    onStartSpeakConsumed: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
@@ -117,6 +118,8 @@ fun HomeScreen(
     var writeText by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<AgendaItem?>(null) }
     var quickDraft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
+    var quickMinutes by remember { mutableStateOf<Long?>(null) }
+    var quickTitle by remember { mutableStateOf("") }
     val handleDraft: (ParsedTaskDraft) -> Unit = { draft ->
         if (draft.canQuickConfirm(Instant.now(), ZoneId.systemDefault())) {
             quickDraft = draft
@@ -135,6 +138,21 @@ fun HomeScreen(
         if (granted) voice.start() else {
             scope.launch { snackbar.showSnackbar("Preciso do microfone só enquanto você fala.") }
         }
+    }
+
+    val onMic: () -> Unit = {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        if (voiceUi.state == VoiceState.LISTENING || voiceUi.state == VoiceState.UNDERSTANDING) {
+            voice.cancel()
+        } else {
+            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    LaunchedEffect(startSpeak) {
+        if (!startSpeak) return@LaunchedEffect
+        onStartSpeakConsumed()
+        micLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     LaunchedEffect(voiceUi.finalText) {
@@ -169,6 +187,19 @@ fun HomeScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
+        bottomBar = {
+            MicDock(
+                state = voiceUi.state,
+                partial = voiceUi.partial,
+                error = voiceUi.error,
+                onMic = onMic,
+                onWrite = { writing = true },
+                onQuick = { minutes ->
+                    quickMinutes = minutes
+                    quickTitle = ""
+                },
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -218,25 +249,12 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                item {
-                    VoicePanel(voiceUi.state, voiceUi.partial, voiceUi.error) {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        if (voiceUi.state == VoiceState.LISTENING || voiceUi.state == VoiceState.UNDERSTANDING) {
-                            voice.cancel()
-                        } else {
-                            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    }
-                }
-                if (voiceUi.state == VoiceState.IDLE && agenda.today.isEmpty() && agenda.upcoming.isEmpty()) {
+                if (agenda.today.isEmpty() && agenda.upcoming.isEmpty()) {
                     item {
                         ExamplePhrases { phrase ->
                             scope.launch { handleDraft(viewModel.parse(phrase)) }
                         }
                     }
-                }
-                item {
-                    SecondaryButton("Escrever tarefa") { writing = true }
                 }
                 if (inexact) {
                     item {
@@ -260,7 +278,7 @@ fun HomeScreen(
                 section(
                     "Hoje",
                     agenda.today,
-                    empty = "Nada para hoje. Toque no microfone para falar um recado.",
+                    empty = "Nada para hoje. Toque no microfone embaixo e fale o recado.",
                     showWhenEmpty = true,
                     onClick = { selected = it },
                     onComplete = completeWithUndo,
@@ -347,6 +365,49 @@ fun HomeScreen(
             },
             dismissButton = {
                 TextButton(onClick = { writing = false }, modifier = Modifier.height(48.dp)) {
+                    Text("Cancelar")
+                }
+            },
+        )
+    }
+
+    quickMinutes?.let { minutes ->
+        val label = if (minutes == 60L) "1 hora" else "$minutes min"
+        val submitQuick: () -> Unit = {
+            val title = quickTitle.trim()
+            if (title.isBlank()) {
+                scope.launch { snackbar.showSnackbar("Escreva o que precisa lembrar.") }
+            } else {
+                val mins = minutes
+                quickMinutes = null
+                quickTitle = ""
+                viewModel.quickRemind(title, mins) { message ->
+                    scope.launch { snackbar.showSnackbar(message) }
+                }
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { quickMinutes = null },
+            title = { Text("Daqui $label") },
+            text = {
+                OutlinedTextField(
+                    value = quickTitle,
+                    onValueChange = { quickTitle = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("O que precisa ser feito") },
+                    placeholder = { Text("Ex.: tomar água") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submitQuick() }),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = submitQuick, modifier = Modifier.height(48.dp)) {
+                    Text("Salvar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { quickMinutes = null }, modifier = Modifier.height(48.dp)) {
                     Text("Cancelar")
                 }
             },
@@ -495,24 +556,47 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun VoicePanel(state: VoiceState, partial: String, error: String?, onMic: () -> Unit) {
+private fun MicDock(
+    state: VoiceState,
+    partial: String,
+    error: String?,
+    onMic: () -> Unit,
+    onWrite: () -> Unit,
+    onQuick: (Long) -> Unit,
+) {
     val label = when (state) {
-        VoiceState.LISTENING -> "Ouvindo…"
+        VoiceState.LISTENING -> "Ouvindo… pode falar"
         VoiceState.UNDERSTANDING -> "Entendendo…"
         VoiceState.ERROR -> error ?: "Não consegui ouvir"
-        VoiceState.IDLE -> "Toque para falar uma tarefa"
+        VoiceState.IDLE -> "Toque no microfone e fale"
     }
     val action = when (state) {
         VoiceState.LISTENING, VoiceState.UNDERSTANDING -> "Parar de ouvir"
         VoiceState.ERROR -> "Tentar de novo. $label"
         VoiceState.IDLE -> "Falar uma tarefa"
     }
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .navigationBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+        if (state == VoiceState.ERROR) {
+            Text("Toque de novo, ou escreva o recado.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+        }
+        if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
+            Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+        }
         IconButton(
             onClick = onMic,
             modifier = Modifier
-                .size(96.dp)
+                .size(88.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.primary)
                 .semantics { contentDescription = action },
@@ -524,13 +608,23 @@ private fun VoicePanel(state: VoiceState, partial: String, error: String?, onMic
                 modifier = Modifier.size(40.dp),
             )
         }
-        Spacer(Modifier.height(12.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-        if (state == VoiceState.ERROR) {
-            Text("Toque de novo para tentar, ou escreva a tarefa.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-        }
-        if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
-            Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+        if (state == VoiceState.IDLE) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                listOf(5L to "5 min", 15L to "15 min", 60L to "1 hora").forEach { (minutes, chip) ->
+                    FilterChip(
+                        selected = false,
+                        onClick = { onQuick(minutes) },
+                        label = { Text(chip) },
+                    )
+                }
+            }
+            TextButton(onClick = onWrite, modifier = Modifier.height(48.dp)) {
+                Text("Escrever tarefa")
+            }
         }
     }
 }

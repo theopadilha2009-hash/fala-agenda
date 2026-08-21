@@ -6,8 +6,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.reminders.AlarmIds
 import com.theopadilha.falaagenda.ui.FalaAgendaRoot
 import com.theopadilha.falaagenda.ui.theme.FalaAgendaTheme
@@ -27,7 +29,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             val occurrenceId by openOccurrenceId.collectAsState()
             val speak by startSpeak.collectAsState()
-            FalaAgendaTheme {
+            val themeMode by app.container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (themeMode) {
+                ThemeMode.SYSTEM -> systemDark
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+            FalaAgendaTheme(darkTheme = dark) {
                 FalaAgendaRoot(
                     container = app.container,
                     openOccurrenceId = occurrenceId,

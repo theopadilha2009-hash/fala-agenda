@@ -103,9 +103,10 @@ class HomeViewModel(
         date: LocalDate,
         time: LocalTime,
         recurrence: RecurrenceRule,
+        amountCents: Long? = null,
     ) = viewModelScope.launch {
         withContext(Dispatchers.IO) {
-            container.tasks.editOccurrence(id, title, date, time, recurrence)
+            container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents)
         }
     }
 

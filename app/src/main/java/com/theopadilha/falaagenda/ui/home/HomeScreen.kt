@@ -23,14 +23,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
@@ -61,28 +64,39 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.data.repo.AgendaItem
+import com.theopadilha.falaagenda.domain.insight.Money
+import com.theopadilha.falaagenda.domain.insight.MonthInsights
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
+import com.theopadilha.falaagenda.platform.DeviceIntents
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
+import com.theopadilha.falaagenda.ui.month.insightRows
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.YearMonth
 import java.time.ZoneId
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
     voice: VoiceCaptureController,
     startSpeak: Boolean = false,
     onStartSpeakConsumed: () -> Unit = {},
+    themeMode: ThemeMode,
+    onThemeMode: (ThemeMode) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenMonth: () -> Unit,
+    onOpenUpdate: () -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
     statusMessage: String? = null,
@@ -98,6 +112,15 @@ fun HomeScreen(
     val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    var widgetHelp by remember { mutableStateOf(false) }
+    val batteryOk = DeviceIntents.isBatteryUnrestricted(context)
+    val closeAnd: (() -> Unit) -> Unit = { action ->
+        scope.launch {
+            drawerState.close()
+            action()
+        }
+    }
     val completeWithUndo: (AgendaItem) -> Unit = { item ->
         viewModel.complete(item) {
             scope.launch {
@@ -140,7 +163,10 @@ fun HomeScreen(
 
     val onMic: () -> Unit = {
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        if (voiceUi.state == VoiceState.LISTENING || voiceUi.state == VoiceState.UNDERSTANDING) {
+        if (voiceUi.state == VoiceState.PREPARING ||
+            voiceUi.state == VoiceState.LISTENING ||
+            voiceUi.state == VoiceState.UNDERSTANDING
+        ) {
             voice.cancel()
         } else {
             micLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -182,6 +208,29 @@ fun HomeScreen(
         }
     }
 
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            HomeDrawerSheet(
+                themeMode = themeMode,
+                batteryOk = batteryOk,
+                onMonth = { closeAnd(onOpenMonth) },
+                onUpdate = { closeAnd(onOpenUpdate) },
+                onShare = {
+                    closeAnd {
+                        runCatching { context.startActivity(DeviceIntents.shareApp(context)) }
+                            .onFailure { context.startActivity(DeviceIntents.shareLink()) }
+                    }
+                },
+                onBattery = {
+                    closeAnd { context.startActivity(DeviceIntents.batterySettings(context)) }
+                },
+                onWidget = { closeAnd { widgetHelp = true } },
+                onSettings = { closeAnd(onOpenSettings) },
+                onThemeMode = onThemeMode,
+            )
+        },
+    ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -230,10 +279,10 @@ fun HomeScreen(
                     CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                 }
                 IconButton(
-                    onClick = onOpenSettings,
+                    onClick = { scope.launch { drawerState.open() } },
                     modifier = Modifier.size(48.dp),
                 ) {
-                    Icon(Icons.Outlined.Settings, contentDescription = "Configurações")
+                    Icon(Icons.Outlined.Menu, contentDescription = "Menu")
                 }
             }
 
@@ -268,6 +317,38 @@ fun HomeScreen(
                                     }
                                     viewModel.setInexactWarning(false)
                                 }) { Text("Abrir ajustes de alarme") }
+                            }
+                        }
+                    }
+                }
+                item {
+                    val today = LocalDate.now()
+                    val recapMonth = when {
+                        today.dayOfMonth <= 3 -> YearMonth.from(today).minusMonths(1)
+                        today.dayOfMonth >= today.lengthOfMonth() - 1 -> YearMonth.from(today)
+                        else -> null
+                    }
+                    if (recapMonth != null) {
+                        val insight = MonthInsights.of(agenda.insightRows(), recapMonth)
+                        if (insight.completed > 0 || insight.missed > 0) {
+                            QuietCard(onClick = onOpenMonth) {
+                                Column(
+                                    Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        "Resumo de ${insight.monthLabel()}",
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Text(
+                                        buildString {
+                                            append("${insight.completed} feitas")
+                                            if (insight.missed > 0) append(" · ${insight.missed} não realizadas")
+                                            if (insight.spentCents > 0) append(" · ${insight.spentLabel()}")
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
                             }
                         }
                     }
@@ -325,6 +406,22 @@ fun HomeScreen(
                 )
             }
         }
+    }
+    }
+
+    if (widgetHelp) {
+        AlertDialog(
+            onDismissRequest = { widgetHelp = false },
+            title = { Text("Widget da agenda") },
+            text = {
+                Text("Na tela inicial do celular, segure um espaço vazio, escolha Widgets e acrescente Fala Agenda. Aparece a próxima tarefa e o botão Falar.")
+            },
+            confirmButton = {
+                TextButton(onClick = { widgetHelp = false }, modifier = Modifier.height(48.dp)) {
+                    Text("Entendi")
+                }
+            },
+        )
     }
 
     if (writing) {
@@ -419,6 +516,9 @@ fun HomeScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("${AgendaFormat.longDate(item.occurrence.localDate)} às ${AgendaFormat.time(item.series.localTime)}")
                     Text(item.series.recurrence.describePtBr())
+                    item.series.amountCents?.let { cents ->
+                        Text(Money.formatReais(cents))
+                    }
                     if (item.occurrence.status == OccurrenceStatus.PENDING ||
                         item.occurrence.status == OccurrenceStatus.MISSED
                     ) {
@@ -564,13 +664,14 @@ private fun MicDock(
     onQuick: (Long) -> Unit,
 ) {
     val label = when (state) {
-        VoiceState.LISTENING -> "Ouvindo… pode falar"
+        VoiceState.PREPARING -> "Espera um instante…"
+        VoiceState.LISTENING -> "Pode falar agora"
         VoiceState.UNDERSTANDING -> "Entendendo…"
         VoiceState.ERROR -> error ?: "Não consegui ouvir"
         VoiceState.IDLE -> "Toque no microfone e fale"
     }
     val action = when (state) {
-        VoiceState.LISTENING, VoiceState.UNDERSTANDING -> "Parar de ouvir"
+        VoiceState.PREPARING, VoiceState.LISTENING, VoiceState.UNDERSTANDING -> "Parar de ouvir"
         VoiceState.ERROR -> "Tentar de novo. $label"
         VoiceState.IDLE -> "Falar uma tarefa"
     }
@@ -677,6 +778,10 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                 } else {
                     append(" · ")
                     append(item.series.recurrence.describePtBr())
+                }
+                item.series.amountCents?.let { cents ->
+                    append(" · ")
+                    append(Money.formatReais(cents))
                 }
             }
             QuietCard(

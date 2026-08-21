@@ -14,21 +14,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.theopadilha.falaagenda.R
 
-val OffWhite = Color(0xFFF7F5F0)
-val DeepGreen = Color(0xFF16382B)
+val OffWhite = Color(0xFFF4F1E8)
+val DeepGreen = Color(0xFF2F6B52)
 val CardWhite = Color(0xFFFFFFFF)
 val Ink = Color(0xFF1A1A18)
 val Muted = Color(0xFF5E5C56)
 val Line = Color(0xFFE4DFD4)
 val Missed = Color(0xFF8B3A2F)
-val SoftGreen = Color(0xFFE7F0EB)
+val SoftGreen = Color(0xFFE3F2EA)
 
-private val NightBg = Color(0xFF121412)
-private val NightSurface = Color(0xFF1C211E)
+private val NightBg = Color(0xFF1A221E)
+private val NightSurface = Color(0xFF24302B)
 private val NightInk = Color(0xFFF4F1EA)
 private val NightMuted = Color(0xFFC2C0B8)
-private val NightLine = Color(0xFF2E3531)
-private val NightPrimary = Color(0xFFB7D2C4)
+private val NightLine = Color(0xFF3A4742)
+private val NightPrimary = Color(0xFF8FCBB0)
 private val NightMissed = Color(0xFFE08B7A)
 
 val FigtreeFamily = FontFamily(

@@ -16,6 +16,7 @@ import com.theopadilha.falaagenda.domain.parser.LocalTaskParser
 import com.theopadilha.falaagenda.domain.parser.NetworkStatus
 import com.theopadilha.falaagenda.domain.time.AppClock
 import com.theopadilha.falaagenda.domain.time.SystemAppClock
+import com.theopadilha.falaagenda.platform.AppUpdater
 import com.theopadilha.falaagenda.reminders.ReminderScheduler
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 
@@ -54,4 +55,5 @@ class AppContainer(
     )
     val activation = ActivationClient(supabase)
     val voice = VoiceCaptureController(appContext)
+    val updater = AppUpdater(appContext)
 }

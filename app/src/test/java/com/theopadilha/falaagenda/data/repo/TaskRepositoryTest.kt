@@ -48,6 +48,15 @@ class TaskRepositoryTest {
     }
 
     @Test
+    fun saveDraftGuardaValor() = runBlocking {
+        val draft = completeDraft("Cabelo", LocalDate.of(2026, 8, 22), LocalTime.of(10, 0))
+            .copy(amountCents = 8000)
+        val saved = repo.saveDraft(draft)
+        assertThat(saved.series.amountCents).isEqualTo(8000)
+        assertThat(seriesDao.get(saved.series.id)?.amountCents).isEqualTo(8000)
+    }
+
+    @Test
     fun pastUniqueBecomesMissed() = runBlocking {
         val draft = completeDraft("Já passou", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0))
         val saved = repo.saveDraft(draft)

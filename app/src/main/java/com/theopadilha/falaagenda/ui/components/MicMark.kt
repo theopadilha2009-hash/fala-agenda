@@ -42,7 +42,7 @@ fun PulsingMic(
     onClick: (() -> Unit)? = null,
 ) {
     val listening = state == VoiceState.LISTENING
-    val idle = state == VoiceState.IDLE
+    val idle = state == VoiceState.IDLE || state == VoiceState.PREPARING
     val pulse = rememberInfiniteTransition(label = "mic-pulse")
     val idleScale by pulse.animateFloat(
         initialValue = 1f,

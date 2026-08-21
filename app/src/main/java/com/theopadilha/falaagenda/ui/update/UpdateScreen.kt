@@ -140,7 +140,9 @@ fun UpdateScreen(
                             error = null
                             scope.launch {
                                 val result = withContext(Dispatchers.IO) {
-                                    runCatching { container.updater.download(current.apkUrl) }
+                                    runCatching {
+                                        container.updater.download(current.apkUrl, current.sha256Url)
+                                    }
                                 }
                                 downloading = false
                                 result.onSuccess { apk = it }.onFailure {

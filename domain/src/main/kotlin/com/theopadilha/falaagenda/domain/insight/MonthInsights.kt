@@ -43,7 +43,8 @@ object MonthInsights {
         val inMonth = rows.filter { YearMonth.from(it.date) == month }
         val completed = inMonth.filter { it.status == OccurrenceStatus.COMPLETED }
         val missed = inMonth.count { it.status == OccurrenceStatus.MISSED }
-        val frequent = completed
+        val marked = inMonth.filter { it.status != OccurrenceStatus.CANCELLED }
+        val frequent = marked
             .groupBy { it.title.trim().lowercase() }
             .map { (_, group) -> TitleCount(group.first().title.trim(), group.size) }
             .sortedWith(compareByDescending<TitleCount> { it.times }.thenBy { it.title.lowercase() })

@@ -2,7 +2,7 @@
 
 Agenda por voz para Android. Você fala o recado, confere o que foi entendido e o aviso toca no horário. As tarefas ficam **só no aparelho**.
 
-Versão **0.4.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
+Versão **0.4.1** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
 
 ## O que o aplicativo faz
 
@@ -29,7 +29,7 @@ Versão **0.4.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo 
 - Menu lateral: resumo do mês, atualizar, enviar o aplicativo, não matar alarmes, widget, aparência claro/escuro.
 - Resumo do mês com o que mais você fez (ex.: cabelo 3 vezes) e soma opcional de valores.
 - Na confirmação, campo **Valor (opcional)** para coisa paga.
-- Atualização pelo próprio aplicativo (baixa o APK da última publicação no GitHub).
+- Atualização pelo próprio aplicativo: na home aparece **Tem versão nova** quando sai um APK no GitHub. A primeira instalação ainda é por arquivo; as seguintes a mamãe só toca em atualizar.
 - Widget 2×2 com a próxima tarefa e o botão **Falar**.
 - Ícone mais claro (creme + microfone verde).
 

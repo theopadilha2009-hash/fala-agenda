@@ -8,11 +8,13 @@ import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
 import com.theopadilha.falaagenda.ACTION_SPEAK
+import com.theopadilha.falaagenda.FalaAgendaApplication
 import com.theopadilha.falaagenda.MainActivity
 import com.theopadilha.falaagenda.R
 import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.ui.AgendaFormat
+import kotlinx.coroutines.launch
 import java.time.LocalDate
 
 class AgendaWidgetProvider : AppWidgetProvider() {
@@ -21,9 +23,25 @@ class AgendaWidgetProvider : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray,
     ) {
-        val snapshot = loadSnapshot(context)
-        appWidgetIds.forEach { id ->
-            appWidgetManager.updateAppWidget(id, views(context, snapshot))
+        val pending = goAsync()
+        val app = context.applicationContext
+        if (app is FalaAgendaApplication) {
+            app.appScope.launch {
+                try {
+                    val sections = app.container.tasks.snapshotAgenda()
+                    val snapshot = snapshotOf(sections)
+                    val remote = views(app, snapshot)
+                    appWidgetIds.forEach { appWidgetManager.updateAppWidget(it, remote) }
+                } finally {
+                    pending.finish()
+                }
+            }
+        } else {
+            val snapshot = loadSnapshot(context)
+            appWidgetIds.forEach { id ->
+                appWidgetManager.updateAppWidget(id, views(context, snapshot))
+            }
+            pending.finish()
         }
     }
 

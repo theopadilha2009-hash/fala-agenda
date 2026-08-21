@@ -4,12 +4,15 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.theopadilha.falaagenda.domain.model.QuietHours
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.time.LocalTime
+
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
 private val Context.dataStore by preferencesDataStore("fala_agenda_settings")
 
@@ -18,6 +21,7 @@ class SettingsStore(private val context: Context) {
     private val quietEndMin = intPreferencesKey("quiet_end_min")
     private val onboardingDone = booleanPreferencesKey("onboarding_done")
     private val exactAlarmWarned = booleanPreferencesKey("exact_alarm_warned")
+    private val themeModeKey = stringPreferencesKey("theme_mode")
 
     val quietHours: Flow<QuietHours> = context.dataStore.data.map { prefs ->
         QuietHours(
@@ -29,6 +33,11 @@ class SettingsStore(private val context: Context) {
     val onboardingComplete: Flow<Boolean> =
         context.dataStore.data.map { it[onboardingDone] == true }
 
+    val themeMode: Flow<ThemeMode> = context.dataStore.data.map { prefs ->
+        runCatching { ThemeMode.valueOf(prefs[themeModeKey] ?: ThemeMode.SYSTEM.name) }
+            .getOrDefault(ThemeMode.SYSTEM)
+    }
+
     suspend fun setQuietHours(hours: QuietHours) {
         context.dataStore.edit {
             it[quietStartMin] = hours.start.hour * 60 + hours.start.minute
@@ -38,6 +47,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setOnboardingComplete() {
         context.dataStore.edit { it[onboardingDone] = true }
+    }
+
+    suspend fun setThemeMode(mode: ThemeMode) {
+        context.dataStore.edit { it[themeModeKey] = mode.name }
     }
 
     suspend fun currentQuietHours(): QuietHours = quietHours.first()

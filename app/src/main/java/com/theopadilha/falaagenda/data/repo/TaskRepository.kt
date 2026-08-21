@@ -17,6 +17,7 @@ import com.theopadilha.falaagenda.domain.time.AppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.onEach
 import java.time.Instant
 import java.util.UUID
 
@@ -41,6 +42,11 @@ class TaskRepository(
     private val clock: AppClock,
     private val scheduler: AlarmScheduler,
 ) {
+    @Volatile
+    private var cachedAgenda = AgendaSections(emptyList(), emptyList(), emptyList(), emptyList())
+
+    fun latestAgenda(): AgendaSections = cachedAgenda
+
     fun observeAgenda(): Flow<AgendaSections> = combine(
         seriesDao.observeAll(),
         occurrenceDao.observeAll(),
@@ -62,7 +68,7 @@ class TaskRepository(
             missed = items.filter { it.occurrence.status == OccurrenceStatus.MISSED }
                 .sortedByDescending { it.occurrence.missedAt },
         )
-    }
+    }.onEach { cachedAgenda = it }
 
     suspend fun saveDraft(draft: ParsedTaskDraft): SaveResult {
         require(draft.isComplete) { "Confirme título, data e horário antes de salvar." }
@@ -75,6 +81,7 @@ class TaskRepository(
             localTime = draft.localTime!!,
             startLocalDate = draft.localDate!!,
             recurrence = draft.recurrence,
+            amountCents = draft.amountCents,
             createdAt = now,
             updatedAt = now,
         )
@@ -207,6 +214,7 @@ class TaskRepository(
         date: java.time.LocalDate,
         time: java.time.LocalTime,
         recurrence: com.theopadilha.falaagenda.domain.model.RecurrenceRule,
+        amountCents: Long? = null,
     ) {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return
@@ -223,6 +231,7 @@ class TaskRepository(
             localTime = time,
             startLocalDate = date,
             recurrence = recurrence,
+            amountCents = amountCents,
             updatedAt = now,
         )
         seriesDao.upsert(updatedSeries.toEntity())

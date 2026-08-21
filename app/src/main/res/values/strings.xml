@@ -56,4 +56,14 @@
     <string name="speech_unavailable">A fala não está disponível neste aparelho. Use o texto.</string>
     <string name="shortcut_speak">Falar</string>
     <string name="shortcut_speak_long">Falar uma tarefa</string>
+    <string name="widget_label">Fala Agenda</string>
+    <string name="widget_description">Próxima tarefa e botão para falar um recado.</string>
+    <string name="widget_kicker">Próxima</string>
+    <string name="widget_empty_title">Nada marcado</string>
+    <string name="widget_empty_when">Toque para abrir a agenda</string>
+    <string name="menu">Menu</string>
+    <string name="month_summary">Resumo do mês</string>
+    <string name="update_app">Atualizar aplicativo</string>
+    <string name="share_app">Enviar o aplicativo</string>
+    <string name="theme_label">Aparência</string>
 </resources>

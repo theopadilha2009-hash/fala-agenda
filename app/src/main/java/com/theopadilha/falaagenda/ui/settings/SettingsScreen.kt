@@ -35,18 +35,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.QuietHours
 import com.theopadilha.falaagenda.BuildConfig
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.QuietCard
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material3.FilterChip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalTime
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     container: AppContainer,
@@ -55,6 +59,7 @@ fun SettingsScreen(
     val quiet by container.settings.quietHours.collectAsState(
         initial = QuietHours(LocalTime.of(22, 0), LocalTime.of(8, 0)),
     )
+    val themeMode by container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
     var picking by remember { mutableStateOf<String?>(null) }
     var code by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
@@ -86,6 +91,29 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            QuietCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Aparência", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "O aplicativo claro usa fundo creme. Você pode travar claro, escuro ou seguir o celular.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(
+                            ThemeMode.SYSTEM to "Celular",
+                            ThemeMode.LIGHT to "Claro",
+                            ThemeMode.DARK to "Escuro",
+                        ).forEach { (mode, label) ->
+                            FilterChip(
+                                selected = themeMode == mode,
+                                onClick = { scope.launch { container.settings.setThemeMode(mode) } },
+                                label = { Text(label) },
+                            )
+                        }
+                    }
+                }
+            }
+
             QuietCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Horário de silêncio", style = MaterialTheme.typography.titleMedium)

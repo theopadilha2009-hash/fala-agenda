@@ -63,6 +63,7 @@ data class ParsedTaskDraft(
     val transcript: String,
     val notes: List<String> = emptyList(),
     val source: DraftSource = DraftSource.LOCAL,
+    val amountCents: Long? = null,
 ) {
     val isComplete: Boolean
         get() = missingFields.isEmpty() && title.isNotBlank() && localDate != null && localTime != null
@@ -80,6 +81,7 @@ data class ParsedTaskDraft(
         localDate: LocalDate? = this.localDate,
         localTime: LocalTime? = this.localTime,
         recurrence: RecurrenceRule = this.recurrence,
+        amountCents: Long? = this.amountCents,
     ): ParsedTaskDraft {
         val missing = buildSet {
             if (title.isBlank()) add(MissingDraftField.TITLE)
@@ -91,6 +93,7 @@ data class ParsedTaskDraft(
             localDate = localDate,
             localTime = localTime,
             recurrence = recurrence,
+            amountCents = amountCents,
             missingFields = missing,
             ambiguous = false,
             confidence = if (missing.isEmpty()) 1.0 else 0.4,
@@ -108,6 +111,7 @@ data class TaskSeries(
     val localTime: LocalTime,
     val startLocalDate: LocalDate,
     val recurrence: RecurrenceRule,
+    val amountCents: Long? = null,
     val endedAt: Instant? = null,
     val createdAt: Instant,
     val updatedAt: Instant,

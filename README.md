@@ -2,13 +2,13 @@
 
 Agenda por voz para Android. Você fala o recado, confere o que foi entendido e o aviso toca no horário. As tarefas ficam **só no aparelho**.
 
-Versão **0.3.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
+Versão **0.4.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
 
 ## O que o aplicativo faz
 
 - Tela principal com **Hoje**, **Próximas**, **Concluídas** e **Não realizadas**.
 - Ícone e splash com microfone. O botão **pulsa** parado e faz ondas enquanto ouve.
-- Microfone **sempre embaixo**, visível ao abrir. Só começa a ouvir quando você toca. Atalhos **5 min / 15 min / 1 hora** e escrever ao lado.
+- Microfone **sempre embaixo**, visível ao abrir. Toque uma vez — **não precisa segurar**. O aplicativo espera ficar pronto e só então mostra **Pode falar agora**. Se não ouvir, tenta de novo sozinho (até 3 vezes).
 - Primeira visita em **uma** tela.
 - Atalho de lançador **Falar** (segurar o ícone do aplicativo).
 - Estados **Ouvindo** e **Entendendo**, resultados parciais, para após silêncio.
@@ -26,7 +26,12 @@ Versão **0.3.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo 
 - “daqui 10 minutos” (com ou sem “a”) vira horário.
 - Se o recado já veio completo, um diálogo **Pode salvar?** confirma em um toque. **Mudar** abre a tela cheia.
 - No cartão pendente: **10 min**. No concluído único: **Amanhã**.
-- O microfone encerra um pouco mais rápido depois do silêncio.
+- Menu lateral: resumo do mês, atualizar, enviar o aplicativo, não matar alarmes, widget, aparência claro/escuro.
+- Resumo do mês com o que mais você fez (ex.: cabelo 3 vezes) e soma opcional de valores.
+- Na confirmação, campo **Valor (opcional)** para coisa paga.
+- Atualização pelo próprio aplicativo (baixa o APK da última publicação no GitHub).
+- Widget 2×2 com a próxima tarefa e o botão **Falar**.
+- Ícone mais claro (creme + microfone verde).
 
 ## Arquitetura
 
@@ -107,9 +112,11 @@ O APK debug usa o sufixo `.debug` no applicationId (`com.theopadilha.falaagenda.
 
 | Permissão | Por quê |
 |---|---|
-| Microfone | Só enquanto você segura o botão de falar |
+| Microfone | Só enquanto o aplicativo está ouvindo, depois do toque |
 | Notificações | Aviso na hora, com Concluir / Adiar |
 | Alarmes exatos (`SCHEDULE_EXACT_ALARM`) | Tocar no horário combinado. Sem `USE_EXACT_ALARM`. |
+| Ignorar otimização de bateria | Pedido opcional para o Android não matar os alarmes. |
+| Instalar pacotes | Só para atualizar o APK publicado, sem loja. |
 
 Se o alarme exato for recusado, a tarefa **é salva**, o alarme cai no modo inexato e aparece um aviso com atalho para os ajustes.
 

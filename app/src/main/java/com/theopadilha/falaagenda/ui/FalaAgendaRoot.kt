@@ -18,13 +18,18 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.ui.capture.ConfirmDraftScreen
 import com.theopadilha.falaagenda.ui.home.HomeScreen
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
+import com.theopadilha.falaagenda.ui.month.MonthSummaryScreen
 import com.theopadilha.falaagenda.ui.onboarding.OnboardingScreen
 import com.theopadilha.falaagenda.ui.settings.SettingsScreen
+import com.theopadilha.falaagenda.ui.update.UpdateScreen
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 import java.time.LocalDate
 
 @Composable
@@ -50,6 +55,8 @@ fun FalaAgendaRoot(
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
     val busy by homeVm.busy.collectAsState()
+    val themeMode by container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
+    val scope = rememberCoroutineScope()
 
     if (!onboardingReady) {
         Box(
@@ -88,6 +95,10 @@ fun FalaAgendaRoot(
                 startSpeak = startSpeak,
                 onStartSpeakConsumed = onStartSpeakConsumed,
                 onOpenSettings = { nav.navigate("settings") },
+                themeMode = themeMode,
+                onThemeMode = { mode -> scope.launch { container.settings.setThemeMode(mode) } },
+                onOpenMonth = { nav.navigate("month") },
+                onOpenUpdate = { nav.navigate("update") },
                 onDraftReady = {
                     editingOccurrenceId = null
                     draft = it
@@ -106,6 +117,7 @@ fun FalaAgendaRoot(
                         missingFields = emptySet(),
                         ambiguous = false,
                         transcript = "",
+                        amountCents = item.series.amountCents,
                     )
                     nav.navigate("confirm") {
                         launchSingleTop = true
@@ -135,7 +147,14 @@ fun FalaAgendaRoot(
                         val date = confirmed.localDate
                         val time = confirmed.localTime
                         if (editId != null && date != null && time != null) {
-                            homeVm.edit(editId, confirmed.title, date, time, confirmed.recurrence)
+                            homeVm.edit(
+                                editId,
+                                confirmed.title,
+                                date,
+                                time,
+                                confirmed.recurrence,
+                                confirmed.amountCents,
+                            )
                             editingOccurrenceId = null
                             statusMessage = AgendaFormat.announce(date, time, LocalDate.now())
                             nav.popBackStack()
@@ -158,6 +177,18 @@ fun FalaAgendaRoot(
         }
         composable("settings") {
             SettingsScreen(
+                container = container,
+                onBack = { nav.popBackStack() },
+            )
+        }
+        composable("month") {
+            MonthSummaryScreen(
+                container = container,
+                onBack = { nav.popBackStack() },
+            )
+        }
+        composable("update") {
+            UpdateScreen(
                 container = container,
                 onBack = { nav.popBackStack() },
             )

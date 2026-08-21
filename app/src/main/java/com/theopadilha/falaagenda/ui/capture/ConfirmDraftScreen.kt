@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
@@ -35,7 +36,9 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.theopadilha.falaagenda.domain.insight.Money
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -68,6 +71,9 @@ fun ConfirmDraftScreen(
                 initial.localDate?.let { setOf(it.dayOfWeek) } ?: emptySet()
             },
         )
+    }
+    var amountText by remember {
+        mutableStateOf(initial.amountCents?.let { formatAmountInput(it) }.orEmpty())
     }
     var showDate by remember { mutableStateOf(false) }
     var showTime by remember { mutableStateOf(false) }
@@ -120,6 +126,15 @@ fun ConfirmDraftScreen(
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("O que precisa ser feito") },
                 isError = title.isBlank(),
+            )
+            OutlinedTextField(
+                value = amountText,
+                onValueChange = { amountText = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Valor (opcional)") },
+                placeholder = { Text("Ex.: 80 ou 80,50") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                supportingText = { Text("Se for uma coisa paga, o valor entra no resumo do mês.") },
             )
 
             PickerRow(
@@ -200,13 +215,18 @@ fun ConfirmDraftScreen(
             }
             val recapDate = date
             val recapTime = time
+            val recapAmount = amountText.trim().takeIf { it.isNotEmpty() }?.let { Money.parseReais(it) }
             if (recapDate != null && recapTime != null) {
                 QuietCard {
-                    Text(
-                        AgendaFormat.recap(recapDate, recapTime, previewRule),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(16.dp),
-                    )
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            AgendaFormat.recap(recapDate, recapTime, previewRule),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        recapAmount?.let {
+                            Text(Money.formatReais(it), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
             } else {
                 Text(
@@ -240,6 +260,15 @@ fun ConfirmDraftScreen(
                         error = "Complete os campos em vermelho."
                         return@PrimaryButton
                     }
+                    val cents = if (amountText.isBlank()) {
+                        null
+                    } else {
+                        Money.parseReais(amountText)
+                    }
+                    if (amountText.isNotBlank() && cents == null) {
+                        error = "O valor precisa ser um número, por exemplo 80 ou 80,50."
+                        return@PrimaryButton
+                    }
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onSave(
                         initial.withManual(
@@ -247,6 +276,7 @@ fun ConfirmDraftScreen(
                             localDate = chosenDate,
                             localTime = chosenTime,
                             recurrence = recurrenceFor(kind, chosenDate, weekDays),
+                            amountCents = cents,
                         ),
                     )
                 },
@@ -382,3 +412,9 @@ private fun LocalDate.toUtcMillis(): Long =
 
 private fun Long.toLocalDateUtc(): LocalDate =
     Instant.ofEpochMilli(this).atZone(ZoneOffset.UTC).toLocalDate()
+
+private fun formatAmountInput(cents: Long): String {
+    val reais = cents / 100
+    val rest = (cents % 100).toInt()
+    return if (rest == 0) reais.toString() else "%d,%02d".format(reais, rest)
+}

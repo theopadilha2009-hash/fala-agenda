@@ -78,6 +78,25 @@ class AgendaFormatTest {
     }
 
     @Test
+    fun enviarODiaListaTarefas() {
+        val text = AgendaFormat.todayShare(
+            listOf(
+                AgendaFormat.DayShareLine("Remédio", LocalTime.of(8, 0), "com água"),
+                AgendaFormat.DayShareLine("Cabelo", LocalTime.of(15, 0)),
+            ),
+        )
+        assertThat(text).startsWith("Hoje no Fala Agenda:")
+        assertThat(text).contains("• Remédio às 08:00 — com água")
+        assertThat(text).contains("• Cabelo às 15:00")
+    }
+
+    @Test
+    fun enviarODiaVazio() {
+        assertThat(AgendaFormat.todayShare(emptyList()))
+            .isEqualTo("Hoje no Fala Agenda não tem nada marcado.")
+    }
+
+    @Test
     fun recapCompleto() {
         val text = AgendaFormat.recap(today, LocalTime.of(8, 0), RecurrenceRule(RecurrenceKind.DAILY))
         assertThat(text).contains("08:00")

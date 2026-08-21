@@ -117,9 +117,10 @@ class HomeViewModel(
         time: LocalTime,
         recurrence: RecurrenceRule,
         amountCents: Long? = null,
+        observation: String = "",
     ) = viewModelScope.launch {
         withContext(Dispatchers.IO) {
-            container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents)
+            container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)
         }
     }
 
@@ -149,6 +150,7 @@ class HomeViewModel(
             transcript = "",
             source = DraftSource.MANUAL,
             amountCents = item.series.amountCents,
+            observation = item.series.observation,
         )
         saveDraft(draft, onDone = { usedInexact ->
             setInexactWarning(usedInexact)

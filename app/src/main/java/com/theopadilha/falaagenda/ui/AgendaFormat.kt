@@ -41,6 +41,21 @@ object AgendaFormat {
     fun recap(date: LocalDate, time: LocalTime, recurrence: RecurrenceRule): String =
         "Vai avisar ${longDate(date)} às ${time(time)}. ${recurrence.describePtBr()}."
 
+    data class DayShareLine(
+        val title: String,
+        val time: LocalTime,
+        val observation: String = "",
+    )
+
+    fun todayShare(lines: List<DayShareLine>): String {
+        if (lines.isEmpty()) return "Hoje no Fala Agenda não tem nada marcado."
+        val body = lines.joinToString("\n") { line ->
+            val extra = line.observation.trim().takeIf { it.isNotEmpty() }?.let { " — $it" }.orEmpty()
+            "• ${line.title} às ${time(line.time)}$extra"
+        }
+        return "Hoje no Fala Agenda:\n$body"
+    }
+
     fun headline(
         nowTime: LocalTime,
         today: LocalDate,

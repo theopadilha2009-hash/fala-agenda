@@ -57,6 +57,15 @@ class TaskRepositoryTest {
     }
 
     @Test
+    fun saveDraftGuardaObservacao() = runBlocking {
+        val draft = completeDraft("Cabelo", LocalDate.of(2026, 8, 22), LocalTime.of(10, 0))
+            .copy(observation = "levar a carteirinha")
+        val saved = repo.saveDraft(draft)
+        assertThat(saved.series.observation).isEqualTo("levar a carteirinha")
+        assertThat(seriesDao.get(saved.series.id)?.observation).isEqualTo("levar a carteirinha")
+    }
+
+    @Test
     fun editarConcluidaSoValorNaoDesfaz() = runBlocking {
         val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
         repo.complete(saved.occurrence.id)

@@ -212,6 +212,20 @@ fun HomeScreen(
                 batteryOk = batteryOk,
                 onMonth = { closeAnd(onOpenMonth) },
                 onUpdate = { closeAnd(onOpenUpdate) },
+                onShareDay = {
+                    closeAnd {
+                        val text = AgendaFormat.todayShare(
+                            agenda.today.map {
+                                AgendaFormat.DayShareLine(
+                                    title = it.series.title,
+                                    time = it.series.localTime,
+                                    observation = it.series.observation,
+                                )
+                            },
+                        )
+                        context.startActivity(DeviceIntents.shareText(text, "Enviar o dia"))
+                    }
+                },
                 onShare = {
                     closeAnd {
                         scope.launch {
@@ -586,6 +600,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                             },
                         )
                         Text(detail, style = MaterialTheme.typography.bodyLarge)
+                        if (item.series.observation.isNotBlank()) {
+                            Text(
+                                item.series.observation,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 2,
+                            )
+                        }
                     }
                     if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
                         TextButton(

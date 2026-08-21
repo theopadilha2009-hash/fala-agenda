@@ -54,4 +54,6 @@
     <string name="recurrence_yearly">Todo ano</string>
     <string name="speech_error">Não consegui ouvir. Toque de novo e fale perto do microfone.</string>
     <string name="speech_unavailable">A fala não está disponível neste aparelho. Use o texto.</string>
+    <string name="shortcut_speak">Falar</string>
+    <string name="shortcut_speak_long">Falar uma tarefa</string>
 </resources>

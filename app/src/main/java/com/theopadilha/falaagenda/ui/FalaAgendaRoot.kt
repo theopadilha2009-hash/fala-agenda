@@ -32,6 +32,8 @@ fun FalaAgendaRoot(
     container: AppContainer,
     openOccurrenceId: String? = null,
     onOpenOccurrenceConsumed: () -> Unit = {},
+    startSpeak: Boolean = false,
+    onStartSpeakConsumed: () -> Unit = {},
 ) {
     val nav = rememberNavController()
     var onboardingReady by remember { mutableStateOf(false) }
@@ -83,6 +85,8 @@ fun FalaAgendaRoot(
             HomeScreen(
                 viewModel = homeVm,
                 voice = container.voice,
+                startSpeak = startSpeak,
+                onStartSpeakConsumed = onStartSpeakConsumed,
                 onOpenSettings = { nav.navigate("settings") },
                 onDraftReady = {
                     editingOccurrenceId = null

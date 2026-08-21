@@ -43,6 +43,13 @@
                 <action android:name="com.theopadilha.falaagenda.OPEN_OCCURRENCE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="com.theopadilha.falaagenda.SPEAK" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <receiver

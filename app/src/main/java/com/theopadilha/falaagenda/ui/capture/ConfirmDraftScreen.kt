@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -39,6 +41,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.domain.insight.Money
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -60,6 +63,15 @@ fun ConfirmDraftScreen(
     onCancel: () -> Unit,
     onSave: (ParsedTaskDraft) -> Unit,
     saving: Boolean = false,
+    editing: Boolean = false,
+    occurrenceStatus: OccurrenceStatus? = null,
+    isRecurring: Boolean = false,
+    onComplete: (() -> Unit)? = null,
+    onSnooze: ((Long) -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+    onRetry: (() -> Unit)? = null,
+    onRepeat: (() -> Unit)? = null,
+    onEndSeries: (() -> Unit)? = null,
 ) {
     var title by remember { mutableStateOf(initial.title) }
     var date by remember { mutableStateOf(initial.localDate) }
@@ -96,18 +108,23 @@ fun ConfirmDraftScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(20.dp)
+                .imePadding()
+                .padding(24.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Text(
-                "Confira antes de salvar",
+                if (editing) "Editar tarefa" else "Confira antes de salvar",
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.semantics { heading() },
             )
             Text(
-                "Nada é gravado até você confirmar. Se faltar data ou horário, toque para escolher — não inventamos.",
-                style = MaterialTheme.typography.bodyMedium,
+                if (editing) {
+                    "Toque em qualquer campo para mudar. Pode escrever o recado do seu jeito."
+                } else {
+                    "Nada é gravado até você confirmar. Se faltar data ou horário, toque para escolher — não inventamos."
+                },
+                style = MaterialTheme.typography.bodyLarge,
             )
             if (initial.transcript.isNotBlank()) {
                 Text("Você disse: “${initial.transcript}”", style = MaterialTheme.typography.bodyMedium)
@@ -123,14 +140,21 @@ fun ConfirmDraftScreen(
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 88.dp),
                 label = { Text("O que precisa ser feito") },
+                placeholder = { Text("Escreva aqui, do seu jeito") },
+                minLines = 2,
+                maxLines = 5,
                 isError = title.isBlank(),
             )
             OutlinedTextField(
                 value = amountText,
                 onValueChange = { amountText = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 64.dp),
                 label = { Text("Valor (opcional)") },
                 placeholder = { Text("Ex.: 80 ou 80,50") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -208,7 +232,8 @@ fun ConfirmDraftScreen(
                                     weekDays + day
                                 }
                             },
-                            label = { Text(day.toPtBrShort()) },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            label = { Text(day.toPtBrShort(), style = MaterialTheme.typography.labelLarge) },
                         )
                     }
                 }
@@ -282,6 +307,35 @@ fun ConfirmDraftScreen(
                 },
             )
             SecondaryButton("Cancelar", onClick = onCancel)
+            if (editing) {
+                Text("Esta tarefa", style = MaterialTheme.typography.titleMedium)
+                if (
+                    (occurrenceStatus == OccurrenceStatus.PENDING || occurrenceStatus == OccurrenceStatus.MISSED) &&
+                    onComplete != null
+                ) {
+                    PrimaryButton("Concluir") { onComplete() }
+                }
+                if (occurrenceStatus == OccurrenceStatus.PENDING && onSnooze != null) {
+                    Text("Adiar", style = MaterialTheme.typography.bodyLarge)
+                    ChipRow(
+                        options = listOf("10 min" to 10L, "30 min" to 30L, "1 hora" to 60L),
+                        selected = null,
+                        onPick = onSnooze,
+                    )
+                }
+                if (occurrenceStatus == OccurrenceStatus.MISSED && !isRecurring && onRetry != null) {
+                    PrimaryButton("Fazer hoje") { onRetry() }
+                }
+                if (occurrenceStatus == OccurrenceStatus.COMPLETED && !isRecurring && onRepeat != null) {
+                    PrimaryButton("Amanhã de novo") { onRepeat() }
+                }
+                if (onDelete != null) {
+                    SecondaryButton("Excluir") { onDelete() }
+                }
+                if (isRecurring && onEndSeries != null) {
+                    SecondaryButton("Encerrar série") { onEndSeries() }
+                }
+            }
             Text(
                 "Os campos ausentes não foram preenchidos automaticamente.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -374,7 +428,8 @@ private fun <T> ChipRow(
             FilterChip(
                 selected = selected == value,
                 onClick = { onPick(value) },
-                label = { Text(label) },
+                modifier = Modifier.heightIn(min = 48.dp),
+                label = { Text(label, style = MaterialTheme.typography.labelLarge) },
             )
         }
     }
@@ -392,7 +447,7 @@ private fun PickerRow(
         onClick = onClick,
         modifier = Modifier.semantics { contentDescription = description },
     ) {
-        Column(Modifier.padding(16.dp).fillMaxWidth()) {
+        Column(Modifier.padding(20.dp).fillMaxWidth()) {
             Text(
                 label,
                 style = MaterialTheme.typography.labelLarge,

@@ -19,9 +19,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
+import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.ui.capture.ConfirmDraftScreen
+import com.theopadilha.falaagenda.ui.capture.WriteTaskScreen
 import com.theopadilha.falaagenda.ui.home.HomeScreen
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
 import com.theopadilha.falaagenda.ui.month.MonthSummaryScreen
@@ -50,7 +52,7 @@ fun FalaAgendaRoot(
         }
     }
     var draft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
-    var editingOccurrenceId by remember { mutableStateOf<String?>(null) }
+    var editingItem by remember { mutableStateOf<AgendaItem?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
@@ -99,15 +101,17 @@ fun FalaAgendaRoot(
                 onThemeMode = { mode -> scope.launch { container.settings.setThemeMode(mode) } },
                 onOpenMonth = { nav.navigate("month") },
                 onOpenUpdate = { nav.navigate("update") },
+                onWrite = { nav.navigate("write") },
+                onQuick = { minutes -> nav.navigate("quick/$minutes") },
                 onDraftReady = {
-                    editingOccurrenceId = null
+                    editingItem = null
                     draft = it
                     nav.navigate("confirm") {
                         launchSingleTop = true
                     }
                 },
                 onEditItem = { item ->
-                    editingOccurrenceId = item.occurrence.id
+                    editingItem = item
                     draft = ParsedTaskDraft(
                         title = item.series.title,
                         localDate = item.occurrence.localDate,
@@ -138,12 +142,66 @@ fun FalaAgendaRoot(
                 ConfirmDraftScreen(
                     initial = current,
                     saving = busy,
+                    editing = editingItem != null,
+                    occurrenceStatus = editingItem?.occurrence?.status,
+                    isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
+                    onComplete = editingItem?.let { item ->
+                        {
+                            homeVm.complete(item)
+                            editingItem = null
+                            statusMessage = "Feito."
+                            nav.popBackStack()
+                        }
+                    },
+                    onSnooze = editingItem?.let { item ->
+                        { minutes ->
+                            homeVm.snooze(item.occurrence.id, minutes) { message ->
+                                statusMessage = message
+                            }
+                            editingItem = null
+                            nav.popBackStack()
+                        }
+                    },
+                    onDelete = editingItem?.let { item ->
+                        {
+                            homeVm.delete(item)
+                            editingItem = null
+                            statusMessage = "Tarefa excluída."
+                            nav.popBackStack()
+                        }
+                    },
+                    onRetry = editingItem?.let { item ->
+                        {
+                            homeVm.retryMissed(item.occurrence.id) { message ->
+                                statusMessage = message
+                            }
+                            editingItem = null
+                            nav.popBackStack()
+                        }
+                    },
+                    onRepeat = editingItem?.let { item ->
+                        {
+                            homeVm.repeatTomorrow(item) { message ->
+                                statusMessage = message
+                            }
+                            editingItem = null
+                            nav.popBackStack()
+                        }
+                    },
+                    onEndSeries = editingItem?.let { item ->
+                        {
+                            homeVm.endSeries(item.series.id)
+                            editingItem = null
+                            statusMessage = "Série encerrada."
+                            nav.popBackStack()
+                        }
+                    },
                     onCancel = {
-                        editingOccurrenceId = null
+                        editingItem = null
                         nav.popBackStack()
                     },
                     onSave = { confirmed ->
-                        val editId = editingOccurrenceId
+                        val editId = editingItem?.occurrence?.id
                         val date = confirmed.localDate
                         val time = confirmed.localTime
                         if (editId != null && date != null && time != null) {
@@ -155,7 +213,7 @@ fun FalaAgendaRoot(
                                 confirmed.recurrence,
                                 confirmed.amountCents,
                             )
-                            editingOccurrenceId = null
+                            editingItem = null
                             statusMessage = AgendaFormat.announce(date, time, LocalDate.now())
                             nav.popBackStack()
                         } else {
@@ -174,6 +232,42 @@ fun FalaAgendaRoot(
                     },
                 )
             }
+        }
+        composable("write") {
+            WriteTaskScreen(
+                heading = "Escrever tarefa",
+                help = "Escreva o recado do seu jeito. Na próxima tela você confere data e horário.",
+                placeholder = "Ex.: tomar remédio amanhã às 9h",
+                confirmLabel = "Continuar",
+                onCancel = { nav.popBackStack() },
+                onConfirm = { text ->
+                    scope.launch {
+                        editingItem = null
+                        draft = homeVm.parse(text)
+                        nav.navigate("confirm") {
+                            popUpTo("write") { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
+                },
+            )
+        }
+        composable("quick/{minutes}") { entry ->
+            val minutes = entry.arguments?.getString("minutes")?.toLongOrNull() ?: 15L
+            val label = if (minutes == 60L) "1 hora" else "$minutes min"
+            WriteTaskScreen(
+                heading = "Daqui $label",
+                help = "Escreva o que precisa ser feito. O aviso toca daqui $label.",
+                placeholder = "Ex.: tomar água",
+                confirmLabel = "Salvar",
+                onCancel = { nav.popBackStack() },
+                onConfirm = { title ->
+                    homeVm.quickRemind(title, minutes) { message ->
+                        statusMessage = message
+                    }
+                    nav.popBackStack()
+                },
+            )
         }
         composable("settings") {
             SettingsScreen(

@@ -78,7 +78,9 @@ import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.month.insightRows
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -108,6 +110,7 @@ fun HomeScreen(
     val voiceUi by voice.ui.collectAsState()
     val inexact by viewModel.inexactWarning.collectAsState()
     val busy by viewModel.busy.collectAsState()
+    val availableUpdate by viewModel.availableUpdate.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
@@ -218,12 +221,23 @@ fun HomeScreen(
                 onUpdate = { closeAnd(onOpenUpdate) },
                 onShare = {
                     closeAnd {
-                        runCatching { context.startActivity(DeviceIntents.shareApp(context)) }
-                            .onFailure { context.startActivity(DeviceIntents.shareLink()) }
+                        scope.launch {
+                            val apk = withContext(Dispatchers.IO) {
+                                runCatching { DeviceIntents.copyInstalledApk(context) }.getOrNull()
+                            }
+                            context.startActivity(DeviceIntents.shareChooser(context, apk))
+                        }
                     }
                 },
                 onBattery = {
-                    closeAnd { context.startActivity(DeviceIntents.batterySettings(context)) }
+                    closeAnd {
+                        context.startActivity(DeviceIntents.batterySettings(context))
+                        scope.launch {
+                            snackbar.showSnackbar(
+                                "Se o aviso continuar falhando no Xiaomi/Samsung: Ajustes → Apps → Fala Agenda → bateria sem restrição e autostart.",
+                            )
+                        }
+                    }
                 },
                 onWidget = { closeAnd { widgetHelp = true } },
                 onSettings = { closeAnd(onOpenSettings) },
@@ -300,6 +314,25 @@ fun HomeScreen(
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                    }
+                }
+                availableUpdate?.let { update ->
+                    item {
+                        QuietCard(onClick = onOpenUpdate) {
+                            Column(
+                                Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    "Tem versão nova: ${update.remote}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    "Toque para baixar e instalar neste celular. Não precisa pedir o arquivo de novo.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                        }
                     }
                 }
                 if (inexact) {

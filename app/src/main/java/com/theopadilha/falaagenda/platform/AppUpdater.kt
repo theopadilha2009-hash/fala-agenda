@@ -8,12 +8,14 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 data class UpdateCheck(
     val local: String,
     val remote: String?,
     val apkUrl: String?,
+    val sha256Url: String? = null,
     val newer: Boolean,
     val message: String,
 )
@@ -52,8 +54,26 @@ class AppUpdater(
         }
     }
 
-    fun download(url: String): File {
+    fun download(url: String, sha256Url: String? = null): File {
+        if (!allowedDownloadUrl(url)) error("Fonte de atualização inválida.")
         val dest = File(updatesDir(context), "Fala-Agenda-update.apk")
+        fetchTo(url, dest, MAX_APK_BYTES)
+        if (!sha256Url.isNullOrBlank()) {
+            if (!allowedDownloadUrl(sha256Url)) error("Fonte de atualização inválida.")
+            val sumFile = File(updatesDir(context), "apk.sha256")
+            fetchTo(sha256Url, sumFile, 8 * 1024)
+            val expected = parseSha256Sum(sumFile.readText())
+                ?: error("Não deu para ler a assinatura do instalador.")
+            val actual = sha256(dest)
+            if (!expected.equals(actual, ignoreCase = true)) {
+                dest.delete()
+                error("O arquivo veio diferente do publicado. Não instalei.")
+            }
+        }
+        return dest
+    }
+
+    private fun fetchTo(url: String, dest: File, maxBytes: Long) {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", "FalaAgenda/${BuildConfig.VERSION_NAME}")
@@ -63,10 +83,24 @@ class AppUpdater(
             if (!response.isSuccessful) {
                 error("Não deu para baixar o instalador (${response.code}).")
             }
-            val bytes = response.body?.bytes() ?: error("O arquivo veio vazio.")
-            dest.writeBytes(bytes)
+            val body = response.body ?: error("O arquivo veio vazio.")
+            val declared = body.contentLength()
+            if (declared > maxBytes) error("O instalador veio grande demais.")
+            var total = 0L
+            dest.outputStream().use { out ->
+                body.byteStream().use { input ->
+                    val buf = ByteArray(8 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        total += n
+                        if (total > maxBytes) error("O instalador veio grande demais.")
+                        out.write(buf, 0, n)
+                    }
+                }
+            }
+            if (total == 0L) error("O arquivo veio vazio.")
         }
-        return dest
     }
 
     companion object {
@@ -79,6 +113,16 @@ class AppUpdater(
 
         fun isDebugInstall(): Boolean = BuildConfig.APPLICATION_ID.endsWith(".debug")
 
+        const val MAX_APK_BYTES = 40L * 1024 * 1024
+
+        fun allowedDownloadUrl(url: String): Boolean {
+            val host = runCatching { URI(url).host }.getOrNull()?.lowercase() ?: return false
+            return host == "github.com" ||
+                host.endsWith(".github.com") ||
+                host == "githubusercontent.com" ||
+                host.endsWith(".githubusercontent.com")
+        }
+
         fun updatesDir(context: Context): File =
             File(context.cacheDir, "updates").apply { mkdirs() }
 
@@ -90,6 +134,9 @@ class AppUpdater(
             val parsed = json.decodeFromString(GithubRelease.serializer(), raw)
             val remote = versionName(parsed.tagName)
             val apk = parsed.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+            val sha = parsed.assets.firstOrNull {
+                it.name.endsWith(".sha256", ignoreCase = true) || it.name.equals("apk.sha256", ignoreCase = true)
+            }
             val newer = isNewer(remote, local)
             val message = when {
                 apk == null -> "A versão $remote saiu, mas ainda não tem instalador."
@@ -100,9 +147,28 @@ class AppUpdater(
                 local = local,
                 remote = remote,
                 apkUrl = apk?.url,
+                sha256Url = sha?.url,
                 newer = newer && apk != null,
                 message = message,
             )
+        }
+
+        fun parseSha256Sum(text: String): String? {
+            val token = text.trim().split(Regex("\\s+")).firstOrNull().orEmpty()
+            return token.lowercase().takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+        }
+
+        fun sha256(file: File): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buf = ByteArray(8 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    digest.update(buf, 0, n)
+                }
+            }
+            return digest.digest().joinToString("") { b -> "%02x".format(b) }
         }
 
         fun versionName(tag: String): String =

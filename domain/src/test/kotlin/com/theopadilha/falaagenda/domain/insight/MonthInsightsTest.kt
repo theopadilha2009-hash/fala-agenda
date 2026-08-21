@@ -24,6 +24,17 @@ class MonthInsightsTest {
     }
 
     @Test
+    fun pendenteTambemContaComoMarcado() {
+        val rows = listOf(
+            row("Cabelo", 4),
+            InsightRow("Cabelo", LocalDate.of(2026, 8, 25), OccurrenceStatus.PENDING, null),
+        )
+        val insight = MonthInsights.of(rows, august)
+        assertThat(insight.completed).isEqualTo(1)
+        assertThat(insight.frequent.first().times).isEqualTo(2)
+    }
+
+    @Test
     fun somaGastosDoMes() {
         val rows = listOf(
             row("Cabelo", 4, 8000),
@@ -49,6 +60,9 @@ class MonthInsightsTest {
     fun parseReais() {
         assertThat(Money.parseReais("80")).isEqualTo(8000)
         assertThat(Money.parseReais("R$ 80,50")).isEqualTo(8050)
+        assertThat(Money.parseReais("80.50")).isEqualTo(8050)
+        assertThat(Money.parseReais("80.5")).isEqualTo(8050)
+        assertThat(Money.parseReais("1.080,50")).isEqualTo(108050)
         assertThat(Money.parseReais("")).isNull()
     }
 

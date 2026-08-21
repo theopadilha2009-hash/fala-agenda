@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -28,6 +29,8 @@ class VoiceCaptureController(private val context: Context) {
 
     private var session = false
     private var retries = 0
+    private var heardReady = false
+    private var startedAt = 0L
 
     fun available(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
 
@@ -41,6 +44,8 @@ class VoiceCaptureController(private val context: Context) {
         }
         session = true
         retries = 0
+        heardReady = false
+        startedAt = SystemClock.elapsedRealtime()
         _ui.value = VoiceUiState(state = VoiceState.PREPARING)
         beginListening()
     }
@@ -57,7 +62,7 @@ class VoiceCaptureController(private val context: Context) {
 
     private fun beginListening() {
         if (!session) return
-        stopRecognizerOnly()
+        destroyRecognizer()
         val sr = SpeechRecognizer.createSpeechRecognizer(context)
         recognizer = sr
         sr.setRecognitionListener(listener)
@@ -75,12 +80,16 @@ class VoiceCaptureController(private val context: Context) {
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
     }
 
-    private fun stopRecognizerOnly() {
-        handler.removeCallbacksAndMessages(null)
+    private fun destroyRecognizer() {
         recognizer?.setRecognitionListener(null)
         runCatching { recognizer?.cancel() }
         runCatching { recognizer?.destroy() }
         recognizer = null
+    }
+
+    private fun stopRecognizerOnly() {
+        handler.removeCallbacksAndMessages(null)
+        destroyRecognizer()
     }
 
     private fun stopInternal() {
@@ -101,6 +110,7 @@ class VoiceCaptureController(private val context: Context) {
     private val listener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             if (!session) return
+            heardReady = true
             _ui.value = _ui.value.copy(state = VoiceState.LISTENING, error = null)
         }
 
@@ -126,12 +136,18 @@ class VoiceCaptureController(private val context: Context) {
 
         override fun onError(error: Int) {
             if (!session) return
-            when (VoiceRetry.decide(error, _ui.value.partial, retries)) {
+            val elapsed = SystemClock.elapsedRealtime() - startedAt
+            when (VoiceRetry.decide(error, _ui.value.partial, retries, elapsed)) {
                 VoiceRetry.Action.USE_PARTIAL -> finishWith(_ui.value.partial.trim())
                 VoiceRetry.Action.RETRY -> {
                     retries += 1
-                    _ui.value = _ui.value.copy(state = VoiceState.PREPARING)
-                    handler.postDelayed({ if (session) beginListening() }, 250)
+                    destroyRecognizer()
+                    handler.removeCallbacksAndMessages(null)
+                    _ui.value = _ui.value.copy(
+                        state = if (heardReady) VoiceState.LISTENING else VoiceState.PREPARING,
+                        error = null,
+                    )
+                    handler.postDelayed({ if (session) beginListening() }, 350)
                 }
                 VoiceRetry.Action.FAIL -> {
                     val human = when (error) {

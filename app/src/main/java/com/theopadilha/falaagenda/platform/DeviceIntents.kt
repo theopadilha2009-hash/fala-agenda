@@ -1,6 +1,7 @@
 package com.theopadilha.falaagenda.platform
 
 import android.annotation.SuppressLint
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -13,32 +14,27 @@ import java.io.File
 object DeviceIntents {
     fun fileProviderAuthority(context: Context): String = "${context.packageName}.files"
 
-    fun shareApp(context: Context): Intent {
-        val apk = copyInstalledApk(context)
+    fun shareLink(): Intent {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, "Instale o Fala Agenda no celular: ${AppUpdater.RELEASES_PAGE}")
+        }
+        return Intent.createChooser(send, "Enviar Fala Agenda")
+    }
+
+    fun shareChooser(context: Context, apk: File?): Intent {
+        if (apk == null) return shareLink()
         val uri = FileProvider.getUriForFile(context, fileProviderAuthority(context), apk)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "application/vnd.android.package-archive"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(
-                Intent.EXTRA_TEXT,
-                "Fala Agenda — agenda por voz. Instale o arquivo, ou baixe em ${AppUpdater.RELEASES_PAGE}",
-            )
+            clipData = ClipData.newRawUri("Fala Agenda", uri)
+            putExtra(Intent.EXTRA_TEXT, "Instale o Fala Agenda no celular: ${AppUpdater.RELEASES_PAGE}")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         return Intent.createChooser(send, "Enviar Fala Agenda").apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-    }
-
-    fun shareLink(): Intent {
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(
-                Intent.EXTRA_TEXT,
-                "Instale o Fala Agenda no celular: ${AppUpdater.RELEASES_PAGE}",
-            )
-        }
-        return Intent.createChooser(send, "Enviar Fala Agenda")
     }
 
     fun copyInstalledApk(context: Context): File {

@@ -57,6 +57,25 @@ class TaskRepositoryTest {
     }
 
     @Test
+    fun editarConcluidaSoValorNaoDesfaz() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.complete(saved.occurrence.id)
+        assertThat(occurrenceDao.get(saved.occurrence.id)!!.status).isEqualTo(OccurrenceStatus.COMPLETED.name)
+        repo.editOccurrence(
+            saved.occurrence.id,
+            "Cabelo",
+            LocalDate.of(2026, 8, 21),
+            LocalTime.of(9, 0),
+            RecurrenceRule(),
+            8000,
+        )
+        val row = occurrenceDao.get(saved.occurrence.id)!!
+        assertThat(row.status).isEqualTo(OccurrenceStatus.COMPLETED.name)
+        assertThat(seriesDao.get(saved.series.id)!!.amountCents).isEqualTo(8000)
+        assertThat(scheduler.scheduled.count { it == saved.occurrence.id }).isEqualTo(1)
+    }
+
+    @Test
     fun pastUniqueBecomesMissed() = runBlocking {
         val draft = completeDraft("Já passou", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0))
         val saved = repo.saveDraft(draft)

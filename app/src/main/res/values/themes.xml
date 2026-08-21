@@ -13,4 +13,32 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowBackground">@color/splash_background</item>
     </style>
+
+    <style name="Theme.FalaAgenda.SplashLight" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_light_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_mic</item>
+        <item name="windowSplashScreenIconBackgroundColor">@color/splash_light_bg</item>
+        <item name="postSplashScreenTheme">@style/Theme.FalaAgenda.AppLight</item>
+    </style>
+
+    <style name="Theme.FalaAgenda.SplashDark" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_dark_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_mic_night</item>
+        <item name="windowSplashScreenIconBackgroundColor">@color/splash_dark_bg</item>
+        <item name="postSplashScreenTheme">@style/Theme.FalaAgenda.AppDark</item>
+    </style>
+
+    <style name="Theme.FalaAgenda.AppLight" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/splash_light_bg</item>
+        <item name="android:navigationBarColor">@color/splash_light_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowBackground">@color/splash_light_bg</item>
+    </style>
+
+    <style name="Theme.FalaAgenda.AppDark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/splash_dark_bg</item>
+        <item name="android:navigationBarColor">@color/splash_dark_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">@color/splash_dark_bg</item>
+    </style>
 </resources>

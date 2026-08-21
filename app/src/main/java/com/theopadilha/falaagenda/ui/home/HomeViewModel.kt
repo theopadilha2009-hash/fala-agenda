@@ -8,6 +8,7 @@ import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.reminder.QuickRemind
+import com.theopadilha.falaagenda.platform.UpdateCheck
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,6 +34,18 @@ class HomeViewModel(
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
+
+    private val _availableUpdate = MutableStateFlow<UpdateCheck?>(null)
+    val availableUpdate: StateFlow<UpdateCheck?> = _availableUpdate
+
+    init {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { container.updater.check() }.getOrNull()
+            }
+            _availableUpdate.value = result?.takeIf { it.newer }
+        }
+    }
 
     fun setInexactWarning(value: Boolean) {
         _inexactWarning.value = value
@@ -135,6 +148,7 @@ class HomeViewModel(
             ambiguous = false,
             transcript = "",
             source = DraftSource.MANUAL,
+            amountCents = item.series.amountCents,
         )
         saveDraft(draft, onDone = { usedInexact ->
             setInexactWarning(usedInexact)

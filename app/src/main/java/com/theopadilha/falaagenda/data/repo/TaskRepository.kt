@@ -1,7 +1,9 @@
 package com.theopadilha.falaagenda.data.repo
 
 import com.theopadilha.falaagenda.data.local.OccurrenceDao
+import com.theopadilha.falaagenda.data.local.OccurrenceEntity
 import com.theopadilha.falaagenda.data.local.SeriesDao
+import com.theopadilha.falaagenda.data.local.SeriesEntity
 import com.theopadilha.falaagenda.data.local.toDomain
 import com.theopadilha.falaagenda.data.local.toEntity
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
@@ -51,6 +53,19 @@ class TaskRepository(
         seriesDao.observeAll(),
         occurrenceDao.observeAll(),
     ) { seriesRows, occurrenceRows ->
+        sectionsOf(seriesRows, occurrenceRows)
+    }.onEach { cachedAgenda = it }
+
+    suspend fun snapshotAgenda(): AgendaSections {
+        val sections = sectionsOf(seriesDao.getAll(), occurrenceDao.getAll())
+        cachedAgenda = sections
+        return sections
+    }
+
+    private fun sectionsOf(
+        seriesRows: List<SeriesEntity>,
+        occurrenceRows: List<OccurrenceEntity>,
+    ): AgendaSections {
         val series = seriesRows.associate { it.id to it.toDomain() }
         val items = occurrenceRows.mapNotNull { row ->
             val s = series[row.seriesId] ?: return@mapNotNull null
@@ -58,7 +73,7 @@ class TaskRepository(
         }
         val today = clock.today()
         val pending = items.filter { it.occurrence.status == OccurrenceStatus.PENDING }
-        AgendaSections(
+        return AgendaSections(
             today = pending.filter { it.occurrence.localDate == today }
                 .sortedBy { it.occurrence.scheduledAt },
             upcoming = pending.filter { it.occurrence.localDate.isAfter(today) }
@@ -68,7 +83,7 @@ class TaskRepository(
             missed = items.filter { it.occurrence.status == OccurrenceStatus.MISSED }
                 .sortedByDescending { it.occurrence.missedAt },
         )
-    }.onEach { cachedAgenda = it }
+    }
 
     suspend fun saveDraft(draft: ParsedTaskDraft): SaveResult {
         require(draft.isComplete) { "Confirme título, data e horário antes de salvar." }
@@ -219,6 +234,20 @@ class TaskRepository(
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return
         val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
+        val original = row.toDomain()
+        val sameWhen = original.localDate == date && series.localTime == time
+        val finished = original.status == OccurrenceStatus.COMPLETED ||
+            original.status == OccurrenceStatus.MISSED
+        if (finished && sameWhen && recurrence == series.recurrence) {
+            seriesDao.upsert(
+                series.copy(
+                    title = title.trim(),
+                    amountCents = amountCents,
+                    updatedAt = now,
+                ).toEntity(),
+            )
+            return
+        }
         occurrenceDao.forSeries(series.id)
             .map { it.toDomain() }
             .filter { it.status == OccurrenceStatus.PENDING }

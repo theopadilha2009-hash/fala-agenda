@@ -38,4 +38,16 @@ class VoiceRetryTest {
     fun outroErroNaoRetenta() {
         assertThat(VoiceRetry.decide(9, "", 0, 200)).isEqualTo(VoiceRetry.Action.FAIL)
     }
+
+    @Test
+    fun clientNaoRetentaNoMesmoMotor() {
+        assertThat(VoiceRetry.decide(VoiceRetry.CLIENT, "", 0, 200))
+            .isEqualTo(VoiceRetry.Action.FAIL)
+    }
+
+    @Test
+    fun clientComParcialUsaTexto() {
+        assertThat(VoiceRetry.decide(VoiceRetry.CLIENT, "tomar remédio", 0, 200))
+            .isEqualTo(VoiceRetry.Action.USE_PARTIAL)
+    }
 }

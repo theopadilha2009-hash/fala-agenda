@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.speech
 
 /**
  * ERROR_SPEECH_TIMEOUT = 6, ERROR_NO_MATCH = 7, ERROR_CLIENT = 5, ERROR_RECOGNIZER_BUSY = 8.
+ * CLIENT não retenta no mesmo motor — VoiceEngine troca para on-device / tela do celular.
  */
 object VoiceRetry {
     const val CLIENT = 5
@@ -19,12 +20,11 @@ object VoiceRetry {
         retriesAlready: Int,
         elapsedMs: Long = 0,
     ): Action {
+        if (partial.isNotBlank()) return Action.USE_PARTIAL
         val retryable = error == SPEECH_TIMEOUT ||
             error == NO_MATCH ||
-            error == BUSY ||
-            error == CLIENT
+            error == BUSY
         if (!retryable) return Action.FAIL
-        if (partial.isNotBlank()) return Action.USE_PARTIAL
         if (elapsedMs < GIVE_UP_MS && retriesAlready < MAX_RETRIES) return Action.RETRY
         return Action.FAIL
     }

@@ -66,11 +66,6 @@ class MainActivity : ComponentActivity() {
         openOccurrenceId.value = intent.occurrenceId()
         startSpeak.value = intent.wantsSpeak()
     }
-
-    override fun onStop() {
-        (application as FalaAgendaApplication).container.voice.cancel()
-        super.onStop()
-    }
 }
 
 private fun Intent.occurrenceId(): String? = getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID)

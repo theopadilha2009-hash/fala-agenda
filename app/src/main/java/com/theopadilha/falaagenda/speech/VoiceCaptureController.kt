@@ -1,7 +1,10 @@
 package com.theopadilha.falaagenda.speech
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -19,6 +22,7 @@ data class VoiceUiState(
     val partial: String = "",
     val finalText: String? = null,
     val error: String? = null,
+    val needSystem: Boolean = false,
 )
 
 class VoiceCaptureController(private val context: Context) {
@@ -31,21 +35,24 @@ class VoiceCaptureController(private val context: Context) {
     private var retries = 0
     private var heardReady = false
     private var startedAt = 0L
+    private var hostContext: Context = context
+    private var backend = VoiceEngine.Capture.IN_APP_DEFAULT
 
-    fun available(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
-
-    fun start() {
-        if (!available()) {
-            _ui.value = VoiceUiState(
-                state = VoiceState.ERROR,
-                error = "A fala não está disponível neste aparelho. Use o botão Escrever tarefa.",
-            )
-            return
-        }
+    fun start(host: Context = context) {
+        hostContext = host
+        val speechHost = unwrapActivity(host)
+        backend = VoiceEngine.initial(
+            recognitionAvailable = SpeechRecognizer.isRecognitionAvailable(speechHost),
+            onDeviceAvailable = onDeviceAvailable(speechHost),
+        )
         session = true
         retries = 0
         heardReady = false
         startedAt = SystemClock.elapsedRealtime()
+        if (backend == VoiceEngine.Capture.SYSTEM_UI) {
+            requestSystemUi()
+            return
+        }
         _ui.value = VoiceUiState(state = VoiceState.PREPARING)
         beginListening()
     }
@@ -53,6 +60,7 @@ class VoiceCaptureController(private val context: Context) {
     fun cancel() {
         session = false
         stopInternal()
+        hostContext = context
         _ui.value = VoiceUiState()
     }
 
@@ -60,13 +68,47 @@ class VoiceCaptureController(private val context: Context) {
         _ui.value = VoiceUiState()
     }
 
+    fun consumeSystemRequest() {
+        _ui.value = _ui.value.copy(needSystem = false)
+    }
+
+    fun acceptTranscript(text: String) {
+        finishWith(text.trim())
+    }
+
+    fun systemListenIntent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "pt-BR")
+        putExtra(RecognizerIntent.EXTRA_PROMPT, "Pode falar o recado")
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+    }
+
     private fun beginListening() {
         if (!session) return
         destroyRecognizer()
-        val sr = SpeechRecognizer.createSpeechRecognizer(context)
+        val speechHost = unwrapActivity(hostContext)
+        val sr = runCatching { createRecognizer(speechHost) }.getOrNull()
+        if (sr == null) {
+            switchOrFail(VoiceRetry.CLIENT)
+            return
+        }
         recognizer = sr
         sr.setRecognitionListener(listener)
-        sr.startListening(listenIntent())
+        runCatching { sr.startListening(listenIntent()) }
+            .onFailure { switchOrFail(VoiceRetry.CLIENT) }
+    }
+
+    private fun createRecognizer(host: Context): SpeechRecognizer {
+        if (backend == VoiceEngine.Capture.IN_APP_ON_DEVICE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                SpeechRecognizer.isOnDeviceRecognitionAvailable(host)
+            ) {
+                return SpeechRecognizer.createOnDeviceSpeechRecognizer(host)
+            }
+            error("on-device unavailable")
+        }
+        return SpeechRecognizer.createSpeechRecognizer(host)
     }
 
     private fun listenIntent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -105,6 +147,55 @@ class VoiceCaptureController(private val context: Context) {
             finalText = text.ifBlank { null },
             error = if (text.isBlank()) "Não entendi o que foi dito." else null,
         )
+    }
+
+    private fun requestSystemUi() {
+        session = false
+        stopRecognizerOnly()
+        _ui.value = VoiceUiState(state = VoiceState.PREPARING, needSystem = true)
+    }
+
+    private fun failWith(error: Int) {
+        val human = when (error) {
+            SpeechRecognizer.ERROR_NO_MATCH,
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+            -> "Não consegui ouvir. Toque no microfone, espere “Pode falar agora” e fale."
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS,
+            -> "Preciso da permissão do microfone para ouvir você."
+            SpeechRecognizer.ERROR_NETWORK,
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
+            -> "A fala precisa de um reconhecimento do aparelho. Tente de novo ou escreva o recado."
+            else -> "Não consegui ouvir. Toque de novo ou escreva o recado."
+        }
+        session = false
+        stopRecognizerOnly()
+        _ui.value = VoiceUiState(state = VoiceState.ERROR, error = human)
+    }
+
+    private fun switchOrFail(error: Int) {
+        val next = VoiceEngine.afterFail(
+            error = error,
+            heardReady = heardReady,
+            current = backend,
+            onDeviceAvailable = onDeviceAvailable(unwrapActivity(hostContext)),
+        )
+        when (next) {
+            VoiceEngine.Capture.IN_APP_ON_DEVICE -> {
+                backend = next
+                retries = 0
+                heardReady = false
+                _ui.value = _ui.value.copy(state = VoiceState.PREPARING, error = null)
+                handler.removeCallbacksAndMessages(null)
+                handler.postDelayed({ if (session) beginListening() }, 350)
+            }
+            VoiceEngine.Capture.SYSTEM_UI -> requestSystemUi()
+            VoiceEngine.Capture.IN_APP_DEFAULT, null -> failWith(error)
+        }
+    }
+
+    private fun onDeviceAvailable(host: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        return SpeechRecognizer.isOnDeviceRecognitionAvailable(host)
     }
 
     private val listener = object : RecognitionListener {
@@ -149,22 +240,7 @@ class VoiceCaptureController(private val context: Context) {
                     )
                     handler.postDelayed({ if (session) beginListening() }, 350)
                 }
-                VoiceRetry.Action.FAIL -> {
-                    val human = when (error) {
-                        SpeechRecognizer.ERROR_NO_MATCH,
-                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-                        -> "Não consegui ouvir. Toque no microfone, espere “Pode falar agora” e fale."
-                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS,
-                        -> "Preciso da permissão do microfone para ouvir você."
-                        SpeechRecognizer.ERROR_NETWORK,
-                        SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
-                        -> "A fala precisa de um reconhecimento do aparelho. Tente de novo ou escreva o recado."
-                        else -> "Não consegui ouvir. Toque de novo ou escreva o recado."
-                    }
-                    session = false
-                    stopRecognizerOnly()
-                    _ui.value = VoiceUiState(state = VoiceState.ERROR, error = human)
-                }
+                VoiceRetry.Action.FAIL -> switchOrFail(error)
             }
         }
 
@@ -180,4 +256,15 @@ class VoiceCaptureController(private val context: Context) {
 
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
     }
+}
+
+internal fun unwrapActivity(context: Context): Context {
+    var current: Context = context
+    val seen = HashSet<Context>()
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        if (!seen.add(current)) break
+        current = current.baseContext ?: break
+    }
+    return context
 }

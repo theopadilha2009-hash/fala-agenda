@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.theopadilha.falaagenda.reminders.AlarmIds
@@ -17,6 +18,7 @@ class MainActivity : ComponentActivity() {
     private val startSpeak = MutableStateFlow(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         openOccurrenceId.value = intent.occurrenceId()

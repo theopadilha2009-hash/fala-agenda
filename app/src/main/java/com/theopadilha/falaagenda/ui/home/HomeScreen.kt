@@ -22,9 +22,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,7 +52,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -71,6 +68,7 @@ import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
+import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -214,25 +212,20 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Fala Agenda",
-                        style = MaterialTheme.typography.headlineMedium,
-                        modifier = Modifier.semantics { heading() },
-                    )
-                    Text(
-                        AgendaFormat.headline(
-                            nowTime = LocalTime.now(),
-                            today = LocalDate.now(),
-                            nextTitle = next?.series?.title,
-                            nextDate = next?.occurrence?.localDate,
-                            nextTime = next?.series?.localTime,
-                            missedCount = agenda.missed.size,
-                        ),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    AgendaFormat.headline(
+                        nowTime = LocalTime.now(),
+                        today = LocalDate.now(),
+                        nextTitle = next?.series?.title,
+                        nextDate = next?.occurrence?.localDate,
+                        nextTime = next?.series?.localTime,
+                        missedCount = agenda.missed.size,
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { heading() },
+                )
                 if (busy) {
                     CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                 }
@@ -251,9 +244,13 @@ fun HomeScreen(
             ) {
                 if (agenda.today.isEmpty() && agenda.upcoming.isEmpty()) {
                     item {
-                        ExamplePhrases { phrase ->
-                            scope.launch { handleDraft(viewModel.parse(phrase)) }
-                        }
+                        Text(
+                            "Pode falar: tomar remédio amanhã às 8h",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
                 if (inexact) {
@@ -593,21 +590,11 @@ private fun MicDock(
         if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
             Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
         }
-        IconButton(
+        PulsingMic(
+            state = state,
+            contentDescription = action,
             onClick = onMic,
-            modifier = Modifier
-                .size(88.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .semantics { contentDescription = action },
-        ) {
-            Icon(
-                Icons.Outlined.Mic,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(40.dp),
-            )
-        }
+        )
         if (state == VoiceState.IDLE) {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -631,33 +618,6 @@ private fun MicDock(
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun ExamplePhrases(onPick: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Text(
-            "Pode falar assim:",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            VOICE_EXAMPLES.forEach { phrase ->
-                FilterChip(
-                    selected = false,
-                    onClick = { onPick(phrase) },
-                    label = { Text(phrase) },
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
-@Composable
 private fun SnoozeChips(onPick: (Long) -> Unit) {
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -673,12 +633,6 @@ private fun SnoozeChips(onPick: (Long) -> Unit) {
         }
     }
 }
-
-private val VOICE_EXAMPLES = listOf(
-    "tomar remédio daqui 10 minutos",
-    "ligar para o médico na sexta às 14h",
-    "pagar a conta amanhã às 8h",
-)
 
 private fun androidx.compose.foundation.lazy.LazyListScope.section(
     title: String,

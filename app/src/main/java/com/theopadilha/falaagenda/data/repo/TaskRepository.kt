@@ -97,6 +97,7 @@ class TaskRepository(
             startLocalDate = draft.localDate!!,
             recurrence = draft.recurrence,
             amountCents = draft.amountCents,
+            observation = draft.observation.trim(),
             createdAt = now,
             updatedAt = now,
         )
@@ -230,6 +231,7 @@ class TaskRepository(
         time: java.time.LocalTime,
         recurrence: com.theopadilha.falaagenda.domain.model.RecurrenceRule,
         amountCents: Long? = null,
+        observation: String = "",
     ) {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return
@@ -243,6 +245,7 @@ class TaskRepository(
                 series.copy(
                     title = title.trim(),
                     amountCents = amountCents,
+                    observation = observation.trim(),
                     updatedAt = now,
                 ).toEntity(),
             )
@@ -261,6 +264,7 @@ class TaskRepository(
             startLocalDate = date,
             recurrence = recurrence,
             amountCents = amountCents,
+            observation = observation.trim(),
             updatedAt = now,
         )
         seriesDao.upsert(updatedSeries.toEntity())

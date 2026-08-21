@@ -32,7 +32,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
@@ -87,7 +90,13 @@ fun ConfirmDraftScreen(
     var amountText by remember {
         mutableStateOf(initial.amountCents?.let { formatAmountInput(it) }.orEmpty())
     }
+    var observation by remember { mutableStateOf(initial.observation) }
     var showDate by remember { mutableStateOf(false) }
+    val titleFocus = remember { FocusRequester() }
+    LaunchedEffect(editing) {
+        if (!editing) return@LaunchedEffect
+        runCatching { titleFocus.requestFocus() }
+    }
     var showTime by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val haptic = LocalHapticFeedback.current
@@ -142,12 +151,24 @@ fun ConfirmDraftScreen(
                 onValueChange = { title = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 88.dp),
+                    .heightIn(min = 88.dp)
+                    .focusRequester(titleFocus),
                 label = { Text("O que precisa ser feito") },
                 placeholder = { Text("Escreva aqui, do seu jeito") },
                 minLines = 2,
                 maxLines = 5,
                 isError = title.isBlank(),
+            )
+            OutlinedTextField(
+                value = observation,
+                onValueChange = { observation = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 88.dp),
+                label = { Text("Observação (opcional)") },
+                placeholder = { Text("Ex.: levar a carteirinha") },
+                minLines = 2,
+                maxLines = 5,
             )
             OutlinedTextField(
                 value = amountText,
@@ -302,6 +323,7 @@ fun ConfirmDraftScreen(
                             localTime = chosenTime,
                             recurrence = recurrenceFor(kind, chosenDate, weekDays),
                             amountCents = cents,
+                            observation = observation,
                         ),
                     )
                 },

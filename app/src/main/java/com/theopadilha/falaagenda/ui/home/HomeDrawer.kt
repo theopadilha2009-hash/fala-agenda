@@ -11,6 +11,7 @@ import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Today
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material3.HorizontalDivider
@@ -31,6 +32,7 @@ fun HomeDrawerSheet(
     onMonth: () -> Unit,
     onUpdate: () -> Unit,
     onShare: () -> Unit,
+    onShareDay: () -> Unit,
     onBattery: () -> Unit,
     onWidget: () -> Unit,
     onSettings: () -> Unit,
@@ -51,6 +53,12 @@ fun HomeDrawerSheet(
                 selected = false,
                 onClick = onMonth,
                 icon = { Icon(Icons.Outlined.CalendarMonth, contentDescription = null) },
+            )
+            NavigationDrawerItem(
+                label = { Text("Enviar o dia") },
+                selected = false,
+                onClick = onShareDay,
+                icon = { Icon(Icons.Outlined.Today, contentDescription = null) },
             )
             NavigationDrawerItem(
                 label = { Text("Atualizar aplicativo") },

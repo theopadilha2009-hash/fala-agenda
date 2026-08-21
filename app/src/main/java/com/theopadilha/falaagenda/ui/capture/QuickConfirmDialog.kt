@@ -50,6 +50,9 @@ fun QuickConfirmDialog(
                 draft.amountCents?.let {
                     Text(Money.formatReais(it), style = MaterialTheme.typography.bodyLarge)
                 }
+                if (draft.observation.isNotBlank()) {
+                    Text(draft.observation, style = MaterialTheme.typography.bodyMedium)
+                }
                 Text(
                     "Para mudar o texto, a data, o horário ou o valor, toque em Mudar.",
                     style = MaterialTheme.typography.bodyMedium,

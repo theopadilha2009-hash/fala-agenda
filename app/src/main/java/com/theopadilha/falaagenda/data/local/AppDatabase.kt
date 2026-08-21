@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [SeriesEntity::class, OccurrenceEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -25,9 +25,18 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        const val MIGRATE_2_3_SQL =
+            "ALTER TABLE task_series ADD COLUMN observation TEXT NOT NULL DEFAULT ''"
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(MIGRATE_2_3_SQL)
+            }
+        }
+
         fun create(context: Context, name: String = "fala_agenda.db"): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
 
         fun inMemory(context: Context): AppDatabase =

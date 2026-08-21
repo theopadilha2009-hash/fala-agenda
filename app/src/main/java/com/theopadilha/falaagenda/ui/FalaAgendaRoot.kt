@@ -122,6 +122,7 @@ fun FalaAgendaRoot(
                         ambiguous = false,
                         transcript = "",
                         amountCents = item.series.amountCents,
+                        observation = item.series.observation,
                     )
                     nav.navigate("confirm") {
                         launchSingleTop = true
@@ -212,6 +213,7 @@ fun FalaAgendaRoot(
                                 time,
                                 confirmed.recurrence,
                                 confirmed.amountCents,
+                                confirmed.observation,
                             )
                             editingItem = null
                             statusMessage = AgendaFormat.announce(date, time, LocalDate.now())

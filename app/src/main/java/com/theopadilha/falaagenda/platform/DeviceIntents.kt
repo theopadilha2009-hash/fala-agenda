@@ -14,6 +14,14 @@ import java.io.File
 object DeviceIntents {
     fun fileProviderAuthority(context: Context): String = "${context.packageName}.files"
 
+    fun shareText(text: String, chooserTitle: String = "Enviar"): Intent {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        return Intent.createChooser(send, chooserTitle)
+    }
+
     fun shareLink(): Intent {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"

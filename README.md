@@ -2,13 +2,13 @@
 
 Agenda por voz para Android. Você fala o recado, confere o que foi entendido e o aviso toca no horário. As tarefas ficam **só no aparelho**.
 
-Versão **0.5.1** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
+Versão **0.5.2** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
 
 ## O que o aplicativo faz
 
 - Tela principal com **Hoje**, **Próximas**, **Concluídas** e **Não realizadas**.
 - Ícone e splash com microfone. O botão **pulsa** parado e faz ondas enquanto ouve.
-- Microfone **sempre embaixo**, visível ao abrir. Toque uma vez — **não precisa segurar**. O aplicativo espera ficar pronto e só então mostra **Pode falar agora**. Se não ouvir, tenta de novo sozinho (até 3 vezes).
+- Microfone **sempre embaixo**, visível ao abrir. Toque uma vez — **não precisa segurar**. O aplicativo espera ficar pronto e só então mostra **Pode falar agora**. Se o microfone interno falhar, abre o reconhecimento do próprio celular. Se não ouvir, tenta de novo sozinho.
 - Primeira visita em **uma** tela.
 - Atalho de lançador **Falar** (segurar o ícone do aplicativo).
 - Estados **Ouvindo** e **Entendendo**, resultados parciais, para após silêncio.

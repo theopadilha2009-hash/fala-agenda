@@ -2,11 +2,14 @@ package com.theopadilha.falaagenda.ui.home
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -152,8 +155,33 @@ fun HomeScreen(
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) voice.start() else {
+        if (granted) voice.start(context) else {
             scope.launch { snackbar.showSnackbar("Preciso do microfone só enquanto você fala.") }
+        }
+    }
+
+    val systemSpeech = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val text = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+        if (text.isNotEmpty()) {
+            voice.acceptTranscript(text)
+        } else {
+            voice.cancel()
+        }
+    }
+
+    val startVoice: () -> Unit = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            voice.start(context)
+        } else {
+            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -165,14 +193,24 @@ fun HomeScreen(
         ) {
             voice.cancel()
         } else {
-            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            startVoice()
         }
     }
 
     LaunchedEffect(startSpeak) {
         if (!startSpeak) return@LaunchedEffect
         onStartSpeakConsumed()
-        micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        startVoice()
+    }
+
+    LaunchedEffect(voiceUi.needSystem) {
+        if (!voiceUi.needSystem) return@LaunchedEffect
+        voice.consumeSystemRequest()
+        runCatching { systemSpeech.launch(voice.systemListenIntent()) }
+            .onFailure {
+                snackbar.showSnackbar("A fala não está disponível neste aparelho. Use o botão Escrever tarefa.")
+                voice.cancel()
+            }
     }
 
     LaunchedEffect(voiceUi.finalText) {

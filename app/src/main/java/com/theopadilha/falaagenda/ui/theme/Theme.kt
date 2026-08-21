@@ -75,13 +75,13 @@ private val darkColors = darkColorScheme(
 )
 
 private val typography = Typography(
-    displaySmall = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 28.sp),
-    headlineMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 22.sp),
-    titleLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 20.sp),
-    titleMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 18.sp),
-    bodyLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 17.sp, lineHeight = 24.sp),
-    bodyMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 22.sp),
-    labelLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 16.sp),
+    displaySmall = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 30.sp),
+    headlineMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 24.sp, lineHeight = 32.sp),
+    titleLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.SemiBold, fontSize = 22.sp, lineHeight = 28.sp),
+    titleMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 20.sp, lineHeight = 26.sp),
+    bodyLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 18.sp, lineHeight = 26.sp),
+    bodyMedium = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Normal, fontSize = 17.sp, lineHeight = 24.sp),
+    labelLarge = TextStyle(fontFamily = FigtreeFamily, fontWeight = FontWeight.Medium, fontSize = 18.sp),
 )
 
 @Composable

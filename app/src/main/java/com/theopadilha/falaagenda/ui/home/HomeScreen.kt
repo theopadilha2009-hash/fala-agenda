@@ -34,9 +34,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -61,7 +58,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
@@ -99,6 +95,8 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenMonth: () -> Unit,
     onOpenUpdate: () -> Unit,
+    onWrite: () -> Unit,
+    onQuick: (Long) -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
     statusMessage: String? = null,
@@ -138,12 +136,7 @@ fun HomeScreen(
             }
         }
     }
-    var writing by remember { mutableStateOf(false) }
-    var writeText by remember { mutableStateOf("") }
-    var selected by remember { mutableStateOf<AgendaItem?>(null) }
     var quickDraft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
-    var quickMinutes by remember { mutableStateOf<Long?>(null) }
-    var quickTitle by remember { mutableStateOf("") }
     val handleDraft: (ParsedTaskDraft) -> Unit = { draft ->
         if (draft.canQuickConfirm(Instant.now(), ZoneId.systemDefault())) {
             quickDraft = draft
@@ -206,7 +199,7 @@ fun HomeScreen(
         val id = openOccurrenceId ?: return@LaunchedEffect
         val item = agenda.find(id)
         if (item != null) {
-            selected = item
+            onEditItem(item)
             onOpenOccurrenceConsumed()
         }
     }
@@ -254,11 +247,8 @@ fun HomeScreen(
                 partial = voiceUi.partial,
                 error = voiceUi.error,
                 onMic = onMic,
-                onWrite = { writing = true },
-                onQuick = { minutes ->
-                    quickMinutes = minutes
-                    quickTitle = ""
-                },
+                onWrite = onWrite,
+                onQuick = onQuick,
             )
         },
     ) { padding ->
@@ -391,38 +381,23 @@ fun HomeScreen(
                     agenda.today,
                     empty = "Nada para hoje. Toque no microfone embaixo e fale o recado.",
                     showWhenEmpty = true,
-                    onClick = { selected = it },
+                    onClick = onEditItem,
                     onComplete = completeWithUndo,
-                    onSnoozeQuick = { item ->
-                        viewModel.snooze(item.occurrence.id, 10) { message ->
-                            scope.launch { snackbar.showSnackbar(message) }
-                        }
-                    },
                 )
                 section(
                     "Próximas",
                     agenda.upcoming,
                     empty = "Nenhuma próxima tarefa.",
                     showWhenEmpty = false,
-                    onClick = { selected = it },
+                    onClick = onEditItem,
                     onComplete = completeWithUndo,
-                    onSnoozeQuick = { item ->
-                        viewModel.snooze(item.occurrence.id, 10) { message ->
-                            scope.launch { snackbar.showSnackbar(message) }
-                        }
-                    },
                 )
                 section(
                     "Concluídas",
                     agenda.completed,
                     empty = "Nenhuma concluída ainda.",
                     showWhenEmpty = false,
-                    onRepeat = { item ->
-                        viewModel.repeatTomorrow(item) { message ->
-                            scope.launch { snackbar.showSnackbar(message) }
-                        }
-                    },
-                    onClick = { selected = it },
+                    onClick = onEditItem,
                 )
                 section(
                     "Não realizadas",
@@ -430,12 +405,7 @@ fun HomeScreen(
                     empty = "Nada ficou para trás.",
                     showWhenEmpty = false,
                     emphasize = true,
-                    onRetry = { item ->
-                        viewModel.retryMissed(item.occurrence.id) { message ->
-                            scope.launch { snackbar.showSnackbar(message) }
-                        }
-                    },
-                    onClick = { selected = it },
+                    onClick = onEditItem,
                 )
             }
         }
@@ -453,208 +423,6 @@ fun HomeScreen(
                 TextButton(onClick = { widgetHelp = false }, modifier = Modifier.height(48.dp)) {
                     Text("Entendi")
                 }
-            },
-        )
-    }
-
-    if (writing) {
-        val submitWrite: () -> Unit = {
-            val text = writeText.trim()
-            if (text.isBlank()) {
-                scope.launch {
-                    snackbar.showSnackbar("Escreva o recado, por exemplo: tomar o remédio amanhã às 9h")
-                }
-            } else {
-                writing = false
-                writeText = ""
-                scope.launch { handleDraft(viewModel.parse(text)) }
-            }
-        }
-        AlertDialog(
-            onDismissRequest = { writing = false },
-            title = { Text("Escrever tarefa") },
-            text = {
-                OutlinedTextField(
-                    value = writeText,
-                    onValueChange = { writeText = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Ex.: tomar remédio amanhã às 9h") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { submitWrite() }),
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = submitWrite,
-                    modifier = Modifier.height(48.dp),
-                ) { Text("Continuar") }
-            },
-            dismissButton = {
-                TextButton(onClick = { writing = false }, modifier = Modifier.height(48.dp)) {
-                    Text("Cancelar")
-                }
-            },
-        )
-    }
-
-    quickMinutes?.let { minutes ->
-        val label = if (minutes == 60L) "1 hora" else "$minutes min"
-        val submitQuick: () -> Unit = {
-            val title = quickTitle.trim()
-            if (title.isBlank()) {
-                scope.launch { snackbar.showSnackbar("Escreva o que precisa lembrar.") }
-            } else {
-                val mins = minutes
-                quickMinutes = null
-                quickTitle = ""
-                viewModel.quickRemind(title, mins) { message ->
-                    scope.launch { snackbar.showSnackbar(message) }
-                }
-            }
-        }
-        AlertDialog(
-            onDismissRequest = { quickMinutes = null },
-            title = { Text("Daqui $label") },
-            text = {
-                OutlinedTextField(
-                    value = quickTitle,
-                    onValueChange = { quickTitle = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("O que precisa ser feito") },
-                    placeholder = { Text("Ex.: tomar água") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { submitQuick() }),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = submitQuick, modifier = Modifier.height(48.dp)) {
-                    Text("Salvar")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { quickMinutes = null }, modifier = Modifier.height(48.dp)) {
-                    Text("Cancelar")
-                }
-            },
-        )
-    }
-
-    selected?.let { item ->
-        AlertDialog(
-            onDismissRequest = { selected = null },
-            title = { Text(item.series.title) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("${AgendaFormat.longDate(item.occurrence.localDate)} às ${AgendaFormat.time(item.series.localTime)}")
-                    Text(item.series.recurrence.describePtBr())
-                    item.series.amountCents?.let { cents ->
-                        Text(Money.formatReais(cents))
-                    }
-                    if (item.occurrence.status == OccurrenceStatus.PENDING ||
-                        item.occurrence.status == OccurrenceStatus.MISSED
-                    ) {
-                        TextButton(
-                            onClick = {
-                                completeWithUndo(item)
-                                selected = null
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                        ) { Text("Concluir") }
-                    }
-                    if (item.occurrence.status == OccurrenceStatus.PENDING) {
-                        Text("Adiar", style = MaterialTheme.typography.bodyMedium)
-                        SnoozeChips { minutes ->
-                            viewModel.snooze(item.occurrence.id, minutes) { message ->
-                                scope.launch { snackbar.showSnackbar(message) }
-                            }
-                            selected = null
-                        }
-                    }
-                    if (item.occurrence.status == OccurrenceStatus.MISSED &&
-                        !item.series.recurrence.isRecurring
-                    ) {
-                        TextButton(
-                            onClick = {
-                                val id = item.occurrence.id
-                                selected = null
-                                viewModel.retryMissed(id) { message ->
-                                    scope.launch { snackbar.showSnackbar(message) }
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                        ) { Text("Fazer hoje") }
-                    }
-                    if (item.occurrence.status == OccurrenceStatus.COMPLETED &&
-                        !item.series.recurrence.isRecurring
-                    ) {
-                        TextButton(
-                            onClick = {
-                                val current = item
-                                selected = null
-                                viewModel.repeatTomorrow(current) { message ->
-                                    scope.launch { snackbar.showSnackbar(message) }
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                        ) { Text("Amanhã de novo") }
-                    }
-                    TextButton(
-                        onClick = {
-                            val current = item
-                            selected = null
-                            onEditItem(current)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                    ) { Text("Editar") }
-                    TextButton(
-                        onClick = {
-                            val current = item
-                            selected = null
-                            viewModel.delete(current) {
-                                scope.launch {
-                                    val result = snackbar.showSnackbar(
-                                        message = "Tarefa excluída.",
-                                        actionLabel = "Desfazer",
-                                        duration = SnackbarDuration.Long,
-                                    )
-                                    if (result == SnackbarResult.ActionPerformed) {
-                                        viewModel.undoDelete()
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                    ) { Text("Excluir") }
-                    if (item.series.recurrence.isRecurring) {
-                        TextButton(
-                            onClick = {
-                                viewModel.endSeries(item.series.id)
-                                selected = null
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                        ) { Text("Encerrar série") }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { selected = null },
-                    modifier = Modifier.height(48.dp),
-                ) { Text("Fechar") }
             },
         )
     }
@@ -714,8 +482,8 @@ private fun MicDock(
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.background)
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(label, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
         if (state == VoiceState.ERROR) {
@@ -739,31 +507,14 @@ private fun MicDock(
                     FilterChip(
                         selected = false,
                         onClick = { onQuick(minutes) },
-                        label = { Text(chip) },
+                        modifier = Modifier.height(48.dp),
+                        label = { Text(chip, style = MaterialTheme.typography.labelLarge) },
                     )
                 }
             }
-            TextButton(onClick = onWrite, modifier = Modifier.height(48.dp)) {
-                Text("Escrever tarefa")
+            TextButton(onClick = onWrite, modifier = Modifier.height(56.dp)) {
+                Text("Escrever tarefa", style = MaterialTheme.typography.labelLarge)
             }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
-@Composable
-private fun SnoozeChips(onPick: (Long) -> Unit) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        listOf(10L to "10 min", 30L to "30 min", 60L to "1 hora").forEach { (minutes, label) ->
-            FilterChip(
-                selected = false,
-                onClick = { onPick(minutes) },
-                label = { Text(label) },
-            )
         }
     }
 }
@@ -775,9 +526,6 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     showWhenEmpty: Boolean = true,
     emphasize: Boolean = false,
     onComplete: ((AgendaItem) -> Unit)? = null,
-    onRetry: ((AgendaItem) -> Unit)? = null,
-    onSnoozeQuick: ((AgendaItem) -> Unit)? = null,
-    onRepeat: ((AgendaItem) -> Unit)? = null,
     onClick: (AgendaItem) -> Unit,
 ) {
     if (items.isEmpty() && !showWhenEmpty) return
@@ -820,14 +568,14 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
             QuietCard(
                 onClick = { onClick(item) },
                 modifier = Modifier.semantics {
-                    contentDescription = "${item.series.title}, $detail. Toque para ver."
+                    contentDescription = "${item.series.title}, $detail. Toque para editar."
                 },
             ) {
                 Row(
-                    Modifier.padding(16.dp).fillMaxWidth(),
+                    Modifier.padding(20.dp).fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(Modifier.weight(1f)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             item.series.title,
                             style = MaterialTheme.typography.titleMedium,
@@ -837,39 +585,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                                 MaterialTheme.colorScheme.onSurface
                             },
                         )
-                        Text(detail)
+                        Text(detail, style = MaterialTheme.typography.bodyLarge)
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
-                            TextButton(
-                                onClick = { onComplete(item) },
-                                modifier = Modifier.height(48.dp),
-                            ) { Text("Concluir") }
-                        }
-                        if (onSnoozeQuick != null && item.occurrence.status == OccurrenceStatus.PENDING) {
-                            TextButton(
-                                onClick = { onSnoozeQuick(item) },
-                                modifier = Modifier.height(48.dp),
-                            ) { Text("10 min") }
-                        }
-                        if (onRetry != null &&
-                            item.occurrence.status == OccurrenceStatus.MISSED &&
-                            !item.series.recurrence.isRecurring
-                        ) {
-                            TextButton(
-                                onClick = { onRetry(item) },
-                                modifier = Modifier.height(48.dp),
-                            ) { Text("Fazer hoje") }
-                        }
-                        if (onRepeat != null &&
-                            item.occurrence.status == OccurrenceStatus.COMPLETED &&
-                            !item.series.recurrence.isRecurring
-                        ) {
-                            TextButton(
-                                onClick = { onRepeat(item) },
-                                modifier = Modifier.height(48.dp),
-                            ) { Text("Amanhã") }
-                        }
+                    if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
+                        TextButton(
+                            onClick = { onComplete(item) },
+                            modifier = Modifier.height(56.dp),
+                        ) { Text("Concluir") }
                     }
                 }
             }

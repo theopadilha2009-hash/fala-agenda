@@ -1,6 +1,7 @@
 package com.theopadilha.falaagenda.platform
 
 import android.annotation.SuppressLint
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -19,6 +20,7 @@ object DeviceIntents {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "application/vnd.android.package-archive"
             putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newRawUri("Fala Agenda", uri)
             putExtra(
                 Intent.EXTRA_TEXT,
                 "Fala Agenda — agenda por voz. Instale o arquivo, ou baixe em ${AppUpdater.RELEASES_PAGE}",

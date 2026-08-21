@@ -49,6 +49,9 @@ class MonthInsightsTest {
     fun parseReais() {
         assertThat(Money.parseReais("80")).isEqualTo(8000)
         assertThat(Money.parseReais("R$ 80,50")).isEqualTo(8050)
+        assertThat(Money.parseReais("80.50")).isEqualTo(8050)
+        assertThat(Money.parseReais("80.5")).isEqualTo(8050)
+        assertThat(Money.parseReais("1.080,50")).isEqualTo(108050)
         assertThat(Money.parseReais("")).isNull()
     }
 

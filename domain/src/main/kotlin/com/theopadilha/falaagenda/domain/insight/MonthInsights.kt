@@ -61,13 +61,26 @@ object MonthInsights {
 
 object Money {
     fun parseReais(text: String): Long? {
-        val raw = text.trim()
+        val trimmed = text.trim()
             .replace("R$", "", ignoreCase = true)
             .replace(" ", "")
-            .replace(".", "")
-            .replace(",", ".")
-        if (raw.isBlank()) return null
-        val value = raw.toDoubleOrNull() ?: return null
+        if (trimmed.isBlank()) return null
+        val normalized = when {
+            trimmed.contains(',') && trimmed.contains('.') -> {
+                if (trimmed.lastIndexOf(',') > trimmed.lastIndexOf('.')) {
+                    trimmed.replace(".", "").replace(",", ".")
+                } else {
+                    trimmed.replace(",", "")
+                }
+            }
+            trimmed.contains(',') -> trimmed.replace(".", "").replace(",", ".")
+            trimmed.contains('.') -> {
+                val parts = trimmed.split('.')
+                if (parts.size == 2 && parts[1].length in 1..2) trimmed else trimmed.replace(".", "")
+            }
+            else -> trimmed
+        }
+        val value = normalized.toDoubleOrNull() ?: return null
         if (value < 0) return null
         return Math.round(value * 100.0)
     }

@@ -135,6 +135,7 @@ class HomeViewModel(
             ambiguous = false,
             transcript = "",
             source = DraftSource.MANUAL,
+            amountCents = item.series.amountCents,
         )
         saveDraft(draft, onDone = { usedInexact ->
             setInexactWarning(usedInexact)

@@ -8,6 +8,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 data class UpdateCheck(
@@ -53,6 +54,7 @@ class AppUpdater(
     }
 
     fun download(url: String): File {
+        if (!allowedDownloadUrl(url)) error("Fonte de atualização inválida.")
         val dest = File(updatesDir(context), "Fala-Agenda-update.apk")
         val request = Request.Builder()
             .url(url)
@@ -63,8 +65,23 @@ class AppUpdater(
             if (!response.isSuccessful) {
                 error("Não deu para baixar o instalador (${response.code}).")
             }
-            val bytes = response.body?.bytes() ?: error("O arquivo veio vazio.")
-            dest.writeBytes(bytes)
+            val body = response.body ?: error("O arquivo veio vazio.")
+            val declared = body.contentLength()
+            if (declared > MAX_APK_BYTES) error("O instalador veio grande demais.")
+            var total = 0L
+            dest.outputStream().use { out ->
+                body.byteStream().use { input ->
+                    val buf = ByteArray(8 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        total += n
+                        if (total > MAX_APK_BYTES) error("O instalador veio grande demais.")
+                        out.write(buf, 0, n)
+                    }
+                }
+            }
+            if (total == 0L) error("O arquivo veio vazio.")
         }
         return dest
     }
@@ -78,6 +95,16 @@ class AppUpdater(
         fun localVersion(): String = BuildConfig.VERSION_NAME.substringBefore("-")
 
         fun isDebugInstall(): Boolean = BuildConfig.APPLICATION_ID.endsWith(".debug")
+
+        const val MAX_APK_BYTES = 40L * 1024 * 1024
+
+        fun allowedDownloadUrl(url: String): Boolean {
+            val host = runCatching { URI(url).host }.getOrNull()?.lowercase() ?: return false
+            return host == "github.com" ||
+                host.endsWith(".github.com") ||
+                host == "githubusercontent.com" ||
+                host.endsWith(".githubusercontent.com")
+        }
 
         fun updatesDir(context: Context): File =
             File(context.cacheDir, "updates").apply { mkdirs() }

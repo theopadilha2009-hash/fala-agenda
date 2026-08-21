@@ -223,7 +223,14 @@ fun HomeScreen(
                     }
                 },
                 onBattery = {
-                    closeAnd { context.startActivity(DeviceIntents.batterySettings(context)) }
+                    closeAnd {
+                        context.startActivity(DeviceIntents.batterySettings(context))
+                        scope.launch {
+                            snackbar.showSnackbar(
+                                "Se o aviso continuar falhando no Xiaomi/Samsung: Ajustes → Apps → Fala Agenda → bateria sem restrição e autostart.",
+                            )
+                        }
+                    }
                 },
                 onWidget = { closeAnd { widgetHelp = true } },
                 onSettings = { closeAnd(onOpenSettings) },

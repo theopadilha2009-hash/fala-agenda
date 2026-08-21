@@ -41,6 +41,14 @@ class AppUpdaterTest {
     }
 
     @Test
+    fun soAceitaDownloadDoGithub() {
+        assertThat(AppUpdater.allowedDownloadUrl("https://github.com/theopadilha2009-hash/fala-agenda/releases/download/v0.4.0/app-release.apk")).isTrue()
+        assertThat(AppUpdater.allowedDownloadUrl("https://objects.githubusercontent.com/github-production-release-asset-2e65be/foo")).isTrue()
+        assertThat(AppUpdater.allowedDownloadUrl("https://evil.example/app-release.apk")).isFalse()
+        assertThat(AppUpdater.allowedDownloadUrl("not-a-url")).isFalse()
+    }
+
+    @Test
     fun mesmaVersaoNaoAtualiza() {
         val json = """
             {

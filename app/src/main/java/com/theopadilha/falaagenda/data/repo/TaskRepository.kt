@@ -219,6 +219,20 @@ class TaskRepository(
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return
         val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
+        val original = row.toDomain()
+        val sameWhen = original.localDate == date && series.localTime == time
+        val finished = original.status == OccurrenceStatus.COMPLETED ||
+            original.status == OccurrenceStatus.MISSED
+        if (finished && sameWhen && recurrence == series.recurrence) {
+            seriesDao.upsert(
+                series.copy(
+                    title = title.trim(),
+                    amountCents = amountCents,
+                    updatedAt = now,
+                ).toEntity(),
+            )
+            return
+        }
         occurrenceDao.forSeries(series.id)
             .map { it.toDomain() }
             .filter { it.status == OccurrenceStatus.PENDING }

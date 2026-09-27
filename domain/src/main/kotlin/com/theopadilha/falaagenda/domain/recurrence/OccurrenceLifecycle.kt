@@ -9,6 +9,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.temporal.ChronoUnit
 
 data class LifecycleChange(
     val upserts: List<TaskOccurrence> = emptyList(),
@@ -17,8 +18,9 @@ data class LifecycleChange(
 )
 
 object OccurrenceLifecycle {
-    // atalho: tombstone guarda só os últimos 90 dias e no máximo 120 datas; revisitar se
-    // editar/concluir ocorrência muito antiga voltar a rematerializar uma data excluída
+    // atalho: tombstone guarda só os últimos 90 dias e no máximo 120 datas, sempre as mais
+    // próximas de hoje; revisitar se editar/concluir ocorrência muito antiga voltar a
+    // rematerializar uma data excluída
     const val SKIPPED_RETENTION_DAYS = 90L
     const val MAX_SKIPPED_DATES = 120
 
@@ -32,9 +34,14 @@ object OccurrenceLifecycle {
         todayInSeriesZone: LocalDate,
     ): Set<LocalDate> {
         val limite = todayInSeriesZone.minusDays(SKIPPED_RETENTION_DAYS)
+        // O teto corta as datas mais DISTANTES de hoje: são as próximas que o preview/advance
+        // vão materializar, e uma tombstone descartada aí faz a data excluída renascer.
         return (skipped + localDate)
             .filter { !it.isBefore(limite) }
-            .sortedDescending()
+            .sortedWith(
+                compareBy<LocalDate> { kotlin.math.abs(ChronoUnit.DAYS.between(todayInSeriesZone, it)) }
+                    .thenByDescending { it },
+            )
             .take(MAX_SKIPPED_DATES)
             .toSet()
     }

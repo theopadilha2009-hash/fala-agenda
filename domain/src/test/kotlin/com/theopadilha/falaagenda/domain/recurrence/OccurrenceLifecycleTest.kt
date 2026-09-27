@@ -84,6 +84,39 @@ class OccurrenceLifecycleTest {
     }
 
     @Test
+    fun skipDatePreservaAsDatasMaisProximasDeHoje() {
+        val hoje = LocalDate.of(2026, 9, 27)
+        val excluida = LocalDate.of(2026, 9, 28)
+        val distantes = (0 until OccurrenceLifecycle.MAX_SKIPPED_DATES)
+            .map { LocalDate.of(2027, 1, 1).plusDays(it.toLong()) }
+            .toSet()
+
+        val depois = OccurrenceLifecycle.skipDate(distantes, excluida, hoje)
+
+        assertThat(depois).contains(excluida)
+        assertThat(depois.size).isAtMost(OccurrenceLifecycle.MAX_SKIPPED_DATES)
+    }
+
+    @Test
+    fun diaExcluidoNaoRenasceMesmoComTetoDeTombstonesCheio() {
+        val hoje = LocalDate.of(2026, 9, 27)
+        val excluida = LocalDate.of(2026, 9, 28)
+        val distantes = (0 until OccurrenceLifecycle.MAX_SKIPPED_DATES)
+            .map { LocalDate.of(2027, 1, 1).plusDays(it.toLong()) }
+            .toSet()
+        val skipped = OccurrenceLifecycle.skipDate(distantes, excluida, hoje)
+
+        val change = OccurrenceLifecycle.advance(
+            series = series(skipped = skipped),
+            existing = emptyList(),
+            now = now,
+            todayInSeriesZone = excluida,
+        )
+
+        assertThat(change.upserts).isEmpty()
+    }
+
+    @Test
     fun unskipDateDevolveAData() {
         val hoje = LocalDate.of(2026, 9, 27)
         val depois = OccurrenceLifecycle.unskipDate(setOf(hoje, hoje.minusDays(1)), hoje)

@@ -2,7 +2,7 @@
 
 Agenda por voz para Android. Você fala o recado, confere o que foi entendido e o aviso toca no horário. As tarefas ficam **só no aparelho**.
 
-Versão **0.5.2** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
+Versão **0.6.0** · pacote `com.theopadilha.falaagenda` · copyright 2026 Theo Lorentz Padilha. Todos os direitos reservados (veja `LICENSE`).
 
 ## O que o aplicativo faz
 
@@ -55,7 +55,7 @@ O parser local é determinístico. Só se o resultado ficar **ambíguo**, a IA e
 - Códigos de ativação são armazenados no servidor só como hash. O token do aparelho fica no Keystore (`EncryptedSharedPreferences`).
 - `parse-reminder` não grava transcript nem título. Logs mínimos, sem PII.
 - Sem URL/chave Supabase o aplicativo funciona normalmente e a ajuda extra aparece como **não ativada**.
-- **No APK de release as duas são obrigatórias**: o workflow lê os secrets `SUPABASE_URL` e `SUPABASE_ANON_KEY` e **falha o build** se faltarem (ou se não aparecerem dentro do dex). Antes disso os releases saíam sem a ajuda extra — o gate existe para não repetir.
+- **No APK de release as duas são obrigatórias**: o workflow lê os secrets `SUPABASE_URL` e `SUPABASE_ANON_KEY`, confere o **formato** dos dois e **falha o build** se faltarem, se a URL não for exatamente o host do projeto ou se a chave não for uma anon/public. Depois de compilar, o gate confere que os dois valores estão **dentro do dex**. Antes disso os releases saíam sem a ajuda extra — o gate existe para não repetir.
 
 ## Secrets do repositório (release)
 
@@ -63,14 +63,19 @@ Em Settings → Secrets and variables → Actions → Secrets:
 
 | Secret | Valor |
 |---|---|
-| `SUPABASE_URL` | `https://SEU-PROJETO.supabase.co` |
-| `SUPABASE_ANON_KEY` | chave **anon/public**, nunca a `service_role` |
+| `SUPABASE_URL` | `https://SEU-PROJETO.supabase.co` — **só o host**: sem caminho, porta, `?` ou `#`. Barra no fim é aceita e removida antes de entrar no APK |
+| `SUPABASE_ANON_KEY` | JWT **anon/public** (o payload precisa ter `role: anon`). A `service_role` é reprovada: ela ignora RLS e quem extrair a chave do APK ficaria com o banco inteiro |
 | `RELEASE_KEYSTORE_BASE64` | keystore de release em base64 |
 | `RELEASE_KEYSTORE_PASSWORD` / `RELEASE_KEY_ALIAS` / `RELEASE_KEY_PASSWORD` | dados do keystore |
 
-O release confere, antes de publicar: URL e chave dentro do dex, `versionName` igual à tag e
-impressão digital do certificado igual à da release anterior (senão o app instalado não
-aceita a atualização por cima).
+O release confere, antes de publicar: formato da URL (regex ancorada, só `https://<projeto>.supabase.co`)
+e da chave (`role: anon`, decodificando o JWT — o valor nunca vai para o log), os dois valores dentro
+do dex, `versionName` igual à tag e impressão digital do certificado igual à da release anterior
+(senão o app instalado não aceita a atualização por cima).
+
+**Pré-release**: tag com sufixo (`v0.6.0-rc1`) é comparada com a versão base (`0.6.0`, que é o
+`versionName`) e publicada marcada como pré-release. O app lê `/releases/latest`, que nunca devolve
+pré-release — então o rc não é oferecido como atualização.
 
 ## Requisitos de build
 
@@ -163,8 +168,13 @@ O valor em claro aparece **uma vez**. Só o hash vai ao banco.
 
 ## CI e release
 
-- `.github/workflows/ci.yml` — lint, testes, `assembleDebug` e testes Deno.
-- `.github/workflows/release.yml` — tag `v*`: reconstrói o keystore a partir de secrets, assina o APK, calcula SHA-256 e publica com `gh`. **Não gera keystore neste repositório.**
+- `.github/workflows/ci.yml` — lint, testes, `assembleDebug`, testes Deno e um `assembleRelease`
+  com valores-sentinela de Supabase, conferindo por `grep` no dex que a config chega ao APK. Sem
+  isso, a injeção da config só era exercitada na tag — se quebrasse, o release quebrava na hora de
+  publicar. Nenhum secret entra nesse passo.
+- `.github/workflows/release.yml` — tag `v*`: confere formato da URL e da chave anon, reconstrói o
+  keystore a partir de secrets, assina o APK, calcula SHA-256, roda o gate do artefato e publica com
+  `gh` (marcando pré-release quando a tag tem sufixo). **Não gera keystore neste repositório.**
 
 Secrets de release (o coordenador configura no GitHub): `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`.
 

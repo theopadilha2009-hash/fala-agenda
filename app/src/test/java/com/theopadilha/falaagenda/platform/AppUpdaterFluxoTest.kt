@@ -69,11 +69,12 @@ class AppUpdaterFluxoTest {
 
     @Test
     fun versaoPublicadaViraAvisoDeAtualizacao() {
+        val publicada = versaoMaisNovaQueAInstalada()
         server.enqueue(
             MockResponse().setBody(
                 """
                 {
-                  "tag_name": "v0.6.0",
+                  "tag_name": "v$publicada",
                   "assets": [
                     { "name": "app-release.apk", "browser_download_url": "${url("/app-release.apk")}" },
                     { "name": "apk.sha256", "browser_download_url": "${url("/apk.sha256")}" }
@@ -86,8 +87,35 @@ class AppUpdaterFluxoTest {
         val check = updater(mesmaChave).check(url("/latest"))
 
         assertThat(check.newer).isTrue()
-        assertThat(check.remote).isEqualTo("0.6.0")
+        assertThat(check.remote).isEqualTo(publicada)
         assertThat(check.apkUrl).isEqualTo(url("/app-release.apk"))
+    }
+
+    /**
+     * O caso que o bump de versionName criou de verdade: publicado igual ao instalado não é
+     * novidade, e a tela não pode oferecer atualização nenhuma.
+     */
+    @Test
+    fun versaoPublicadaIgualAInstaladaNaoViraAviso() {
+        val instalada = AppUpdater.localVersion()
+        server.enqueue(
+            MockResponse().setBody(
+                """
+                {
+                  "tag_name": "v$instalada",
+                  "assets": [
+                    { "name": "app-release.apk", "browser_download_url": "${url("/app-release.apk")}" }
+                  ]
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val check = updater(mesmaChave).check(url("/latest"))
+
+        assertThat(check.newer).isFalse()
+        assertThat(check.remote).isEqualTo(instalada)
+        assertThat(check.message).contains("última versão")
     }
 
     @Test
@@ -224,6 +252,19 @@ class AppUpdaterFluxoTest {
 
     private fun arquivoBaixado(): File =
         File(AppUpdater.updatesDir(context), "Fala-Agenda-update.apk")
+
+    /**
+     * A release do fixture precisa ser mais nova que a instalada. Cravar "0.6.0" funcionou até o
+     * versionName do app subir para 0.6.0 nesta auditoria: aí virou empate e o teste apodreceu.
+     * Derivando do que o app reporta, ele continua valendo no próximo bump.
+     */
+    private fun versaoMaisNovaQueAInstalada(): String =
+        AppUpdater.localVersion()
+            .split(".")
+            .map { it.toIntOrNull() ?: 0 }
+            .toMutableList()
+            .also { it[it.lastIndex] = it.last() + 1 }
+            .joinToString(".")
 
     private fun falhaDe(bloco: () -> Unit): Throwable {
         val erro = runCatching(bloco).exceptionOrNull()

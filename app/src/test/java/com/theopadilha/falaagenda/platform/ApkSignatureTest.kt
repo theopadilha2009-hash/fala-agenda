@@ -88,17 +88,49 @@ class ApkSignatureTest {
 
     @Test
     fun certidaoDoApkSaiDoSigningInfo() {
-        val pacote = PackageInfo().apply { signingInfo = signingInfoCom(CERTIDAO) }
+        // Os dois campos preenchidos, com chaves diferentes: na 28+ quem responde é o
+        // signingInfo, e só ele.
+        val pacote = PackageInfo().apply {
+            signingInfo = signingInfoCom(CERTIDAO)
+            signatures = arrayOf(Signature(OUTRA_CERTIDAO))
+        }
 
         assertThat(ApkSignature.certificates(pacote))
             .containsExactly(ApkSignature.fingerprint(CERTIDAO))
     }
 
     @Test
-    fun certidaoDoApkSaiDasAssinaturasAntigasQuandoNaoHaSigningInfo() {
+    fun naApi28MaisAssinaturaAntigaNaoEhPlanoB() {
+        // Sem signingInfo não se decide, mesmo com o campo antigo preenchido: não decidir é não
+        // instalar, que é o lado seguro.
+        val pacote = PackageInfo().apply { signatures = arrayOf(Signature(CERTIDAO)) }
+
+        assertThat(ApkSignature.certificates(pacote)).isEmpty()
+    }
+
+    /**
+     * A 26/27 é o piso do app e não tem `PackageInfo.signingInfo` — no aparelho, mexer nesse
+     * campo derruba a conferência em vez de devolver null. Aqui o teste roda na 27 de verdade
+     * para provar que esse caminho passa longe dele.
+     */
+    @Test
+    @Config(sdk = [27])
+    fun certidaoDoApkNaApi27SaiDasAssinaturasAntigas() {
         val pacote = PackageInfo().apply { signatures = arrayOf(Signature(CERTIDAO)) }
 
         assertThat(ApkSignature.certificates(pacote))
+            .containsExactly(ApkSignature.fingerprint(CERTIDAO))
+    }
+
+    @Test
+    @Config(sdk = [27])
+    fun certidaoDoAppInstaladoNaApi27SaiDasAssinaturasAntigas() {
+        val certidoes = AndroidSigningCertificates(context)
+        shadowOf(context.packageManager)
+            .getInternalMutablePackageInfo(context.packageName)
+            .apply { signatures = arrayOf(Signature(CERTIDAO)) }
+
+        assertThat(certidoes.installed())
             .containsExactly(ApkSignature.fingerprint(CERTIDAO))
     }
 
@@ -129,7 +161,7 @@ class ApkSignatureTest {
         val certidoes = AndroidSigningCertificates(context)
         shadowOf(context.packageManager)
             .getInternalMutablePackageInfo(context.packageName)
-            .apply { signatures = arrayOf(Signature(CERTIDAO)) }
+            .apply { signingInfo = signingInfoCom(CERTIDAO) }
 
         assertThat(certidoes.installed())
             .containsExactly(ApkSignature.fingerprint(CERTIDAO))

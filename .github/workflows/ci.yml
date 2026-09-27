@@ -48,9 +48,41 @@ jobs:
             :app:testDebugUnitTest \
             :app:lintDebug \
             :app:assembleDebug \
-            :app:assembleRelease \
             :app:compileDebugAndroidTestKotlin
-      - name: "Aviso: versionName x tag"
+      # O assembleRelease fica fora do bloco acima de proposito: aqui ele roda com valores-sentinela
+      # para provar, a cada PR, que a config do Supabase atravessa o Gradle e chega no dex. Antes
+      # isso so era exercitado na tag, com o secret real -- se a injecao quebrasse, o release
+      # quebrava so na hora de publicar. Nenhum secret entra neste passo.
+      - name: Release com config sentinela e conferencia no dex
+        env:
+          SUPABASE_URL: "https://ci-sentinela-fala-agenda.supabase.co"
+          SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaS1zZW50aW5lbGEtZmFsYS1hZ2VuZGEiLCJyb2xlIjoiYW5vbiJ9.SENTINELA-DO-CI-NAO-E-CHAVE-REAL"
+        run: |
+          ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "::error::APK de release nao encontrado em app/build/outputs/apk/release"
+            exit 1
+          fi
+          DEX="$RUNNER_TEMP/dex-ci"
+          rm -rf "$DEX"
+          mkdir -p "$DEX"
+          if ! unzip -o -q "$APK" "classes*.dex" -d "$DEX" || [ -z "$(ls -A "$DEX")" ]; then
+            echo "::error::Nao consegui extrair classes*.dex de $APK"
+            exit 1
+          fi
+          faltando=0
+          if ! grep -aqF -- "$SUPABASE_URL" "$DEX"/classes*.dex; then
+            echo "::error::SUPABASE_URL nao chegou ao dex do release: a injecao da config esta quebrada e o release por tag sairia sem a ajuda extra."
+            faltando=1
+          fi
+          if ! grep -aqF -- "$SUPABASE_ANON_KEY" "$DEX"/classes*.dex; then
+            echo "::error::SUPABASE_ANON_KEY nao chegou ao dex do release: a injecao da config esta quebrada e o release por tag sairia sem a ajuda extra."
+            faltando=1
+          fi
+          [ "$faltando" -eq 0 ] || exit 1
+          echo "Config sentinela presente no dex do release."
+      - name: "Aviso: versionName x ultima release"
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,13 +90,6 @@ jobs:
           ATUAL=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -n 1 | cut -d'"' -f2)
           if [ -z "$ATUAL" ]; then
             echo "Nao consegui ler versionName de app/build.gradle.kts."
-            exit 0
-          fi
-
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            if [ "$ATUAL" != "${GITHUB_REF_NAME#v}" ]; then
-              echo "::warning::versionName ($ATUAL) difere da tag ($GITHUB_REF_NAME); o release vai falhar no gate."
-            fi
             exit 0
           fi
 

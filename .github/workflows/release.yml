@@ -42,26 +42,71 @@ jobs:
           so_espaco() { [ -z "${1//[[:space:]]/}" ]; }
           faltando=0
           # if, nao "&& { }": o runner roda com bash -e e o ramo falso abortaria o passo.
+
+          # O case com https://*.supabase.co era furado: em glob o * casa /, ? e # tambem, entao
+          # https://evil.example#.supabase.co e https://a/b.supabase.co passavam. Como a URL vai
+          # para o APK e o app manda o token do aparelho para ela, isso era exfiltracao de
+          # credencial por secret mal configurado. Regex ancorada: so host, e so o sufixo exato.
+          # O case de espaco vem antes porque o grep casa linha a linha: uma URL com \n no meio
+          # passaria pela regex na primeira linha.
+          url_valida() {
+            case "$1" in
+              *[[:space:]]*) return 1 ;;
+            esac
+            printf '%s' "$1" | grep -qE '^https://[a-z0-9-]+\.supabase\.co/?$'
+          }
+
+          # O JWT do Supabase carrega o papel no payload. service_role ignora RLS: num APK
+          # distribuido, quem extrair a chave fica com o banco inteiro. So anon/public entra.
+          # Nao imprime a chave nem o payload, so o papel (ou nada, se nao decodificar).
+          papel_da_chave() {
+            local payload pad
+            case "$1" in
+              *.*.*) ;;
+              *) return 1 ;;
+            esac
+            payload="${1#*.}"
+            payload="${payload%%.*}"
+            [ -n "$payload" ] || return 1
+            pad="$payload"
+            case $(( ${#pad} % 4 )) in
+              2) pad="${pad}==" ;;
+              3) pad="${pad}=" ;;
+              1) return 1 ;;
+            esac
+            printf '%s' "$pad" | tr '_' '/' | tr '-' '+' \
+              | base64 --decode 2>/dev/null | jq -er '.role // empty' 2>/dev/null
+          }
+
           if so_espaco "$SUPABASE_URL"; then echo "::error::SUPABASE_URL vazio"; faltando=1; fi
           if so_espaco "$SUPABASE_ANON_KEY"; then echo "::error::SUPABASE_ANON_KEY vazio"; faltando=1; fi
-          case "$SUPABASE_URL" in
-            https://*.supabase.co) ;;
-            *) echo "::error::SUPABASE_URL nao parece https://<projeto>.supabase.co (valor nao exibido)"; faltando=1 ;;
-          esac
+          if ! so_espaco "$SUPABASE_URL" && ! url_valida "$SUPABASE_URL"; then
+            echo "::error::SUPABASE_URL nao e exatamente https://<projeto>.supabase.co (sem caminho, porta, ? ou #; valor nao exibido)"
+            faltando=1
+          fi
+          if ! so_espaco "$SUPABASE_ANON_KEY"; then
+            PAPEL=$(papel_da_chave "$SUPABASE_ANON_KEY" || true)
+            if [ "$PAPEL" != "anon" ]; then
+              echo "::error::SUPABASE_ANON_KEY nao e chave anon/public (JWT com role=anon). A service_role entrega o banco a quem extrair a chave do APK. Chave e payload nao exibidos."
+              faltando=1
+            fi
+          fi
           if [ "$faltando" -ne 0 ]; then
             echo "Sem as duas o APK sai sem a ajuda extra (SupabaseConfig.isConfigured = false)."
             echo "Configure em Settings > Secrets and variables > Actions > Secrets:"
             echo "  SUPABASE_URL      = https://SEU-PROJETO.supabase.co"
-            echo "  SUPABASE_ANON_KEY = chave anon/publica (nunca a service role)"
+            echo "  SUPABASE_ANON_KEY = chave anon/publica (JWT com role=anon; nunca a service_role)"
             exit 1
           fi
-          echo "Config do Supabase presente (valores nao exibidos)."
+          # Uma barra no fim e um valor correto e era reprovado aqui. O que entra no APK e a URL
+          # sem barra final: os steps seguintes leem de GITHUB_ENV e nao releem o secret.
+          echo "SUPABASE_URL=${SUPABASE_URL%/}" >> "$GITHUB_ENV"
+          echo "Config do Supabase conferida (URL normalizada sem barra final; valores nao exibidos)."
       - name: Assemble signed release
         env:
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           chmod +x gradlew
@@ -75,7 +120,6 @@ jobs:
       - name: Gate do artefato
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           BT="$ANDROID_HOME/build-tools/36.0.0"
@@ -88,15 +132,23 @@ jobs:
           # (a) a config do Supabase tem que estar dentro do dex
           falhou=0
           so_espaco() { [ -z "${1//[[:space:]]/}" ]; }
+          # Mesma regex ancorada do passo de conferencia: aqui SUPABASE_URL vem do GITHUB_ENV,
+          # ja normalizada pelo passo anterior.
+          url_valida() {
+            case "$1" in
+              *[[:space:]]*) return 1 ;;
+            esac
+            printf '%s' "$1" | grep -qE '^https://[a-z0-9-]+\.supabase\.co/?$'
+          }
           if so_espaco "$SUPABASE_URL" || so_espaco "$SUPABASE_ANON_KEY"; then
             echo "::error::SUPABASE_URL/SUPABASE_ANON_KEY vazios neste step (repository secrets nao configurados)."
             exit 1
           fi
           # Busca por espaco em branco casaria com qualquer byte do dex e passaria verde.
-          case "$SUPABASE_URL" in
-            https://*.supabase.co) ;;
-            *) echo "::error::SUPABASE_URL nao parece https://<projeto>.supabase.co"; falhou=1 ;;
-          esac
+          if ! url_valida "$SUPABASE_URL"; then
+            echo "::error::SUPABASE_URL nao e exatamente https://<projeto>.supabase.co"
+            falhou=1
+          fi
           DEX="$RUNNER_TEMP/dex"
           rm -rf "$DEX"
           mkdir -p "$DEX"
@@ -113,8 +165,16 @@ jobs:
             falhou=1
           fi
 
-          # (b) versionName do APK tem que casar com a tag
-          ESPERADO="${GITHUB_REF_NAME#v}"
+          # (b) versionName do APK tem que casar com a tag. Tag com sufixo (v0.6.0-rc1) e
+          # pre-release: o versionName do app e a versao base (0.6.0), entao compara com ela e a
+          # publicacao sai marcada como prerelease -- /releases/latest, que e o que o app le,
+          # nunca devolve pre-release. Sem isso a tag -rc1 reprovava o gate e, se publicada como
+          # estavel, o app ofereceria um rc como atualizacao.
+          TAG="${GITHUB_REF_NAME#v}"
+          case "$TAG" in
+            *-*) PRERELEASE=1; ESPERADO="${TAG%%-*}" ;;
+            *) PRERELEASE=0; ESPERADO="$TAG" ;;
+          esac
           ATUAL=$("$BT/aapt2" dump badging "$APK" 2>/dev/null | grep -m1 "^package:" \
             | grep -oE "versionName='[^']*'" | head -n 1 | cut -d"'" -f2)
           if [ -z "$ATUAL" ]; then
@@ -122,8 +182,11 @@ jobs:
               | head -n 1 | cut -d'"' -f4)
           fi
           if [ "$ATUAL" != "$ESPERADO" ]; then
-            echo "::error::versionName do APK e '$ATUAL' e a tag e '$GITHUB_REF_NAME'. Bumpe versionName/versionCode em app/build.gradle.kts antes de taguear."
+            echo "::error::versionName do APK e '$ATUAL' e a tag e '$GITHUB_REF_NAME' (esperado '$ESPERADO'). Bumpe versionName/versionCode em app/build.gradle.kts antes de taguear."
             falhou=1
+          fi
+          if [ "$PRERELEASE" -eq 1 ]; then
+            echo "Tag '$GITHUB_REF_NAME' tem sufixo: vai como prerelease (o app ignora)."
           fi
 
           # (c) assinatura igual a da release anterior (senao o auto-update nao instala por cima)
@@ -155,13 +218,24 @@ jobs:
           fi
 
           [ "$falhou" -eq 0 ] || exit 1
+          echo "PRERELEASE=$PRERELEASE" >> "$GITHUB_ENV"
           echo "Gate do artefato OK."
       - name: Publicar release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          gh release create "$GITHUB_REF_NAME" "$APK" "$RUNNER_TEMP/apk.sha256" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --clobber
+          # Pre-release nunca vira "latest" no GitHub: /releases/latest continua apontando para a
+          # ultima estavel, entao o app nao oferece o rc como atualizacao.
+          if [ "${PRERELEASE:-0}" = "1" ]; then
+            gh release create "$GITHUB_REF_NAME" "$APK" "$RUNNER_TEMP/apk.sha256" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --clobber \
+              --prerelease
+          else
+            gh release create "$GITHUB_REF_NAME" "$APK" "$RUNNER_TEMP/apk.sha256" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --clobber
+          fi

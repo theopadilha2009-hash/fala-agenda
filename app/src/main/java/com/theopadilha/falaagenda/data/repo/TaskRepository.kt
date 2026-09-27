@@ -186,7 +186,18 @@ class TaskRepository(
         val leftover = occurrenceDao.forSeries(row.seriesId)
         if (leftover.isEmpty()) {
             seriesDao.delete(row.seriesId)
+            return
         }
+        // Sem o tombstone a rotina de avanço rematerializa a data apagada no próximo start.
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
+        if (!series.recurrence.isRecurring) return
+        val now = clock.instant()
+        val skipped = OccurrenceLifecycle.skipDate(
+            series.skippedDates,
+            row.toDomain().localDate,
+            OccurrenceLifecycle.todayIn(series.zoneId, now),
+        )
+        seriesDao.upsert(series.copy(skippedDates = skipped, updatedAt = now).toEntity())
     }
 
     suspend fun restore(item: AgendaItem) {

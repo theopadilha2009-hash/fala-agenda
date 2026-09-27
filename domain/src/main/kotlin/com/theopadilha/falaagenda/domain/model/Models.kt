@@ -116,11 +116,18 @@ data class TaskSeries(
     val recurrence: RecurrenceRule,
     val amountCents: Long? = null,
     val observation: String = "",
+    /**
+     * Datas que o usuário excluiu desta série: a ocorrência não deve voltar a nascer nelas.
+     * Encerrar a série é `endedAt`, não entra aqui.
+     */
+    val skippedDates: Set<LocalDate> = emptySet(),
     val endedAt: Instant? = null,
     val createdAt: Instant,
     val updatedAt: Instant,
 ) {
     val isEnded: Boolean get() = endedAt != null
+
+    fun isSkipped(localDate: LocalDate): Boolean = localDate in skippedDates
 }
 
 data class TaskOccurrence(

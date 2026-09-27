@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -17,8 +18,13 @@ interface SeriesDao {
     @Query("SELECT * FROM task_series")
     fun observeAll(): Flow<List<SeriesEntity>>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(entity: SeriesEntity): Long
+    /**
+     * @Upsert (INSERT ... ON CONFLICT DO UPDATE), nunca INSERT OR REPLACE: REPLACE apaga a
+     * linha antiga e a FK de task_occurrences tem ON DELETE CASCADE — reescrever a série
+     * zerava as ocorrências dela.
+     */
+    @Upsert
+    suspend fun upsert(entity: SeriesEntity)
 
     @Query("DELETE FROM task_series WHERE id = :id")
     suspend fun delete(id: String): Int

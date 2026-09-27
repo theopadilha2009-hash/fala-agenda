@@ -321,10 +321,9 @@ private class FakeSeriesDao : SeriesDao {
     override suspend fun get(id: String) = rows[id]
     override suspend fun getAll() = rows.values.toList()
     override fun observeAll(): Flow<List<SeriesEntity>> = flow.map { it }
-    override suspend fun upsert(entity: SeriesEntity): Long {
+    override suspend fun upsert(entity: SeriesEntity) {
         rows[entity.id] = entity
         emit()
-        return 1
     }
     override suspend fun delete(id: String): Int {
         val removed = rows.remove(id) != null

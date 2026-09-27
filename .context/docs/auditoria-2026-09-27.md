@@ -209,3 +209,28 @@ completou. Áreas com 1 passada só — não houve juiz adversarial por finding.
   (finding P1 de segurança) e o que mais quebrou em produção. Perfeccionista: assinar com chave em
   hardware e validar a assinatura do APK baixado. Pragmático: comparar a certidão do APK baixado
   com a do app instalado antes de entregar ao instalador — 20 linhas, resolve o ataque real.
+
+---
+
+## Adendo — P0 encontrado depois, ao escrever o teste da migração
+
+**`@Insert(onConflict = REPLACE)` em `task_series` apagava as ocorrências da série.**
+`data/local/Daos.kt:20` combinado com `Entities.kt:41-45` (`ON DELETE CASCADE` de
+`task_occurrences.seriesId`). No SQLite, `INSERT OR REPLACE` = `DELETE` da linha conflitante +
+`INSERT`; com FK ligada (o Room liga), o `DELETE` cascateia. Toda reescrita da série — concluir e
+desfazer, excluir uma ocorrência, restaurar, encerrar a série, editar, remarcar — zerava as
+ocorrências daquela série. `spawnUpcomingPreview` rematerializa até 3 futuras, então o sintoma
+visível era "sumiu tudo" e não "o app quebrou".
+
+Não apareceu antes porque `TaskRepositoryTest` usa um DAO falso em memória: nenhum teste tocava o
+Room de verdade. Provado com `app/src/test/.../SeriesDaoTest.kt` (Robolectric, banco real):
+`reescreverASerieNaoApagaAsOcorrencias` falhava antes do fix e passa depois.
+→ `@Upsert` (INSERT ... ON CONFLICT DO UPDATE), que não apaga a linha.
+
+**Tombstone de data excluída não era gravado.** `Entities.kt:84` (`TaskSeries.toEntity()`) não
+escrevia `skippedDates`, então o `skipDate` do repositório era descartado na saída: a data
+excluída voltava a nascer no próximo `advance()`. Corrigido em `toEntity()`. Coberto por
+`skippedDatesSobreviveAoBanco` e pela migração v1→v4.
+
+Lição para o próximo review: teste com DAO falso não vê semântica de Room (FK, REPLACE, índices,
+NOT NULL). Toda mudança de schema/DAO precisa de um teste com banco real.

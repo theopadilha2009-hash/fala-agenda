@@ -14,6 +14,14 @@ import java.io.File
 object DeviceIntents {
     fun fileProviderAuthority(context: Context): String = "${context.packageName}.files"
 
+    /**
+     * Abre a tela pedida e diz se deu. Aparelho sem navegador, sem instalador ou sem a tela de
+     * ajustes que o fabricante mexeu responde com `ActivityNotFoundException` — que, solta,
+     * fecha o app na cara de quem tocou. Quem chama mostra o recado quando devolve `false`.
+     */
+    fun open(context: Context, intent: Intent): Boolean =
+        runCatching { context.startActivity(intent) }.isSuccess
+
     fun shareText(text: String, chooserTitle: String = "Enviar"): Intent {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"

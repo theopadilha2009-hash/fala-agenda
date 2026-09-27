@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.insight.InsightRow
@@ -47,9 +48,9 @@ fun MonthSummaryScreen(
     onBack: () -> Unit,
     initialMonth: YearMonth = YearMonth.now(),
 ) {
-    val agenda by container.tasks.observeAgenda().collectAsState(
-        initial = AgendaSections(emptyList(), emptyList(), emptyList(), emptyList()),
-    )
+    val factory = remember(container) { MonthSummaryViewModel.factory(container) }
+    val viewModel: MonthSummaryViewModel = viewModel(factory = factory)
+    val agenda by viewModel.agenda.collectAsState()
     var month by remember { mutableStateOf(initialMonth) }
     val rows = remember(agenda) { agenda.insightRows() }
     val insight = remember(rows, month) { MonthInsights.of(rows, month) }
@@ -120,7 +121,7 @@ fun MonthSummaryScreen(
             Text("O que mais você fez", style = MaterialTheme.typography.titleMedium)
             if (insight.frequent.isEmpty()) {
                 Text(
-                    "Nada neste mês ainda. Quando concluir tarefas, elas aparecem aqui.",
+                    emptyFrequentMessage(month, YearMonth.now()),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -157,6 +158,17 @@ fun MonthSummaryScreen(
         }
     }
 }
+
+/**
+ * "ainda" só cabe no mês corrente: quem navega para um mês passado sem concluídas lia
+ * "Nada neste mês ainda", como se o mês não tivesse acontecido.
+ */
+fun emptyFrequentMessage(month: YearMonth, today: YearMonth = YearMonth.now()): String =
+    if (month.isBefore(today)) {
+        "Nada foi concluído neste mês."
+    } else {
+        "Nada neste mês ainda. Quando concluir tarefas, elas aparecem aqui."
+    }
 
 fun AgendaSections.insightRows(): List<InsightRow> =
     (today + upcoming + completed + missed).map {

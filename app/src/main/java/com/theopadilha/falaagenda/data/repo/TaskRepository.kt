@@ -183,15 +183,37 @@ class TaskRepository(
         val row = occurrenceDao.get(occurrenceId) ?: return
         scheduler.cancel(occurrenceId)
         occurrenceDao.delete(occurrenceId)
+        val series = seriesDao.get(row.seriesId)?.toDomain()
         val leftover = occurrenceDao.forSeries(row.seriesId)
-        if (leftover.isEmpty()) {
+        // "Excluir" é só aquela data. Numa série recorrente apagar a série aqui era o
+        // mesmo que "Encerrar série", que a tela oferece como ação separada.
+        if (leftover.isEmpty() && series?.recurrence?.isRecurring != true) {
             seriesDao.delete(row.seriesId)
+            return
         }
+        // Sem o tombstone a rotina de avanço rematerializa a data apagada no próximo start.
+        if (series == null || !series.recurrence.isRecurring) return
+        val now = clock.instant()
+        val skipped = OccurrenceLifecycle.skipDate(
+            series.skippedDates,
+            row.toDomain().localDate,
+            OccurrenceLifecycle.todayIn(series.zoneId, now),
+        )
+        seriesDao.upsert(series.copy(skippedDates = skipped, updatedAt = now).toEntity())
     }
 
     suspend fun restore(item: AgendaItem) {
         val now = clock.instant()
-        val series = item.series.copy(endedAt = null, updatedAt = now)
+        // Desfazer o "Excluir" tem que tirar o tombstone junto: deixá-lo marcado
+        // bloquearia a data de voltar em qualquer materialização futura.
+        val series = item.series.copy(
+            endedAt = null,
+            skippedDates = OccurrenceLifecycle.unskipDate(
+                item.series.skippedDates,
+                item.occurrence.localDate,
+            ),
+            updatedAt = now,
+        )
         seriesDao.upsert(series.toEntity())
         val fresh = OccurrenceLifecycle.materialize(series, item.occurrence.localDate, now)
         if (fresh.scheduledAt.isBefore(now) && !series.recurrence.isRecurring) {
@@ -393,6 +415,7 @@ class TaskRepository(
     private suspend fun spawnNextIfNeeded(series: TaskSeries, completedDate: java.time.LocalDate, now: Instant) {
         if (series.isEnded || !series.recurrence.isRecurring) return
         val nextDate = RecurrenceEngine.nextAfter(series.recurrence, series.startLocalDate, completedDate) ?: return
+        if (series.isSkipped(nextDate)) return
         val existing = occurrenceDao.get(com.theopadilha.falaagenda.domain.model.OccurrenceIds.of(series.id, nextDate))
         if (existing != null) return
         val next = OccurrenceLifecycle.materialize(series, nextDate, now)
@@ -403,6 +426,9 @@ class TaskRepository(
     private suspend fun spawnUpcomingPreview(series: TaskSeries, today: java.time.LocalDate) {
         if (series.isEnded || !series.recurrence.isRecurring) return
         RecurrenceEngine.upcoming(series.recurrence, series.startLocalDate, today, 3).forEach { date ->
+            // Sem esta checagem o preview desfaz o tombstone: `upcoming` começa em hoje,
+            // então a data que o usuário acabou de excluir era a primeira da lista.
+            if (series.isSkipped(date)) return@forEach
             val id = com.theopadilha.falaagenda.domain.model.OccurrenceIds.of(series.id, date)
             if (occurrenceDao.get(id) == null) {
                 val occ = OccurrenceLifecycle.materialize(series, date, clock.instant())

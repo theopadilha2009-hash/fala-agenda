@@ -75,6 +75,7 @@ fun ConfirmDraftScreen(
     onRetry: (() -> Unit)? = null,
     onRepeat: (() -> Unit)? = null,
     onEndSeries: (() -> Unit)? = null,
+    saveError: String? = null,
 ) {
     var title by remember { mutableStateOf(initial.title) }
     var date by remember { mutableStateOf(initial.localDate) }
@@ -285,7 +286,9 @@ fun ConfirmDraftScreen(
             if (missing.isNotEmpty()) {
                 Text("Falta preencher: ${missing.joinToString(", ")}.", color = MaterialTheme.colorScheme.error)
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            // Falha vinda de fora (gravação no banco) usa o mesmo lugar do erro de digitação:
+            // a tela não sai daqui sem que a pessoa veja que não salvou.
+            (saveError ?: error)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (saving) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Text("Salvando…", style = MaterialTheme.typography.bodyMedium)

@@ -2,54 +2,19 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Só cancela em PR: num push para main, cancelar a execução anterior poderia
+  # esconder um merge quebrado que ainda estava sendo validado.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GRADLE_OPTS: -Dorg.gradle.daemon=false -Dkotlin.incremental=false
 
 jobs:
-  android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-      - name: Install SDK 36
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-      - name: Grant wrapper
-        run: chmod +x gradlew
-      - name: Domain tests
-        run: ./gradlew --no-daemon --max-workers=2 :domain:test
-      - name: App unit tests
-        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest
-      - name: Lint
-        run: ./gradlew --no-daemon --max-workers=2 :app:lintDebug
-      - name: Assemble debug
-        run: ./gradlew --no-daemon --max-workers=2 :app:assembleDebug
-      - name: Compile androidTest
-        run: ./gradlew --no-daemon --max-workers=2 :app:compileDebugAndroidTestKotlin
-
-  release-unsigned:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: android-actions/setup-android@v4
-      - name: Install SDK 36
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-      - name: Grant wrapper
-        run: chmod +x gradlew
-      - name: Assemble release
-        run: ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
-
   functions:
     runs-on: ubuntu-latest
     steps:
@@ -59,3 +24,59 @@ jobs:
           deno-version: v2.4.5
       - name: Edge function tests
         run: deno test --allow-env --allow-net=deno.land supabase/functions
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+      - name: Install SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Grant wrapper
+        run: chmod +x gradlew
+      - name: Testes, lint e builds
+        run: |
+          ./gradlew --no-daemon --max-workers=2 \
+            :domain:test \
+            :app:testDebugUnitTest \
+            :app:lintDebug \
+            :app:assembleDebug \
+            :app:assembleRelease \
+            :app:compileDebugAndroidTestKotlin
+      - name: "Aviso: versionName x tag"
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ATUAL=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -n 1 | cut -d'"' -f2)
+          if [ -z "$ATUAL" ]; then
+            echo "Nao consegui ler versionName de app/build.gradle.kts."
+            exit 0
+          fi
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$ATUAL" != "${GITHUB_REF_NAME#v}" ]; then
+              echo "::warning::versionName ($ATUAL) difere da tag ($GITHUB_REF_NAME); o release vai falhar no gate."
+            fi
+            exit 0
+          fi
+
+          ULTIMA=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+          ULTIMA="${ULTIMA#v}"
+          if [ -z "$ULTIMA" ]; then
+            echo "Nenhuma release publicada ainda; aviso ignorado."
+            exit 0
+          fi
+          MAIOR=$(printf '%s\n%s\n' "$ATUAL" "$ULTIMA" | sort -V | tail -n 1)
+          if [ "$MAIOR" != "$ATUAL" ] || [ "$ATUAL" = "$ULTIMA" ]; then
+            echo "::warning::versionName $ATUAL nao e maior que a ultima release (v$ULTIMA); se este PR fecha uma release, bumpe versionName e versionCode."
+          else
+            echo "versionName $ATUAL > ultima release v$ULTIMA."
+          fi

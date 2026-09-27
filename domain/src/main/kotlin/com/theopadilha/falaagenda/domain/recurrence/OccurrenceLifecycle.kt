@@ -17,8 +17,31 @@ data class LifecycleChange(
 )
 
 object OccurrenceLifecycle {
+    // atalho: tombstone guarda só os últimos 90 dias e no máximo 120 datas; revisitar se
+    // editar/concluir ocorrência muito antiga voltar a rematerializar uma data excluída
+    const val SKIPPED_RETENTION_DAYS = 90L
+    const val MAX_SKIPPED_DATES = 120
+
     fun scheduledInstant(series: TaskSeries, localDate: LocalDate): Instant =
         ZonedDateTime.of(localDate, series.localTime, series.zoneId).toInstant()
+
+    /** Marca a data como excluída, descartando tombstones velhos demais para voltar a valer. */
+    fun skipDate(
+        skipped: Set<LocalDate>,
+        localDate: LocalDate,
+        todayInSeriesZone: LocalDate,
+    ): Set<LocalDate> {
+        val limite = todayInSeriesZone.minusDays(SKIPPED_RETENTION_DAYS)
+        return (skipped + localDate)
+            .filter { !it.isBefore(limite) }
+            .sortedDescending()
+            .take(MAX_SKIPPED_DATES)
+            .toSet()
+    }
+
+    /** Desfaz a exclusão da data (usado quando o usuário desfaz ou remarca para o mesmo dia). */
+    fun unskipDate(skipped: Set<LocalDate>, localDate: LocalDate): Set<LocalDate> =
+        skipped - localDate
 
     fun materialize(
         series: TaskSeries,
@@ -109,7 +132,8 @@ object OccurrenceLifecycle {
 
         val currentExisting = byDate[dueDate]
         if (currentExisting == null) {
-            upserts += materialize(series, dueDate, now)
+            // Data excluída pelo usuário não volta a nascer; a série segue no próximo dia.
+            if (!series.isSkipped(dueDate)) upserts += materialize(series, dueDate, now)
         } else if (currentExisting.status == OccurrenceStatus.PENDING) {
             val refreshed = materialize(series, dueDate, now, currentExisting)
             if (refreshed != currentExisting) upserts += refreshed

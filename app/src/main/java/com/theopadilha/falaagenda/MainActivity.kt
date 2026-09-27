@@ -66,6 +66,12 @@ class MainActivity : ComponentActivity() {
         openOccurrenceId.value = intent.occurrenceId()
         startSpeak.value = intent.wantsSpeak()
     }
+
+    override fun onStop() {
+        super.onStop()
+        // O microfone não continua aberto com o app fora da tela: ao voltar, a sessão estaria morta.
+        (application as FalaAgendaApplication).container.voice.cancel()
+    }
 }
 
 private fun Intent.occurrenceId(): String? = getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID)

@@ -24,14 +24,44 @@ class MonthInsightsTest {
     }
 
     @Test
-    fun pendenteTambemContaComoMarcado() {
+    fun pendenteNaoContaComoFeito() {
         val rows = listOf(
             row("Cabelo", 4),
             InsightRow("Cabelo", LocalDate.of(2026, 8, 25), OccurrenceStatus.PENDING, null),
         )
         val insight = MonthInsights.of(rows, august)
         assertThat(insight.completed).isEqualTo(1)
-        assertThat(insight.frequent.first().times).isEqualTo(2)
+        assertThat(insight.frequent.single().times).isEqualTo(1)
+    }
+
+    @Test
+    fun naoRealizadaNaoEntraEmOQueMaisVoceFez() {
+        // "Cabelo" diário: 1 feita + 5 não realizadas + 1 futura ainda pendente
+        val rows = listOf(
+            row("Cabelo", 4),
+            InsightRow("Cabelo", LocalDate.of(2026, 8, 5), OccurrenceStatus.MISSED, null),
+            InsightRow("Cabelo", LocalDate.of(2026, 8, 6), OccurrenceStatus.MISSED, null),
+            InsightRow("Cabelo", LocalDate.of(2026, 8, 7), OccurrenceStatus.MISSED, null),
+            InsightRow("Cabelo", LocalDate.of(2026, 8, 8), OccurrenceStatus.MISSED, null),
+            InsightRow("Cabelo", LocalDate.of(2026, 8, 9), OccurrenceStatus.MISSED, null),
+            InsightRow("Farmácia", LocalDate.of(2026, 8, 28), OccurrenceStatus.PENDING, null),
+        )
+        val insight = MonthInsights.of(rows, august)
+        assertThat(insight.frequent.map { it.title }).containsExactly("Cabelo")
+        assertThat(insight.frequent.single().times).isEqualTo(1)
+        assertThat(insight.completed).isEqualTo(1)
+        assertThat(insight.missed).isEqualTo(5)
+    }
+
+    @Test
+    fun gastoSoSomaOQueFoiConcluido() {
+        val rows = listOf(
+            row("Cabelo", 4, 8000),
+            InsightRow("Cabelo", LocalDate.of(2026, 8, 5), OccurrenceStatus.MISSED, 5000),
+            InsightRow("Farmácia", LocalDate.of(2026, 8, 28), OccurrenceStatus.PENDING, 2500),
+        )
+        val insight = MonthInsights.of(rows, august)
+        assertThat(insight.spentCents).isEqualTo(8000)
     }
 
     @Test

@@ -54,6 +54,10 @@ fun FalaAgendaRoot(
     var draft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
     var editingItem by remember { mutableStateOf<AgendaItem?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    // Erro de gravação mostrado na própria tela de confirmação, que não pode sumir
+    // como se tivesse salvado.
+    var confirmError by remember { mutableStateOf<String?>(null) }
+    var writeError by remember { mutableStateOf<String?>(null) }
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
     val busy by homeVm.busy.collectAsState()
@@ -137,7 +141,7 @@ fun FalaAgendaRoot(
         composable("confirm") {
             val current = draft
             LaunchedEffect(current) {
-                if (current == null) nav.popBackStack()
+                if (current == null) nav.popBackStack() else confirmError = null
             }
             if (current != null) {
                 ConfirmDraftScreen(
@@ -148,9 +152,10 @@ fun FalaAgendaRoot(
                     isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
                     onComplete = editingItem?.let { item ->
                         {
-                            homeVm.complete(item)
+                            // O recado só aparece depois que a gravação passou: falhou,
+                            // o home mostra o erro em vez de um "Feito." que não houve.
+                            homeVm.complete(item, onDone = { statusMessage = "Feito." })
                             editingItem = null
-                            statusMessage = "Feito."
                             nav.popBackStack()
                         }
                     },
@@ -165,9 +170,8 @@ fun FalaAgendaRoot(
                     },
                     onDelete = editingItem?.let { item ->
                         {
-                            homeVm.delete(item)
+                            homeVm.delete(item, onDeleted = { statusMessage = "Tarefa excluída." })
                             editingItem = null
-                            statusMessage = "Tarefa excluída."
                             nav.popBackStack()
                         }
                     },
@@ -191,9 +195,8 @@ fun FalaAgendaRoot(
                     },
                     onEndSeries = editingItem?.let { item ->
                         {
-                            homeVm.endSeries(item.series.id)
+                            homeVm.endSeries(item.series.id, onDone = { statusMessage = "Série encerrada." })
                             editingItem = null
-                            statusMessage = "Série encerrada."
                             nav.popBackStack()
                         }
                     },
@@ -214,24 +217,32 @@ fun FalaAgendaRoot(
                                 confirmed.recurrence,
                                 confirmed.amountCents,
                                 confirmed.observation,
+                                onDone = {
+                                    editingItem = null
+                                    statusMessage = AgendaFormat.announce(date, time, LocalDate.now())
+                                    nav.popBackStack()
+                                },
+                                onError = { message -> confirmError = message },
                             )
-                            editingItem = null
-                            statusMessage = AgendaFormat.announce(date, time, LocalDate.now())
-                            nav.popBackStack()
                         } else {
-                            homeVm.saveDraft(confirmed, onDone = { usedInexact ->
-                                val savedDate = confirmed.localDate
-                                val savedTime = confirmed.localTime
-                                statusMessage = if (savedDate != null && savedTime != null) {
-                                    AgendaFormat.announce(savedDate, savedTime, LocalDate.now())
-                                } else {
-                                    "Tarefa salva."
-                                }
-                                nav.popBackStack()
-                                homeVm.setInexactWarning(usedInexact)
-                            })
+                            homeVm.saveDraft(
+                                draft = confirmed,
+                                onDone = { usedInexact ->
+                                    val savedDate = confirmed.localDate
+                                    val savedTime = confirmed.localTime
+                                    statusMessage = if (savedDate != null && savedTime != null) {
+                                        AgendaFormat.announce(savedDate, savedTime, LocalDate.now())
+                                    } else {
+                                        "Tarefa salva."
+                                    }
+                                    nav.popBackStack()
+                                    homeVm.setInexactWarning(usedInexact)
+                                },
+                                onError = { message -> confirmError = message },
+                            )
                         }
                     },
+                    saveError = confirmError,
                 )
             }
         }
@@ -242,10 +253,20 @@ fun FalaAgendaRoot(
                 placeholder = "Ex.: tomar remédio amanhã às 9h",
                 confirmLabel = "Continuar",
                 onCancel = { nav.popBackStack() },
+                externalError = writeError,
+                onTextChanged = { writeError = null },
                 onConfirm = { text ->
                     scope.launch {
                         editingItem = null
-                        draft = homeVm.parse(text)
+                        // O parser pode falhar em texto esquisito; sem isto a exceção
+                        // derruba o processo. Aqui ela vira recado na própria tela.
+                        val parsed = runCatching { homeVm.parse(text) }.getOrNull()
+                        if (parsed == null) {
+                            writeError = "Não consegui entender o recado. Tente de novo."
+                            return@launch
+                        }
+                        writeError = null
+                        draft = parsed
                         nav.navigate("confirm") {
                             popUpTo("write") { inclusive = true }
                             launchSingleTop = true

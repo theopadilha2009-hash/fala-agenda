@@ -5,6 +5,7 @@ import com.theopadilha.falaagenda.data.local.OccurrenceDao
 import com.theopadilha.falaagenda.data.local.OccurrenceEntity
 import com.theopadilha.falaagenda.data.local.SeriesDao
 import com.theopadilha.falaagenda.data.local.SeriesEntity
+import com.theopadilha.falaagenda.data.local.toDomain
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.QuietHours
@@ -286,6 +287,77 @@ class TaskRepositoryTest {
         assertThat(scheduler.scheduled).isEmpty()
     }
 
+    /**
+     * Excluir uma data de uma série diária não pode deixá-la voltar no próximo start:
+     * era por aqui que o tombstone morria, porque o preview começa justamente em hoje.
+     */
+    @Test
+    fun excluirOcorrenciaDeSerieDiariaNaoVoltaAoReagendar() {
+        runBlocking {
+            val draft = completeDraft("Tomar remédio", LocalDate.of(2026, 8, 20), LocalTime.of(8, 0))
+                .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+            val saved = repo.saveDraft(draft)
+            val inicio = saved.occurrence.id
+
+            repo.deleteOccurrence(inicio)
+            assertThat(occurrenceDao.get(inicio)).isNull()
+            assertThat(seriesDao.get(saved.series.id)!!.toDomain().skippedDates)
+                .containsExactly(LocalDate.of(2026, 8, 20))
+
+            repo.rescheduleAll()
+
+            assertThat(occurrenceDao.get(inicio)).isNull()
+            assertThat(occurrenceDao.forSeries(saved.series.id).map { it.localDate })
+                .doesNotContain("2026-08-20")
+        }
+    }
+
+    /** "Excluir" é uma data; "Encerrar série" é a série inteira. */
+    @Test
+    fun excluirUltimaOcorrenciaDeSerieRecorrenteMantemASerie() {
+        runBlocking {
+            val draft = completeDraft("Tomar remédio", LocalDate.of(2026, 8, 20), LocalTime.of(8, 0))
+                .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+            val saved = repo.saveDraft(draft)
+
+            repo.deleteOccurrence(saved.occurrence.id)
+
+            assertThat(seriesDao.get(saved.series.id)).isNotNull()
+            assertThat(repo.snapshotAgenda().today).isEmpty()
+        }
+    }
+
+    /** Desfazer o "Excluir" tem que tirar o tombstone junto. */
+    @Test
+    fun desfazerExclusaoLimpaOTombstone() {
+        runBlocking {
+            val draft = completeDraft("Tomar remédio", LocalDate.of(2026, 8, 20), LocalTime.of(8, 0))
+                .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+            val saved = repo.saveDraft(draft)
+            val item = repo.snapshotAgenda().find(saved.occurrence.id)!!
+
+            repo.deleteOccurrence(saved.occurrence.id)
+            repo.restore(item)
+
+            assertThat(seriesDao.get(saved.series.id)!!.toDomain().skippedDates).isEmpty()
+            assertThat(occurrenceDao.get(saved.occurrence.id)).isNotNull()
+        }
+    }
+
+    /** Excluir tarefa única continua apagando a série junto (não deixa linha órfã). */
+    @Test
+    fun excluirTarefaUnicaApagaASerie() {
+        runBlocking {
+            val saved = repo.saveDraft(
+                completeDraft("Dentista", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)),
+            )
+
+            repo.deleteOccurrence(saved.occurrence.id)
+
+            assertThat(seriesDao.get(saved.series.id)).isNull()
+        }
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,
@@ -321,10 +393,9 @@ private class FakeSeriesDao : SeriesDao {
     override suspend fun get(id: String) = rows[id]
     override suspend fun getAll() = rows.values.toList()
     override fun observeAll(): Flow<List<SeriesEntity>> = flow.map { it }
-    override suspend fun upsert(entity: SeriesEntity): Long {
+    override suspend fun upsert(entity: SeriesEntity) {
         rows[entity.id] = entity
         emit()
-        return 1
     }
     override suspend fun delete(id: String): Int {
         val removed = rows.remove(id) != null

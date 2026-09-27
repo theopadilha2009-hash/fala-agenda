@@ -55,6 +55,22 @@ O parser local é determinístico. Só se o resultado ficar **ambíguo**, a IA e
 - Códigos de ativação são armazenados no servidor só como hash. O token do aparelho fica no Keystore (`EncryptedSharedPreferences`).
 - `parse-reminder` não grava transcript nem título. Logs mínimos, sem PII.
 - Sem URL/chave Supabase o aplicativo funciona normalmente e a ajuda extra aparece como **não ativada**.
+- **No APK de release as duas são obrigatórias**: o workflow lê os secrets `SUPABASE_URL` e `SUPABASE_ANON_KEY` e **falha o build** se faltarem (ou se não aparecerem dentro do dex). Antes disso os releases saíam sem a ajuda extra — o gate existe para não repetir.
+
+## Secrets do repositório (release)
+
+Em Settings → Secrets and variables → Actions → Secrets:
+
+| Secret | Valor |
+|---|---|
+| `SUPABASE_URL` | `https://SEU-PROJETO.supabase.co` |
+| `SUPABASE_ANON_KEY` | chave **anon/public**, nunca a `service_role` |
+| `RELEASE_KEYSTORE_BASE64` | keystore de release em base64 |
+| `RELEASE_KEYSTORE_PASSWORD` / `RELEASE_KEY_ALIAS` / `RELEASE_KEY_PASSWORD` | dados do keystore |
+
+O release confere, antes de publicar: URL e chave dentro do dex, `versionName` igual à tag e
+impressão digital do certificado igual à da release anterior (senão o app instalado não
+aceita a atualização por cima).
 
 ## Requisitos de build
 

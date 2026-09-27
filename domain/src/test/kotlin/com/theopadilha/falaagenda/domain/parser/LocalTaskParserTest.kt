@@ -19,6 +19,9 @@ class LocalTaskParserTest {
     )
     private val parser = LocalTaskParser(clock)
 
+    private fun parserEm(dateTime: LocalDateTime) =
+        LocalTaskParser(FixedAppClock(dateTime.atZone(zone).toInstant(), zone))
+
     @Test
     fun hojeEHora() {
         val draft = parser.parse("Me lembrar de tomar remédio hoje às 21h")
@@ -225,5 +228,116 @@ class LocalTaskParserTest {
         val draft = parser.parse("hoje à noite às nove")
         assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
         assertThat(draft.localTime).isEqualTo(LocalTime.of(21, 0))
+    }
+
+    @Test
+    fun amanhaAsNoveEMeia() {
+        val draft = parser.parse("me lembrar de tomar remédio amanhã às 9 e meia")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(9, 30))
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun asNoveEVinte() {
+        val draft = parser.parse("me lembrar de tomar remédio amanhã às nove e vinte")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(9, 20))
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun oitoHorasEMeia() {
+        val draft = parser.parse("tomar remédio às 8 horas e meia")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 30))
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun meioDiaEMeia() {
+        val draft = parser.parse("consulta meio-dia e meia")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(12, 30))
+        assertThat(draft.title).isEqualTo("Consulta")
+    }
+
+    @Test
+    fun amanhaAsTresDeTarde() {
+        val draft = parser.parse("reunião amanhã às 3 de tarde")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun asOitoDeNoite() {
+        val draft = parser.parse("tomar remédio às 8 de noite")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(20, 0))
+    }
+
+    @Test
+    fun asTresSemPeriodoNaoInventa() {
+        val draft = parser.parse("reunião amanhã às 3")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(3, 0))
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun todoDiaUtilViraDiasUteis() {
+        val draft = parser.parse("todo dia útil tomar remédio às 8h")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.WEEKDAYS)
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun daquiCincoMinutos() {
+        val draft = parser.parse("tomar remédio daqui cinco minutos")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(10, 5))
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+        assertThat(draft.missingFields).isEmpty()
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun daquiCincoMinAbreviado() {
+        val draft = parser.parse("tomar remédio daqui 5 min")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(10, 5))
+    }
+
+    @Test
+    fun daquiCincoMinComPonto() {
+        val draft = parser.parse("tomar remédio daqui 5 min.")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(10, 5))
+    }
+
+    @Test
+    fun todaQuartaComHoraPassadaVaiParaProximaSemana() {
+        val quarta = parserEm(LocalDateTime.of(2026, 8, 19, 10, 0))
+        val draft = quarta.parse("toda quarta natação às 9h")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 26))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(draft.notes.joinToString()).doesNotContain("passaram")
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun todoDiaComHoraPassadaVaiParaAmanha() {
+        val draft = parser.parse("todo dia tomar vitamina às 8h")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.DAILY)
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
+    }
+
+    @Test
+    fun unicaComHoraPassadaMantemNota() {
+        val draft = parser.parse("reunião hoje às 9h")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.notes.joinToString().lowercase()).contains("passaram")
     }
 }

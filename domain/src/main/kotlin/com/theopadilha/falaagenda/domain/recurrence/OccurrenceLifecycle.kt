@@ -109,8 +109,14 @@ object OccurrenceLifecycle {
         val upserts = mutableListOf<TaskOccurrence>()
         val cancel = mutableListOf<String>()
 
+        // O lembrete adiado pelo horário de silêncio só toca às 08:00 do dia seguinte e o
+        // adiamento do usuário pode cair depois da meia-noite: uma data vencida que ainda
+        // tem aviso vivo é "vai tocar", não "não foi feita". Sem nada marcado para tocar,
+        // a ocorrência segue o caminho normal de não realizada.
         existing.filter {
-            it.status == OccurrenceStatus.PENDING && it.localDate.isBefore(todayInSeriesZone)
+            it.status == OccurrenceStatus.PENDING &&
+                it.localDate.isBefore(todayInSeriesZone) &&
+                !temLembreteVivo(it, now)
         }.forEach { stale ->
             val missed = stale.copy(
                 status = OccurrenceStatus.MISSED,
@@ -145,6 +151,13 @@ object OccurrenceLifecycle {
             cancelAlarmsOf = cancel,
         )
     }
+
+    /**
+     * Ainda vai tocar: lembrete (ou adiamento) marcado para agora ou depois. O instante
+     * exato conta como vivo — é justamente quando o alarme está sendo entregue.
+     */
+    private fun temLembreteVivo(occurrence: TaskOccurrence, now: Instant): Boolean =
+        listOfNotNull(occurrence.nextReminderAt, occurrence.snoozedUntil).any { !it.isBefore(now) }
 
     fun todayIn(zoneId: ZoneId, now: Instant): LocalDate = now.atZone(zoneId).toLocalDate()
 }

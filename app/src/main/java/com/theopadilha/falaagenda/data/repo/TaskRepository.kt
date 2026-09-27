@@ -288,6 +288,10 @@ class TaskRepository(
             amountCents = amountCents,
             observation = observation.trim(),
             updatedAt = now,
+            // Citar de volta para uma data excluída desfaz a exclusão: com o tombstone
+            // marcado junto da ocorrência viva, a data ficaria bloqueada em toda
+            // materialização futura.
+            skippedDates = OccurrenceLifecycle.unskipDate(series.skippedDates, date),
         )
         seriesDao.upsert(updatedSeries.toEntity())
         val refreshed = OccurrenceLifecycle.materialize(updatedSeries, date, now)
@@ -303,7 +307,10 @@ class TaskRepository(
         }
         val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
         occurrenceDao.upsert(refreshed.copy(inexactAlarm = scheduled.inexact).toEntity())
-        spawnUpcomingPreview(updatedSeries, date)
+        // O preview é sobre o que vem depois: ancorado na data editada, editar uma data
+        // passada criava três datas vencidas, o próximo avanço marcava todas como não
+        // realizadas e a agenda ficava sem as futuras até o app reabrir.
+        spawnUpcomingPreview(updatedSeries, OccurrenceLifecycle.todayIn(updatedSeries.zoneId, now))
     }
 
     suspend fun retryMissed(occurrenceId: String): RetryResult? {
@@ -349,12 +356,26 @@ class TaskRepository(
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return AlarmFireResult(false)
         val series = seriesDao.get(row.seriesId)?.toDomain() ?: return AlarmFireResult(false)
-        applyLifecycle(series, now)
-        val occurrence = occurrenceDao.get(occurrenceId)?.toDomain() ?: return AlarmFireResult(false)
-        if (occurrence.status != OccurrenceStatus.PENDING) {
+        val occurrence = row.toDomain()
+        // O disparo é resolvido antes da varredura de ciclo de vida: a varredura marcaria
+        // como não realizada a ocorrência de ontem cujo aviso está tocando neste instante
+        // (adiado pela noite, ele só chega no fim do silêncio) e o lembrete morreria
+        // exatamente quando devia soar.
+        val result = if (occurrence.status == OccurrenceStatus.PENDING && !series.isEnded) {
+            fire(occurrence, series, now)
+        } else {
             scheduler.cancel(occurrenceId)
-            return AlarmFireResult(false)
+            AlarmFireResult(false)
         }
+        applyLifecycle(series, now)
+        return result
+    }
+
+    private suspend fun fire(
+        occurrence: TaskOccurrence,
+        series: TaskSeries,
+        now: Instant,
+    ): AlarmFireResult {
         val quiet = scheduler.quietHours()
         if (occurrence.reminderStep > 0 && ReminderPolicy.isInQuietHours(now, series.zoneId, quiet)) {
             val resume = ReminderPolicy.shiftOutOfQuietHours(now, series.zoneId, quiet)
@@ -380,6 +401,15 @@ class TaskRepository(
         val scheduled = scheduler.schedule(updated, series, first = false)
         occurrenceDao.upsert(updated.copy(inexactAlarm = scheduled.inexact).toEntity())
         return AlarmFireResult(notify = true, title = series.title, seriesId = series.id)
+    }
+
+    /**
+     * Rede de segurança do receiver: se o tratamento de um alarme não terminou a tempo
+     * (processo morto, tempo esgotado), o mesmo disparo volta daqui a pouco em vez de a
+     * escada de repetições morrer em silêncio até o app ser aberto de novo.
+     */
+    fun scheduleRecovery(occurrenceId: String) {
+        scheduler.scheduleRecovery(occurrenceId, clock.instant().plusSeconds(RECOVERY_DELAY_SECONDS))
     }
 
     suspend fun rescheduleAll() {
@@ -436,6 +466,11 @@ class TaskRepository(
                 occurrenceDao.upsert(occ.copy(inexactAlarm = scheduled.inexact).toEntity())
             }
         }
+    }
+
+    companion object {
+        /** Curto de propósito: recuperação não pode virar trabalho sem limite. */
+        const val RECOVERY_DELAY_SECONDS = 60L
     }
 }
 

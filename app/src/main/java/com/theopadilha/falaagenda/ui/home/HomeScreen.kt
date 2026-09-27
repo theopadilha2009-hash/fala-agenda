@@ -1,7 +1,6 @@
 package com.theopadilha.falaagenda.ui.home
 
 import android.Manifest
-import android.app.Activity
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
@@ -87,6 +86,8 @@ import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.month.insightRows
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
@@ -121,6 +122,8 @@ fun HomeScreen(
     val busy by viewModel.busy.collectAsState()
     val availableUpdate by viewModel.availableUpdate.collectAsState()
     val writeError by viewModel.writeError.collectAsState()
+    val undoableDelete by viewModel.undoableDelete.collectAsState()
+    val agendaLoaded by viewModel.agendaLoaded.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
@@ -128,8 +131,8 @@ fun HomeScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var widgetHelp by remember { mutableStateOf(false) }
     var quickSaveError by remember { mutableStateOf<String?>(null) }
-    val batteryOk = DeviceIntents.isBatteryUnrestricted(context)
-    val activity = context as? Activity
+    // Binder síncrono: se ficasse na recomposição, rodaria a cada parcial da fala.
+    var batteryOk by remember { mutableStateOf(DeviceIntents.isBatteryUnrestricted(context)) }
     var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
     var micRefused by rememberSaveable { mutableStateOf(false) }
     var alerts by remember { mutableStateOf(reminderAlerts(context)) }
@@ -138,24 +141,37 @@ fun HomeScreen(
         // Voltou dos Ajustes: o cartão some sozinho quando o que faltava foi ligado.
         micGranted = hasMicPermission(context)
         alerts = reminderAlerts(context)
+        batteryOk = DeviceIntents.isBatteryUnrestricted(context)
     }
 
-    // Negado de vez: o Android não mostra mais o pedido e só os Ajustes resolvem.
-    // Binder síncrono dentro do remember: a home recompõe a cada parcial da fala.
-    val micBlocked = remember(micGranted, micRefused, activity) {
-        !micGranted && micRefused && activity != null &&
-            !activity.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)
-    }
+    // Negado nesta sessão: no Android 11+ a rationale continua true depois da primeira
+    // recusa, e o pedido seguinte nem abre a caixa. Sem o cartão já na primeira recusa
+    // ela ficaria só com um aviso de 4 s e sem caminho para os Ajustes.
+    // Quem nunca foi perguntado (micRefused ainda false) não vê cartão nenhum.
+    val micBlocked = !micGranted && micRefused
+
+    // A fala já foi ouvida e agora está sendo entendida (com IA o parse leva até 20 s).
+    // Nesse intervalo o dock avisa e o microfone fica inativo: falar de novo atropelaria
+    // o recado que está sendo entendido.
+    var understanding by remember { mutableStateOf(false) }
+    val parseLock = remember { Mutex() }
     val closeAnd: (() -> Unit) -> Unit = { action ->
         scope.launch {
             drawerState.close()
             action()
         }
     }
+    // Tela de sistema não existe em todo aparelho: sem o runCatching o startActivity vira
+    // ActivityNotFoundException na main thread e o app fecha na mão dela.
+    val openSystemScreen: (Intent) -> Unit = { intent ->
+        if (runCatching { context.startActivity(intent) }.isFailure) {
+            scope.launch { snackbar.showSnackbar("Não consegui abrir os ajustes deste celular.") }
+        }
+    }
     val completeWithUndo: (AgendaItem) -> Unit = { item ->
         viewModel.complete(item) {
             scope.launch {
-                val result = snackbar.showSnackbar(
+                val result = snackbar.say(
                     message = "Feito.",
                     actionLabel = "Desfazer",
                     duration = SnackbarDuration.Long,
@@ -220,14 +236,16 @@ fun HomeScreen(
     }
 
     val onMic: () -> Unit = {
-        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        if (voiceUi.state == VoiceState.PREPARING ||
-            voiceUi.state == VoiceState.LISTENING ||
-            voiceUi.state == VoiceState.UNDERSTANDING
-        ) {
-            voice.cancel()
-        } else {
-            startVoice()
+        if (!understanding) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            if (voiceUi.state == VoiceState.PREPARING ||
+                voiceUi.state == VoiceState.LISTENING ||
+                voiceUi.state == VoiceState.UNDERSTANDING
+            ) {
+                voice.cancel()
+            } else {
+                startVoice()
+            }
         }
     }
 
@@ -251,12 +269,24 @@ fun HomeScreen(
         val text = voiceUi.finalText?.trim().orEmpty()
         if (text.isEmpty()) return@LaunchedEffect
         voice.consumeFinal()
-        val draft = runCatching { viewModel.parse(text) }.getOrNull()
-        if (draft == null) {
-            snackbar.showSnackbar("Não consegui entender o recado. Tente de novo ou escreva a tarefa.")
-            return@LaunchedEffect
+        // O parse roda no escopo da tela, e não no efeito: consumir o texto final zera
+        // `finalText` e o LaunchedEffect seria cancelado no meio do parse, calado.
+        scope.launch {
+            parseLock.withLock {
+                understanding = true
+                try {
+                    val draft = runCatching { viewModel.parse(text) }.getOrNull()
+                    if (draft == null) {
+                        snackbar.say("Não consegui entender o recado. Tente de novo ou escreva a tarefa.")
+                    } else {
+                        handleDraft(draft)
+                    }
+                } finally {
+                    // Só volta a pedir fala quando o recado foi entendido, ou quando deu erro.
+                    understanding = false
+                }
+            }
         }
-        handleDraft(draft)
     }
 
     LaunchedEffect(inexact) {
@@ -267,8 +297,22 @@ fun HomeScreen(
 
     LaunchedEffect(statusMessage) {
         val message = statusMessage ?: return@LaunchedEffect
-        snackbar.showSnackbar(message)
         onStatusConsumed()
+        if (undoableDelete != null) {
+            // Excluir é o único aviso que precisa de volta na mesma frase.
+            val result = snackbar.say(
+                message = message,
+                actionLabel = "Desfazer",
+                duration = SnackbarDuration.Long,
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                viewModel.undoDelete()
+            } else {
+                viewModel.forgetUndoDelete()
+            }
+        } else {
+            snackbar.say(message)
+        }
     }
 
     LaunchedEffect(writeError) {
@@ -277,11 +321,18 @@ fun HomeScreen(
         snackbar.showSnackbar(message, duration = SnackbarDuration.Long)
     }
 
-    LaunchedEffect(openOccurrenceId, agenda) {
+    LaunchedEffect(openOccurrenceId, agenda, agendaLoaded) {
         val id = openOccurrenceId ?: return@LaunchedEffect
         val item = agenda.find(id)
         if (item != null) {
             onEditItem(item)
+            onOpenOccurrenceConsumed()
+            return@LaunchedEffect
+        }
+        // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou
+        // a agenda ainda não chegou do banco. Só o segundo caso merece espera.
+        if (agendaLoaded) {
+            snackbar.showSnackbar("Esta tarefa não está mais na agenda.")
             onOpenOccurrenceConsumed()
         }
     }
@@ -339,10 +390,12 @@ fun HomeScreen(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             MicDock(
-                state = voiceUi.state,
+                state = if (understanding) VoiceState.UNDERSTANDING else voiceUi.state,
                 partial = voiceUi.partial,
                 error = voiceUi.error,
-                onMic = onMic,
+                // Entendendo o recado o botão sai da mão dela: um toque aqui não pode
+                // cancelar a fala que ainda está virando tarefa.
+                onMic = if (understanding) null else onMic,
                 onWrite = onWrite,
                 onQuick = onQuick,
             )
@@ -413,7 +466,7 @@ fun HomeScreen(
                                 )
                                 TextButton(
                                     onClick = {
-                                        context.startActivity(
+                                        openSystemScreen(
                                             Intent(
                                                 Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                                 Uri.parse("package:${context.packageName}"),
@@ -448,7 +501,7 @@ fun HomeScreen(
                                 )
                                 TextButton(
                                     onClick = {
-                                        context.startActivity(
+                                        openSystemScreen(
                                             Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                                                 .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
                                         )
@@ -485,7 +538,7 @@ fun HomeScreen(
                                 Text("O Android não deixou o alarme exato. A tarefa foi salva.")
                                 TextButton(onClick = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        context.startActivity(
+                                        openSystemScreen(
                                             Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                                                 data = Uri.parse("package:${context.packageName}")
                                             },
@@ -627,6 +680,19 @@ fun HomeScreen(
     }
 }
 
+/**
+ * Aviso novo não fica na fila atrás do antigo: o desfazer vive 10 s na tela e a resposta
+ * do toque seguinte chegaria depois desse tempo todo — o mesmo que não chegar.
+ */
+private suspend fun SnackbarHostState.say(
+    message: String,
+    actionLabel: String? = null,
+    duration: SnackbarDuration = SnackbarDuration.Short,
+): SnackbarResult {
+    currentSnackbarData?.dismiss()
+    return showSnackbar(message = message, actionLabel = actionLabel, duration = duration)
+}
+
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -649,21 +715,23 @@ private fun MicDock(
     state: VoiceState,
     partial: String,
     error: String?,
-    onMic: () -> Unit,
+    onMic: (() -> Unit)?,
     onWrite: () -> Unit,
     onQuick: (Long) -> Unit,
 ) {
     val label = when (state) {
         VoiceState.PREPARING -> "Espera um instante…"
         VoiceState.LISTENING -> "Pode falar agora"
-        VoiceState.UNDERSTANDING -> "Entendendo…"
+        VoiceState.UNDERSTANDING -> "Entendendo o recado…"
         VoiceState.ERROR -> error ?: "Não consegui ouvir"
         VoiceState.IDLE -> "Toque no microfone e fale"
     }
-    val action = when (state) {
-        VoiceState.PREPARING, VoiceState.LISTENING, VoiceState.UNDERSTANDING -> "Parar de ouvir"
-        VoiceState.ERROR -> "Tentar de novo. $label"
-        VoiceState.IDLE -> "Falar uma tarefa"
+    val action = when {
+        // Sem clique, o que a leitura de tela anuncia é o que está acontecendo.
+        onMic == null -> "Entendendo o recado, espere um instante"
+        state == VoiceState.ERROR -> "Tentar de novo. $label"
+        state == VoiceState.IDLE -> "Falar uma tarefa"
+        else -> "Parar de ouvir"
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,

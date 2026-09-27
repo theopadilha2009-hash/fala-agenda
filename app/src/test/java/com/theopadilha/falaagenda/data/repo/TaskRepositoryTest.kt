@@ -6,6 +6,8 @@ import com.theopadilha.falaagenda.data.local.OccurrenceEntity
 import com.theopadilha.falaagenda.data.local.SeriesDao
 import com.theopadilha.falaagenda.data.local.SeriesEntity
 import com.theopadilha.falaagenda.data.local.toDomain
+import com.theopadilha.falaagenda.data.local.toEntity
+import com.theopadilha.falaagenda.domain.model.OccurrenceIds
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.QuietHours
@@ -13,6 +15,7 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
+import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
 import kotlinx.coroutines.flow.Flow
@@ -20,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -358,6 +362,196 @@ class TaskRepositoryTest {
         }
     }
 
+    /**
+     * O lembrete adiado pelo horário de silêncio só toca às 08:00 do dia seguinte — quando
+     * a ocorrência já é de ontem. O disparo que chega alguns segundos depois da hora marcada
+     * não pode ser engolido pela varredura de ciclo de vida: é o último instante em que
+     * aquele aviso tem para tocar.
+     */
+    @Test
+    fun lembreteAdiadoPelaNoiteTocaNoFimDoSilencio() {
+        runBlocking {
+            val oitoDaManha = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 8, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, oitoDaManha, sched)
+            val series = TaskSeries(
+                id = "s1",
+                title = "Remédio",
+                zoneId = zone,
+                localTime = LocalTime.of(22, 0),
+                startLocalDate = LocalDate.of(2026, 8, 19),
+                recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+                createdAt = oitoDaManha.instant(),
+                updatedAt = oitoDaManha.instant(),
+            )
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
+            occDao.upsert(
+                TaskOccurrence(
+                    id = ontem,
+                    seriesId = series.id,
+                    localDate = LocalDate.of(2026, 8, 19),
+                    scheduledAt = LocalDateTime.of(2026, 8, 19, 22, 0).atZone(zone).toInstant(),
+                    status = OccurrenceStatus.PENDING,
+                    reminderStep = ReminderPolicy.STEP_HOURLY,
+                    lastReminderAt = LocalDateTime.of(2026, 8, 19, 23, 0).atZone(zone).toInstant(),
+                    // marcado para 07:59, o sistema entregou às 08:00
+                    nextReminderAt = LocalDateTime.of(2026, 8, 20, 7, 59).atZone(zone).toInstant(),
+                ).toEntity(),
+            )
+
+            val result = repoDaManha.onAlarmFired(ontem)
+
+            assertThat(result.notify).isTrue()
+            val stored = occDao.get(ontem)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(stored.nextReminderAt).isGreaterThan(oitoDaManha.instant())
+            assertThat(sched.scheduled).contains(ontem)
+            assertThat(sched.cancelled).doesNotContain(ontem)
+        }
+    }
+
+    /** Sem lembrete vivo, a data vencida continua virando não realizada. */
+    @Test
+    fun lembreteDeOntemSemNadaMarcadoViraNaoRealizada() {
+        runBlocking {
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoAgora = TaskRepository(seriesDao, occDao, clock, sched)
+            val series = TaskSeries(
+                id = "s1",
+                title = "Remédio",
+                zoneId = zone,
+                localTime = LocalTime.of(8, 0),
+                startLocalDate = LocalDate.of(2026, 8, 19),
+                recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+                createdAt = clock.instant(),
+                updatedAt = clock.instant(),
+            )
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
+            occDao.upsert(
+                TaskOccurrence(
+                    id = ontem,
+                    seriesId = series.id,
+                    localDate = LocalDate.of(2026, 8, 19),
+                    scheduledAt = LocalDateTime.of(2026, 8, 19, 8, 0).atZone(zone).toInstant(),
+                    status = OccurrenceStatus.PENDING,
+                    reminderStep = ReminderPolicy.STEP_PLUS_30,
+                    nextReminderAt = LocalDateTime.of(2026, 8, 19, 9, 30).atZone(zone).toInstant(),
+                ).toEntity(),
+            )
+
+            repoAgora.rescheduleAll()
+
+            assertThat(occDao.get(ontem)!!.status).isEqualTo(OccurrenceStatus.MISSED.name)
+        }
+    }
+
+    /**
+     * Editar para uma data passada não pode ancorar o preview nessa data: as três datas
+     * nasciam no passado, o próximo avanço marcava todas como não realizadas e a agenda
+     * ficava sem as datas futuras até o app reabrir.
+     */
+    @Test
+    fun editarParaDataPassadaAncoraOPreviewEmHoje() {
+        runBlocking {
+            val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 20), LocalTime.of(8, 0))
+                .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+            val saved = repo.saveDraft(draft)
+
+            repo.editOccurrence(
+                saved.occurrence.id,
+                "Remédio",
+                LocalDate.of(2026, 8, 18),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val datas = occurrenceDao.forSeries(saved.series.id).map { it.localDate }
+            assertThat(datas).contains("2026-08-20")
+            assertThat(datas).contains("2026-08-21")
+            assertThat(datas).doesNotContain("2026-08-19")
+        }
+    }
+
+    /** O preview ancorado em hoje continua respeitando a data que o usuário excluiu. */
+    @Test
+    fun editarNaoRematerializaDataExcluida() {
+        runBlocking {
+            val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 20), LocalTime.of(8, 0))
+                .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+            val saved = repo.saveDraft(draft)
+            repo.rescheduleAll()
+            val amanha = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 21))
+            assertThat(occurrenceDao.get(amanha)).isNotNull()
+            repo.deleteOccurrence(amanha)
+
+            repo.editOccurrence(
+                saved.occurrence.id,
+                "Remédio",
+                LocalDate.of(2026, 8, 18),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val datas = occurrenceDao.forSeries(saved.series.id).map { it.localDate }
+            assertThat(datas).contains("2026-08-20")
+            assertThat(datas).doesNotContain("2026-08-21")
+        }
+    }
+
+    /**
+     * Citar de volta para uma data que o usuário havia excluído desfaz a exclusão: manter
+     * o tombstone marcado junto com a ocorrência viva bloquearia a data em toda
+     * materialização futura.
+     */
+    @Test
+    fun editarParaDataExcluidaDesfazAExclusao() {
+        runBlocking {
+            val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 20), LocalTime.of(8, 0))
+                .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+            val saved = repo.saveDraft(draft)
+            repo.rescheduleAll()
+            val amanha = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 21))
+            repo.deleteOccurrence(amanha)
+            assertThat(seriesDao.get(saved.series.id)!!.toDomain().skippedDates)
+                .containsExactly(LocalDate.of(2026, 8, 21))
+
+            repo.editOccurrence(
+                saved.occurrence.id,
+                "Remédio",
+                LocalDate.of(2026, 8, 21),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            assertThat(seriesDao.get(saved.series.id)!!.toDomain().skippedDates).isEmpty()
+            assertThat(occurrenceDao.get(amanha)).isNotNull()
+        }
+    }
+
+    /**
+     * Rede de segurança do receiver: se o tratamento do alarme não terminar a tempo, o
+     * mesmo disparo volta daqui a pouco em vez de morrer em silêncio.
+     */
+    @Test
+    fun falhaNoDisparoAgendaRecuperacaoCurta() {
+        runBlocking {
+            val saved = repo.saveDraft(completeDraft("Remédio", LocalDate.of(2026, 8, 21), LocalTime.of(8, 0)))
+
+            repo.scheduleRecovery(saved.occurrence.id)
+
+            assertThat(scheduler.recovered[saved.occurrence.id])
+                .isEqualTo(clock.instant().plusSeconds(TaskRepository.RECOVERY_DELAY_SECONDS))
+            assertThat(scheduler.cancelled).doesNotContain(saved.occurrence.id)
+        }
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,
@@ -374,6 +568,7 @@ private class RecordingScheduler : AlarmScheduler {
     var exact: Boolean = true
     val scheduled = mutableListOf<String>()
     val cancelled = mutableListOf<String>()
+    val recovered = mutableMapOf<String, Instant>()
 
     override suspend fun quietHours(): QuietHours = QuietHours()
     override fun canScheduleExact(): Boolean = exact
@@ -383,6 +578,9 @@ private class RecordingScheduler : AlarmScheduler {
     }
     override fun cancel(occurrenceId: String) {
         cancelled += occurrenceId
+    }
+    override fun scheduleRecovery(occurrenceId: String, at: Instant) {
+        recovered[occurrenceId] = at
     }
 }
 

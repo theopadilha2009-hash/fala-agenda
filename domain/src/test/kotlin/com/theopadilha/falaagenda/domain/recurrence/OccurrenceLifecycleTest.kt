@@ -1,9 +1,13 @@
 package com.theopadilha.falaagenda.domain.recurrence
 
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.domain.model.OccurrenceIds
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
+import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
 import org.junit.Test
 import java.time.Instant
 import java.time.LocalDate
@@ -62,6 +66,85 @@ class OccurrenceLifecycleTest {
         )
         assertThat(change.upserts.map { it.localDate }).containsExactly(LocalDate.of(2026, 9, 28))
     }
+
+    /**
+     * Lembrete adiado pelo horário de silêncio só toca às 08:00 do dia seguinte. A
+     * varredura não pode dar a ocorrência de ontem como não realizada enquanto o
+     * aviso dela ainda está marcado para tocar.
+     */
+    @Test
+    fun ocorrenciaDeOntemComLembreteFuturoContinuaPendente() {
+        val ontem = LocalDate.of(2026, 9, 26)
+        val adiada = occurrence(ontem, nextReminderAt = now.plusSeconds(3 * 3600))
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(adiada),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 27),
+        )
+        assertThat(change.markMissed).isEmpty()
+        assertThat(change.cancelAlarmsOf).isEmpty()
+    }
+
+    /** O lembrete pode estar marcado no próprio instante da varredura: ainda vai tocar. */
+    @Test
+    fun ocorrenciaDeOntemComLembreteNoInstanteAtualContinuaPendente() {
+        val ontem = LocalDate.of(2026, 9, 26)
+        val adiada = occurrence(ontem, nextReminderAt = now)
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(adiada),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 27),
+        )
+        assertThat(change.markMissed).isEmpty()
+    }
+
+    /** Adiamento é ação explícita do usuário e vale a mesma proteção do lembrete. */
+    @Test
+    fun ocorrenciaDeOntemComSnoozeNoFuturoContinuaPendente() {
+        val ontem = LocalDate.of(2026, 9, 26)
+        val adiada = occurrence(ontem, nextReminderAt = null, snoozedUntil = now.plusSeconds(600))
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(adiada),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 27),
+        )
+        assertThat(change.markMissed).isEmpty()
+        assertThat(change.cancelAlarmsOf).isEmpty()
+    }
+
+    /** Sem nada marcado para tocar, a data vencida vira não realizada como antes. */
+    @Test
+    fun ocorrenciaDeOntemSemLembreteFuturoViraNaoRealizada() {
+        val ontem = LocalDate.of(2026, 9, 26)
+        val vencida = occurrence(ontem, nextReminderAt = now.minusSeconds(3600))
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(vencida),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 27),
+        )
+        assertThat(change.markMissed.map { it.id }).containsExactly(vencida.id)
+        assertThat(change.markMissed.single().status).isEqualTo(OccurrenceStatus.MISSED)
+        assertThat(change.cancelAlarmsOf).containsExactly(vencida.id)
+    }
+
+    private fun occurrence(
+        date: LocalDate,
+        nextReminderAt: Instant?,
+        snoozedUntil: Instant? = null,
+    ) = TaskOccurrence(
+        id = OccurrenceIds.of("s1", date),
+        seriesId = "s1",
+        localDate = date,
+        scheduledAt = date.atTime(8, 0).atZone(zone).toInstant(),
+        status = OccurrenceStatus.PENDING,
+        reminderStep = ReminderPolicy.STEP_HOURLY,
+        nextReminderAt = nextReminderAt,
+        snoozedUntil = snoozedUntil,
+    )
 
     @Test
     fun skipDateGuardaADataEDescartaAsMuitoAntigas() {

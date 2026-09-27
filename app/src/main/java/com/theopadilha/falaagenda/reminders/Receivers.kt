@@ -38,11 +38,26 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
                 }
             } catch (e: TimeoutCancellationException) {
                 Log.w(TAG, "Tempo esgotado ao tratar o lembrete $occurrenceId")
+                agendarRecuperacao(app, occurrenceId)
             } catch (e: Exception) {
                 Log.w(TAG, "Falha ao tratar o lembrete $occurrenceId", e)
+                agendarRecuperacao(app, occurrenceId)
             } finally {
                 pending.finish()
             }
+        }
+    }
+
+    /**
+     * O trabalho não terminou: sem isto a escada de repetições morria em silêncio até o
+     * app ser aberto de novo. Não suspende de propósito — precisa caber antes do
+     * `finish()` do goAsync.
+     */
+    private fun agendarRecuperacao(app: FalaAgendaApplication, occurrenceId: String) {
+        try {
+            app.container.tasks.scheduleRecovery(occurrenceId)
+        } catch (e: Exception) {
+            Log.w(TAG, "Não foi possível agendar a recuperação do lembrete $occurrenceId", e)
         }
     }
 }
@@ -100,6 +115,10 @@ private fun BroadcastReceiver.rescheduleAsync(context: Context) {
     app.appScope.launch {
         try {
             app.container.tasks.rescheduleAll()
+        } catch (e: Exception) {
+            // Sem o catch a exceção subia pelo appScope e derrubava o processo no boot
+            // e na troca de hora.
+            Log.w(TAG, "Falha ao regravar os alarmes", e)
         } finally {
             pending.finish()
         }

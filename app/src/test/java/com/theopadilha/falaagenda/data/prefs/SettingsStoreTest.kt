@@ -3,8 +3,10 @@ package com.theopadilha.falaagenda.data.prefs
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.domain.model.QuietHours
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,13 +43,38 @@ class SettingsStoreTest {
     }
 
     @Test
-    fun gravacaoQueFalhaNaoDerrubaQuemChamou() = runBlocking {
+    fun gravacaoQueFalhaSobeParaQuemChamou() = runBlocking {
         val settings = SettingsStore(StoreQueFalhaNaLeitura())
 
-        // Vêm de escopo de composição: se lançarem, derrubam o processo.
-        settings.setOnboardingComplete()
-        settings.setThemeMode(ThemeMode.DARK)
-        settings.setQuietHours(QuietHours(LocalTime.of(21, 0), LocalTime.of(7, 0)))
+        // A tela de ajustes só anuncia "atualizado" quando a gravação volta sem erro.
+        // Engolir a falha aqui era o que fazia a mensagem de sucesso aparecer sem nada
+        // ter sido salvo. Quem chama (escopo de composição) trata.
+        assertThat(runCatching { settings.setOnboardingComplete() }.exceptionOrNull())
+            .isInstanceOf(IOException::class.java)
+        assertThat(runCatching { settings.setThemeMode(ThemeMode.DARK) }.exceptionOrNull())
+            .isInstanceOf(IOException::class.java)
+        assertThat(
+            runCatching {
+                settings.setQuietHours(QuietHours(LocalTime.of(21, 0), LocalTime.of(7, 0)))
+            }.exceptionOrNull(),
+        ).isInstanceOf(IOException::class.java)
+    }
+
+    private class StoreQueCancela : DataStore<Preferences> {
+        override val data: Flow<Preferences> = flow { emit(emptyPreferences()) }
+
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
+            throw CancellationException("tela saiu de cena")
+    }
+
+    @Test
+    fun cancelamentoNaoViraFalhaDeGravacao() = runBlocking {
+        val settings = SettingsStore(StoreQueCancela())
+
+        // Cancelar não é falhar: se o cancelamento virasse "não salvou", a tela mostraria
+        // recado de erro para quem só girou o aparelho ou saiu da tela no meio.
+        assertThat(runCatching { settings.setThemeMode(ThemeMode.DARK) }.exceptionOrNull())
+            .isInstanceOf(CancellationException::class.java)
     }
 
     @Test

@@ -36,6 +36,7 @@ import com.theopadilha.falaagenda.ui.month.MonthSummaryScreen
 import com.theopadilha.falaagenda.ui.onboarding.OnboardingScreen
 import com.theopadilha.falaagenda.ui.settings.SettingsScreen
 import com.theopadilha.falaagenda.ui.update.UpdateScreen
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
@@ -130,7 +131,20 @@ fun FalaAgendaRoot(
                 onStartSpeakConsumed = onStartSpeakConsumed,
                 onOpenSettings = { nav.navigate("settings") },
                 themeMode = themeMode,
-                onThemeMode = { mode -> scope.launch { container.settings.setThemeMode(mode) } },
+                onThemeMode = { mode ->
+                    // O escopo é o da composição: gravação que falha sem tratamento aqui
+                    // derrubaria o processo. E o toque não pode passar em silêncio — o
+                    // tema continua o antigo e a home diz por quê.
+                    scope.launch {
+                        try {
+                            container.settings.setThemeMode(mode)
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (_: Exception) {
+                            statusMessage = "Não consegui salvar a aparência. Tente de novo."
+                        }
+                    }
+                },
                 onOpenMonth = { nav.navigate("month") },
                 onOpenUpdate = { nav.navigate("update") },
                 onWrite = { nav.navigate("write") },

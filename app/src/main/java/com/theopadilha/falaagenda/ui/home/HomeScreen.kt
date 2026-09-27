@@ -161,11 +161,12 @@ fun HomeScreen(
             action()
         }
     }
-    // Tela de sistema não existe em todo aparelho: sem o runCatching o startActivity vira
-    // ActivityNotFoundException na main thread e o app fecha na mão dela.
-    val openSystemScreen: (Intent) -> Unit = { intent ->
-        if (runCatching { context.startActivity(intent) }.isFailure) {
-            scope.launch { snackbar.showSnackbar("Não consegui abrir os ajustes deste celular.") }
+    // Tela de sistema não existe em todo aparelho: o DeviceIntents.open concentra o
+    // runCatching e diz se abriu. O toque nunca fica sem resposta — sem isso o
+    // ActivityNotFoundException solto fechava o app na mão dela.
+    val openOrReport: (Intent, String) -> Unit = { intent, failure ->
+        if (!DeviceIntents.open(context, intent)) {
+            scope.launch { snackbar.showSnackbar(failure) }
         }
     }
     val completeWithUndo: (AgendaItem) -> Unit = { item ->
@@ -356,7 +357,10 @@ fun HomeScreen(
                                 )
                             },
                         )
-                        context.startActivity(DeviceIntents.shareText(text, "Enviar o dia"))
+                        openOrReport(
+                            DeviceIntents.shareText(text, "Enviar o dia"),
+                            "Não consegui abrir o compartilhamento neste celular.",
+                        )
                     }
                 },
                 onShare = {
@@ -365,16 +369,23 @@ fun HomeScreen(
                             val apk = withContext(Dispatchers.IO) {
                                 runCatching { DeviceIntents.copyInstalledApk(context) }.getOrNull()
                             }
-                            context.startActivity(DeviceIntents.shareChooser(context, apk))
+                            openOrReport(
+                                DeviceIntents.shareChooser(context, apk),
+                                "Não consegui abrir o compartilhamento neste celular.",
+                            )
                         }
                     }
                 },
                 onBattery = {
                     closeAnd {
-                        context.startActivity(DeviceIntents.batterySettings(context))
+                        val opened = DeviceIntents.open(context, DeviceIntents.batterySettings(context))
                         scope.launch {
                             snackbar.showSnackbar(
-                                "Se o aviso continuar falhando no Xiaomi/Samsung: Ajustes → Apps → Fala Agenda → bateria sem restrição e autostart.",
+                                if (opened) {
+                                    "Se o aviso continuar falhando no Xiaomi/Samsung: Ajustes → Apps → Fala Agenda → bateria sem restrição e autostart."
+                                } else {
+                                    "Não consegui abrir os ajustes de bateria deste celular."
+                                },
                             )
                         }
                     }
@@ -466,11 +477,12 @@ fun HomeScreen(
                                 )
                                 TextButton(
                                     onClick = {
-                                        openSystemScreen(
+                                        openOrReport(
                                             Intent(
                                                 Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                                 Uri.parse("package:${context.packageName}"),
                                             ),
+                                            "Não consegui abrir os ajustes deste celular.",
                                         )
                                     },
                                     modifier = Modifier.heightIn(min = 56.dp),
@@ -501,9 +513,10 @@ fun HomeScreen(
                                 )
                                 TextButton(
                                     onClick = {
-                                        openSystemScreen(
+                                        openOrReport(
                                             Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                                                 .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                                            "Não consegui abrir os ajustes de aviso deste celular.",
                                         )
                                     },
                                     modifier = Modifier.heightIn(min = 56.dp),
@@ -538,10 +551,11 @@ fun HomeScreen(
                                 Text("O Android não deixou o alarme exato. A tarefa foi salva.")
                                 TextButton(onClick = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        openSystemScreen(
+                                        openOrReport(
                                             Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                                                 data = Uri.parse("package:${context.packageName}")
                                             },
+                                            "Não consegui abrir os ajustes de alarme deste celular.",
                                         )
                                     }
                                     viewModel.setInexactWarning(false)

@@ -1,6 +1,5 @@
 package com.theopadilha.falaagenda.ui.update
 
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
@@ -46,15 +45,12 @@ import kotlinx.coroutines.withContext
 private val updateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 /**
- * Sem aplicativo que responda ao intent, startActivity estoura ActivityNotFoundException e
- * fecha o aplicativo na cara dela. Aqui o susto vira um recado na própria tela.
+ * Sem aplicativo que responda ao intent, [DeviceIntents.open] devolve `false` em vez de
+ * deixar o ActivityNotFoundException fechar o aplicativo na cara dela. O susto vira um
+ * recado na própria tela.
  */
 private fun Context.openOrReport(intent: Intent, session: UpdateSession, message: String) {
-    try {
-        startActivity(intent)
-    } catch (missing: ActivityNotFoundException) {
-        session.report(message)
-    }
+    if (!DeviceIntents.open(this, intent)) session.report(message)
 }
 
 private object UpdateSessions {

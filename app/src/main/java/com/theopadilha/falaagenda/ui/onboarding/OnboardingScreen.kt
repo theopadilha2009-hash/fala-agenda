@@ -29,6 +29,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.data.prefs.SettingsStore
+import com.theopadilha.falaagenda.platform.DeviceIntents
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
@@ -59,15 +60,15 @@ fun OnboardingScreen(
     fun requestExactAlarm() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Aparelho sem essa tela responde com ActivityNotFoundException na thread
-            // principal — o app fecharia no primeiro uso dela. Sem a tela, o cartão de
-            // alarme exato na home cobre depois.
-            runCatching {
-                context.startActivity(
-                    Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                    },
-                )
-            }
+            // principal — o app fecharia no primeiro uso dela. Sem a tela, o toque segue
+            // para a home (é a resposta que ela espera) e o cartão de alarme exato cobre
+            // depois: aqui um recado não seria lido, a tela troca no mesmo toque.
+            DeviceIntents.open(
+                context,
+                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                },
+            )
         }
         finish()
     }

@@ -29,6 +29,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -175,4 +176,5 @@ private object NoopScheduler : AlarmScheduler {
         first: Boolean,
     ): SchedulerOutcome = SchedulerOutcome(inexact = false, scheduled = true)
     override fun cancel(occurrenceId: String) = Unit
+    override fun scheduleRecovery(occurrenceId: String, at: Instant) = Unit
 }

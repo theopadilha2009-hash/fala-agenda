@@ -11,7 +11,6 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.theopadilha.falaagenda.domain.model.QuietHours
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
@@ -57,33 +56,23 @@ class SettingsStore internal constructor(private val store: DataStore<Preference
             .getOrDefault(ThemeMode.SYSTEM)
     }
 
+    // Gravação que falha sobe para quem chamou: a tela de ajustes só anuncia "atualizado"
+    // depois que isto volta sem exceção. Engolir o erro aqui deixava o cartão com o horário
+    // antigo e a tela dizendo que tinha salvo. Cada chamador trata — nenhum deles pode
+    // deixar a exceção derrubar o processo.
     suspend fun setQuietHours(hours: QuietHours) {
-        save {
-            store.edit {
-                it[quietStartMin] = hours.start.hour * 60 + hours.start.minute
-                it[quietEndMin] = hours.end.hour * 60 + hours.end.minute
-            }
+        store.edit {
+            it[quietStartMin] = hours.start.hour * 60 + hours.start.minute
+            it[quietEndMin] = hours.end.hour * 60 + hours.end.minute
         }
     }
 
     suspend fun setOnboardingComplete() {
-        save { store.edit { it[onboardingDone] = true } }
+        store.edit { it[onboardingDone] = true }
     }
 
     suspend fun setThemeMode(mode: ThemeMode) {
-        save { store.edit { it[themeModeKey] = mode.name } }
-    }
-
-    // As gravações são chamadas de escopo de composição, onde a exceção não tem quem a
-    // receba: um erro de escrita derrubaria o processo. Aqui ele vira "não salvou" — o
-    // app segue e o próximo uso tenta de novo.
-    private suspend fun save(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (cancel: CancellationException) {
-            throw cancel
-        } catch (_: Exception) {
-        }
+        store.edit { it[themeModeKey] = mode.name }
     }
 
     suspend fun currentQuietHours(): QuietHours = quietHours.first()

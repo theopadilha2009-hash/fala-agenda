@@ -392,6 +392,7 @@ class TaskRepository(
             zoneId = series.zoneId,
             quietHours = quiet,
             interval = interval,
+            occurrenceDay = occurrence.localDate,
         )
         val updated = occurrence.copy(
             reminderStep = plan.step,

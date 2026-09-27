@@ -18,10 +18,13 @@ import com.theopadilha.falaagenda.domain.model.TaskSeries
 import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
 import java.time.Instant
 import java.time.LocalDate
@@ -658,6 +661,91 @@ class TaskRepositoryTest {
     }
 
     /**
+     * O alarme marcado para as 08:00 só é entregue às 08:00 e pouco (Doze, entrega
+     * inexata, processo acordando naquele instante). A varredura de start que lê o banco
+     * 100 ms depois do horário marcado não pode arquivar como "não realizada" o aviso que
+     * ainda vai tocar: era o único lembrete do dia morrendo sem tocar.
+     */
+    @Test
+    fun varreduraNaoConsomeLembreteAtrasadoENaoEntregue() {
+        runBlocking {
+            val oitoDaManha = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 8, 0, 0, 100_000_000).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, oitoDaManha, sched)
+            val series = serieDaNoite(oitoDaManha.instant())
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
+            occDao.upsert(
+                ocorrenciaAdiada(
+                    seriesId = series.id,
+                    dia = LocalDate.of(2026, 8, 19),
+                    lastReminderAt = LocalDateTime.of(2026, 8, 19, 22, 15).atZone(zone).toInstant(),
+                    // escada terminou em 08:00 de hoje; o alarme ainda não voltou
+                    nextReminderAt = LocalDateTime.of(2026, 8, 20, 8, 0).atZone(zone).toInstant(),
+                ).toEntity(),
+            )
+
+            repoDaManha.rescheduleAll()
+
+            val stored = occDao.get(ontem)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(sched.cancelled).doesNotContain(ontem)
+            // Rearmado: é o que faz a entrega atrasada ainda acontecer.
+            assertThat(sched.scheduled).contains(ontem)
+
+            // O "Adiar" da notificação só age em ocorrência pendente.
+            sched.scheduled.clear()
+            repoDaManha.snooze(ontem, 30)
+
+            val adiada = occDao.get(ontem)!!.toDomain()
+            assertThat(adiada.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(adiada.snoozedUntil).isEqualTo(oitoDaManha.instant().plusSeconds(30 * 60))
+            assertThat(adiada.nextReminderAt).isEqualTo(adiada.snoozedUntil)
+            assertThat(sched.scheduled).contains(ontem)
+        }
+    }
+
+    /**
+     * Terminador da entrega pendente: passada a janela, o alarme perdido não fica pendurado
+     * para sempre — a ocorrência volta a ser encerrada pela virada do dia.
+     */
+    @Test
+    fun lembreteNaoEntregueForaDaJanelaViraNaoRealizada() {
+        runBlocking {
+            val manhaSeguinte = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 9, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, manhaSeguinte, sched)
+            val series = serieDaNoite(manhaSeguinte.instant())
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
+            occDao.upsert(
+                ocorrenciaAdiada(
+                    seriesId = series.id,
+                    dia = LocalDate.of(2026, 8, 19),
+                    lastReminderAt = LocalDateTime.of(2026, 8, 19, 21, 30).atZone(zone).toInstant(),
+                    // marcado para ontem 22:00, nunca entregue: 11 h de atraso, janela fechada
+                    nextReminderAt = LocalDateTime.of(2026, 8, 19, 22, 0).atZone(zone).toInstant(),
+                ).toEntity(),
+            )
+
+            repoDaManha.rescheduleAll()
+
+            val stored = occDao.get(ontem)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.MISSED)
+            assertThat(stored.nextReminderAt).isNull()
+            assertThat(sched.cancelled).contains(ontem)
+        }
+    }
+
+    /**
      * Editar para uma data passada não pode ancorar o preview nessa data: as três datas
      * nasciam no passado, o próximo avanço marcava todas como não realizadas e a agenda
      * ficava sem as datas futuras até o app reabrir.
@@ -757,6 +845,48 @@ class TaskRepositoryTest {
         }
     }
 
+    /**
+     * A varredura de start lê as séries uma vez e itera com esse retrato. Sem um escritor
+     * por vez, o "Excluir" da usuária que cai no meio dela grava o tombstone tarde demais:
+     * a varredura ainda não o viu e rematerializa a data excluída.
+     */
+    @Test
+    fun varreduraNaoRessuscitaDataExcluidaEmParalelo() {
+        runBlocking {
+            val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 20), LocalTime.of(8, 0))
+                .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+            val saved = repo.saveDraft(draft)
+            repo.rescheduleAll()
+            val amanha = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 21))
+            assertThat(occurrenceDao.get(amanha)).isNotNull()
+
+            val varreduraSuspensa = CompletableDeferred<Unit>()
+            val liberarVarredura = CompletableDeferred<Unit>()
+            occurrenceDao.onFirstGet = {
+                varreduraSuspensa.complete(Unit)
+                liberarVarredura.await()
+            }
+            val varredura = launch { repo.rescheduleAll() }
+            varreduraSuspensa.await()
+            val exclusaoTerminou = CompletableDeferred<Unit>()
+            val exclusao = launch {
+                repo.deleteOccurrence(amanha)
+                exclusaoTerminou.complete(Unit)
+            }
+            // Um escritor por vez: a exclusão espera a varredura terminar em vez de correr
+            // por dentro dela.
+            val correuPorDentro = withTimeoutOrNull(200) { exclusaoTerminou.await() } != null
+            liberarVarredura.complete(Unit)
+            varredura.join()
+            exclusao.join()
+
+            assertThat(correuPorDentro).isFalse()
+            assertThat(occurrenceDao.get(amanha)).isNull()
+            assertThat(occurrenceDao.forSeries(saved.series.id).map { it.localDate })
+                .doesNotContain("2026-08-21")
+        }
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,
@@ -810,8 +940,16 @@ private class FakeSeriesDao : SeriesDao {
 private class FakeOccurrenceDao : OccurrenceDao {
     private val rows = linkedMapOf<String, OccurrenceEntity>()
     private val flow = MutableStateFlow<List<OccurrenceEntity>>(emptyList())
+    /** Gancho de teste: suspende a primeira leitura para encaixar outra chamada no meio. */
+    var onFirstGet: (suspend () -> Unit)? = null
     private fun emit() { flow.value = rows.values.toList() }
-    override suspend fun get(id: String) = rows[id]
+    override suspend fun get(id: String): OccurrenceEntity? {
+        onFirstGet?.let { hook ->
+            onFirstGet = null
+            hook()
+        }
+        return rows[id]
+    }
     override suspend fun forSeries(seriesId: String) = rows.values.filter { it.seriesId == seriesId }
     override suspend fun byStatus(status: String) = rows.values.filter { it.status == status }
     override suspend fun getAll() = rows.values.toList()

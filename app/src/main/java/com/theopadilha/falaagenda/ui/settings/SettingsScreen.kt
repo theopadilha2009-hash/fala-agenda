@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui.settings
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -45,10 +46,16 @@ import com.theopadilha.falaagenda.ui.components.QuietCard
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.FilterChip
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.LocalTime
+
+private const val TAG = "FalaAgendaSettings"
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -66,6 +73,27 @@ fun SettingsScreen(
     val token = container.tokenStore.token()
     val configured = container.supabase.isConfigured
     val scope = rememberCoroutineScope()
+    val writeLock = remember { Mutex() }
+
+    // Toda gravação da tela passa por aqui: a mensagem de sucesso só aparece depois que o
+    // DataStore confirmou. Antes a tela dizia "atualizado" na hora do toque e a falha de
+    // gravação escapava pelo escopo da composição — o horário antigo seguia no cartão.
+    // As gravações são serializadas: dois toques rápidos não se atropelam e o que fica
+    // gravado é o último toque dela.
+    fun save(success: String, failure: String, block: suspend () -> Unit) {
+        message = null
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { writeLock.withLock { block() } }
+                message = success
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                Log.w(TAG, failure, error)
+                message = failure
+            }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -106,7 +134,12 @@ fun SettingsScreen(
                         ).forEach { (mode, label) ->
                             FilterChip(
                                 selected = themeMode == mode,
-                                onClick = { scope.launch { container.settings.setThemeMode(mode) } },
+                                onClick = {
+                                    save(
+                                        success = "Aparência salva.",
+                                        failure = "Não consegui salvar a aparência. Tente de novo.",
+                                    ) { container.settings.setThemeMode(mode) }
+                                },
                                 label = { Text(label) },
                             )
                         }
@@ -163,13 +196,23 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                         PrimaryButton("Ativar") {
+                            message = null
                             scope.launch {
-                                message = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        val tokenValue = container.activation.activate(code)
-                                        container.tokenStore.setToken(tokenValue)
-                                        "Ativado neste aparelho."
-                                    }.getOrElse { it.message ?: "Não foi possível ativar." }
+                                try {
+                                    // A mensagem do serviço ("código inválido") é mais útil que
+                                    // um texto genérico, então o erro vem de dentro do runCatching.
+                                    message = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            val tokenValue = container.activation.activate(code)
+                                            container.tokenStore.setToken(tokenValue)
+                                            "Ativado neste aparelho."
+                                        }.getOrElse { it.message ?: "Não foi possível ativar." }
+                                    }
+                                } catch (cancellation: CancellationException) {
+                                    throw cancellation
+                                } catch (error: Exception) {
+                                    Log.w(TAG, "Não foi possível ativar.", error)
+                                    message = "Não foi possível ativar. Tente de novo."
                                 }
                             }
                         }
@@ -200,14 +243,24 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         val chosen = LocalTime.of(state.hour, state.minute)
-                        val updated = if (which == "start") {
-                            QuietHours(chosen, quiet.end)
-                        } else {
-                            QuietHours(quiet.start, chosen)
-                        }
-                        scope.launch { container.settings.setQuietHours(updated) }
-                        message = "Horário de silêncio atualizado."
+                        val field = which
                         picking = null
+                        save(
+                            success = "Horário de silêncio atualizado.",
+                            failure = "Não consegui salvar o horário. Tente de novo.",
+                        ) {
+                            // Roda com o writeLock de [save] na mão: o horário que não está
+                            // sendo mudado vem de leitura fresca, então trocar início e fim em
+                            // sequência não desfaz a primeira escolha com um retrato antigo.
+                            val saved = container.settings.quietHours.first()
+                            container.settings.setQuietHours(
+                                if (field == "start") {
+                                    QuietHours(chosen, saved.end)
+                                } else {
+                                    QuietHours(saved.start, chosen)
+                                },
+                            )
+                        }
                     },
                     modifier = Modifier.height(48.dp),
                 ) { Text("OK") }

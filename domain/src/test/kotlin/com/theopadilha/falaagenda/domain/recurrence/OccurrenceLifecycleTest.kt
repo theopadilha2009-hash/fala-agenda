@@ -131,10 +131,89 @@ class OccurrenceLifecycleTest {
         assertThat(change.cancelAlarmsOf).containsExactly(vencida.id)
     }
 
+    /**
+     * O adiamento do silêncio entrega o último aviso do dia às 08:00 do dia seguinte e a
+     * escada então termina. No instante do disparo o dia da ocorrência já passou, mas o dia
+     * do aviso é hoje: arquivá-la como não realizada ali é o que matava o "Adiar" da própria
+     * notificação, que só age em ocorrência pendente.
+     */
+    @Test
+    fun ocorrenciaComAvisoEntregueHojeContinuaPendente() {
+        val ontem = LocalDate.of(2026, 9, 26)
+        val adiada = occurrence(
+            ontem,
+            nextReminderAt = null,
+            lastReminderAt = Instant.parse("2026-09-27T11:00:00Z"),
+        )
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(adiada),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 27),
+        )
+        assertThat(change.markMissed).isEmpty()
+        assertThat(change.cancelAlarmsOf).isEmpty()
+    }
+
+    /** Passado também o dia do último aviso entregue, a ocorrência vira não realizada. */
+    @Test
+    fun ocorrenciaComAvisoEntregueOntemViraNaoRealizada() {
+        val ontem = LocalDate.of(2026, 9, 26)
+        val adiada = occurrence(
+            ontem,
+            nextReminderAt = null,
+            lastReminderAt = Instant.parse("2026-09-27T11:00:00Z"),
+        )
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(adiada),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 28),
+        )
+        assertThat(change.markMissed.map { it.id }).containsExactly(adiada.id)
+        assertThat(change.cancelAlarmsOf).containsExactly(adiada.id)
+    }
+
+    /**
+     * Teto da escada: o último aviso foi entregue ontem e a escada encerrou em silêncio. A
+     * ocorrência não pode ficar pendurada para sempre — expira na virada do dia.
+     */
+    @Test
+    fun ocorrenciaQueEsgotouAEscadaOntemViraNaoRealizada() {
+        val anteontem = LocalDate.of(2026, 9, 25)
+        val esgotada = occurrence(
+            anteontem,
+            nextReminderAt = null,
+            lastReminderAt = Instant.parse("2026-09-26T11:00:00Z"),
+        )
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(esgotada),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 27),
+        )
+        assertThat(change.markMissed.map { it.id }).containsExactly(esgotada.id)
+    }
+
+    /** Nunca teve aviso entregue: vira não realizada na primeira varredura, como sempre. */
+    @Test
+    fun ocorrenciaAntigaSemAvisoEntregueViraNaoRealizada() {
+        val antiga = LocalDate.of(2026, 9, 20)
+        val vencida = occurrence(antiga, nextReminderAt = null, lastReminderAt = null)
+        val change = OccurrenceLifecycle.advance(
+            series = series(),
+            existing = listOf(vencida),
+            now = now,
+            todayInSeriesZone = LocalDate.of(2026, 9, 27),
+        )
+        assertThat(change.markMissed.map { it.id }).containsExactly(vencida.id)
+    }
+
     private fun occurrence(
         date: LocalDate,
         nextReminderAt: Instant?,
         snoozedUntil: Instant? = null,
+        lastReminderAt: Instant? = null,
     ) = TaskOccurrence(
         id = OccurrenceIds.of("s1", date),
         seriesId = "s1",
@@ -143,6 +222,7 @@ class OccurrenceLifecycleTest {
         status = OccurrenceStatus.PENDING,
         reminderStep = ReminderPolicy.STEP_HOURLY,
         nextReminderAt = nextReminderAt,
+        lastReminderAt = lastReminderAt,
         snoozedUntil = snoozedUntil,
     )
 

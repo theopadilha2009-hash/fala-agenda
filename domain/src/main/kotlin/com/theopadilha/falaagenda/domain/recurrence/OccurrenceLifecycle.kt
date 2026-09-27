@@ -118,12 +118,10 @@ object OccurrenceLifecycle {
 
         // O lembrete adiado pelo horário de silêncio só toca às 08:00 do dia seguinte e o
         // adiamento do usuário pode cair depois da meia-noite: uma data vencida que ainda
-        // tem aviso vivo é "vai tocar", não "não foi feita". Sem nada marcado para tocar,
-        // a ocorrência segue o caminho normal de não realizada.
+        // tem aviso vivo é "vai tocar", não "não foi feita".
         existing.filter {
-            it.status == OccurrenceStatus.PENDING &&
-                it.localDate.isBefore(todayInSeriesZone) &&
-                !temLembreteVivo(it, now)
+            it.status == OccurrenceStatus.PENDING && !temLembreteVivo(it, now) &&
+                expirou(it, todayInSeriesZone, series.zoneId)
         }.forEach { stale ->
             val missed = stale.copy(
                 status = OccurrenceStatus.MISSED,
@@ -165,6 +163,28 @@ object OccurrenceLifecycle {
      */
     private fun temLembreteVivo(occurrence: TaskOccurrence, now: Instant): Boolean =
         listOfNotNull(occurrence.nextReminderAt, occurrence.snoozedUntil).any { !it.isBefore(now) }
+
+    /**
+     * Sem lembrete vivo, a ocorrência vira não realizada quando o dia do último aviso
+     * entregue também passou: `max(localDate, dia do último lembrete) < hoje`.
+     *
+     * O aviso adiado pelo silêncio toca às 08:00 do dia seguinte e é o último degrau da
+     * escada. Olhar só a data da ocorrência arquivaria a de ontem como não realizada no
+     * exato instante em que o aviso toca — e o "Adiar" da notificação, que só age em
+     * ocorrência pendente, viraria no-op. Nunca tendo aviso entregue, vale a própria data
+     * da ocorrência: ela expira na primeira varredura, como sempre.
+     */
+    private fun expirou(
+        occurrence: TaskOccurrence,
+        todayInSeriesZone: LocalDate,
+        zoneId: ZoneId,
+    ): Boolean {
+        val diaDoUltimoAviso = occurrence.lastReminderAt?.atZone(zoneId)?.toLocalDate()
+        val referencia = diaDoUltimoAviso
+            ?.let { maxOf(occurrence.localDate, it) }
+            ?: occurrence.localDate
+        return referencia.isBefore(todayInSeriesZone)
+    }
 
     fun todayIn(zoneId: ZoneId, now: Instant): LocalDate = now.atZone(zoneId).toLocalDate()
 }

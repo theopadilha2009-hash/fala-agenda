@@ -366,7 +366,11 @@ class TaskRepositoryTest {
      * O lembrete adiado pelo horário de silêncio só toca às 08:00 do dia seguinte — quando
      * a ocorrência já é de ontem. O disparo que chega alguns segundos depois da hora marcada
      * não pode ser engolido pela varredura de ciclo de vida: é o último instante em que
-     * aquele aviso tem para tocar.
+     * aquele aviso tem para tocar, e é o aviso de HOJE.
+     *
+     * O último degrau já tocou, então a escada termina aqui (não há repetição nova), mas a
+     * ocorrência segue pendente até a virada do dia — é o que faz o "Adiar" e o "Concluir"
+     * da própria notificação funcionarem.
      */
     @Test
     fun lembreteAdiadoPelaNoiteTocaNoFimDoSilencio() {
@@ -378,26 +382,13 @@ class TaskRepositoryTest {
             val occDao = FakeOccurrenceDao()
             val sched = RecordingScheduler()
             val repoDaManha = TaskRepository(seriesDao, occDao, oitoDaManha, sched)
-            val series = TaskSeries(
-                id = "s1",
-                title = "Remédio",
-                zoneId = zone,
-                localTime = LocalTime.of(22, 0),
-                startLocalDate = LocalDate.of(2026, 8, 19),
-                recurrence = RecurrenceRule(RecurrenceKind.DAILY),
-                createdAt = oitoDaManha.instant(),
-                updatedAt = oitoDaManha.instant(),
-            )
+            val series = serieDaNoite(oitoDaManha.instant())
             seriesDao.upsert(series.toEntity())
             val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
             occDao.upsert(
-                TaskOccurrence(
-                    id = ontem,
+                ocorrenciaAdiada(
                     seriesId = series.id,
-                    localDate = LocalDate.of(2026, 8, 19),
-                    scheduledAt = LocalDateTime.of(2026, 8, 19, 22, 0).atZone(zone).toInstant(),
-                    status = OccurrenceStatus.PENDING,
-                    reminderStep = ReminderPolicy.STEP_HOURLY,
+                    dia = LocalDate.of(2026, 8, 19),
                     lastReminderAt = LocalDateTime.of(2026, 8, 19, 23, 0).atZone(zone).toInstant(),
                     // marcado para 07:59, o sistema entregou às 08:00
                     nextReminderAt = LocalDateTime.of(2026, 8, 20, 7, 59).atZone(zone).toInstant(),
@@ -409,11 +400,110 @@ class TaskRepositoryTest {
             assertThat(result.notify).isTrue()
             val stored = occDao.get(ontem)!!.toDomain()
             assertThat(stored.status).isEqualTo(OccurrenceStatus.PENDING)
-            assertThat(stored.nextReminderAt).isGreaterThan(oitoDaManha.instant())
-            assertThat(sched.scheduled).contains(ontem)
+            // O último degrau do dia já tocou: a escada não atravessa para o dia seguinte.
+            assertThat(stored.nextReminderAt).isNull()
             assertThat(sched.cancelled).doesNotContain(ontem)
+
+            // O "Adiar" da notificação só age em ocorrência pendente.
+            sched.scheduled.clear()
+            repoDaManha.snooze(ontem, 30)
+
+            val adiada = occDao.get(ontem)!!.toDomain()
+            val esperado = oitoDaManha.instant().plusSeconds(30 * 60)
+            assertThat(adiada.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(adiada.snoozedUntil).isEqualTo(esperado)
+            assertThat(adiada.nextReminderAt).isEqualTo(esperado)
+            assertThat(sched.scheduled).contains(ontem)
         }
     }
+
+    /**
+     * O terminador é o dia do último aviso entregue: a ocorrência de 19/08 cujo aviso tocou
+     * em 20/08 vira não realizada na virada para 21/08, não às 08:00 do dia 20.
+     */
+    @Test
+    fun ocorrenciaAdiadaViraNaoRealizadaNaViradaDoDia() {
+        runBlocking {
+            val diaSeguinte = FixedAppClock(
+                LocalDateTime.of(2026, 8, 21, 9, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDoDiaSeguinte = TaskRepository(seriesDao, occDao, diaSeguinte, sched)
+            val series = serieDaNoite(diaSeguinte.instant())
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
+            occDao.upsert(
+                ocorrenciaAdiada(
+                    seriesId = series.id,
+                    dia = LocalDate.of(2026, 8, 19),
+                    lastReminderAt = LocalDateTime.of(2026, 8, 20, 8, 0).atZone(zone).toInstant(),
+                    nextReminderAt = null,
+                ).toEntity(),
+            )
+
+            repoDoDiaSeguinte.rescheduleAll()
+
+            val stored = occDao.get(ontem)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.MISSED)
+            assertThat(stored.nextReminderAt).isNull()
+            assertThat(sched.cancelled).contains(ontem)
+        }
+    }
+
+    /** Data vencida que nunca teve aviso entregue continua virando não realizada de imediato. */
+    @Test
+    fun ocorrenciaVencidaSemNuncaTerTidoLembreteViraNaoRealizada() {
+        runBlocking {
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoHoje = TaskRepository(seriesDao, occDao, clock, sched)
+            val series = serieDaNoite(clock.instant())
+            seriesDao.upsert(series.toEntity())
+            val vencida = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 17))
+            occDao.upsert(
+                ocorrenciaAdiada(
+                    seriesId = series.id,
+                    dia = LocalDate.of(2026, 8, 17),
+                    lastReminderAt = null,
+                    nextReminderAt = null,
+                ).toEntity(),
+            )
+
+            repoHoje.rescheduleAll()
+
+            assertThat(occDao.get(vencida)!!.status).isEqualTo(OccurrenceStatus.MISSED.name)
+            assertThat(sched.cancelled).contains(vencida)
+        }
+    }
+
+    private fun serieDaNoite(now: Instant) = TaskSeries(
+        id = "s1",
+        title = "Remédio",
+        zoneId = zone,
+        localTime = LocalTime.of(22, 0),
+        startLocalDate = LocalDate.of(2026, 8, 19),
+        recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+        createdAt = now,
+        updatedAt = now,
+    )
+
+    private fun ocorrenciaAdiada(
+        seriesId: String,
+        dia: LocalDate,
+        lastReminderAt: Instant?,
+        nextReminderAt: Instant?,
+    ) = TaskOccurrence(
+        id = OccurrenceIds.of(seriesId, dia),
+        seriesId = seriesId,
+        localDate = dia,
+        scheduledAt = dia.atTime(22, 0).atZone(zone).toInstant(),
+        status = OccurrenceStatus.PENDING,
+        reminderStep = ReminderPolicy.STEP_HOURLY,
+        nextReminderAt = nextReminderAt,
+        lastReminderAt = lastReminderAt,
+    )
 
     /** Sem lembrete vivo, a data vencida continua virando não realizada. */
     @Test

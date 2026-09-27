@@ -227,10 +227,24 @@ Room de verdade. Provado com `app/src/test/.../SeriesDaoTest.kt` (Robolectric, b
 `reescreverASerieNaoApagaAsOcorrencias` falhava antes do fix e passa depois.
 → `@Upsert` (INSERT ... ON CONFLICT DO UPDATE), que não apaga a linha.
 
-**Tombstone de data excluída não era gravado.** `Entities.kt:84` (`TaskSeries.toEntity()`) não
-escrevia `skippedDates`, então o `skipDate` do repositório era descartado na saída: a data
-excluída voltava a nascer no próximo `advance()`. Corrigido em `toEntity()`. Coberto por
-`skippedDatesSobreviveAoBanco` e pela migração v1→v4.
+**Tombstone de data excluída não funcionava em nenhum dos dois lados.** Dois defeitos
+independentes, os dois corrigidos:
+
+1. `Entities.kt:84` (`TaskSeries.toEntity()`) não escrevia `skippedDates`, então o `skipDate` do
+   repositório era descartado na saída.
+2. `TaskRepository.spawnUpcomingPreview` não consultava `isSkipped`. Mesmo com o tombstone
+   gravado, `RecurrenceEngine.upcoming` começa em `today` — a data que o usuário acabou de
+   excluir era a **primeira** da lista, então o preview a recriava em todo cold start. Como o
+   mundo de datas do tombstone (90 dias) cobre exatamente as 3 do preview, o tombstone nunca
+   teria efeito sozinho.
+
+Coberto por `skippedDatesSobreviveAoBanco`, pela migração v1→v4 e por
+`excluirOcorrenciaDeSerieDiariaNaoVoltaAoReagendar` (caminho completo
+`deleteOccurrence` → `rescheduleAll`), que é o teste que faltava.
+
+Junto: `deleteOccurrence` apagava a série quando a ocorrência excluída era a última, mesmo em
+série recorrente — "Excluir" virava "Encerrar série". Agora só apaga a série quando a tarefa não
+é recorrente, e `restore` limpa o tombstone via `unskipDate`.
 
 Lição para o próximo review: teste com DAO falso não vê semântica de Room (FK, REPLACE, índices,
 NOT NULL). Toda mudança de schema/DAO precisa de um teste com banco real.

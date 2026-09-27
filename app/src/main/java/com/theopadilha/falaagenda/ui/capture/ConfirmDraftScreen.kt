@@ -31,6 +31,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -77,21 +79,23 @@ fun ConfirmDraftScreen(
     onEndSeries: (() -> Unit)? = null,
     saveError: String? = null,
 ) {
-    var title by remember { mutableStateOf(initial.title) }
-    var date by remember { mutableStateOf(initial.localDate) }
-    var time by remember { mutableStateOf(initial.localTime) }
-    var kind by remember { mutableStateOf(initial.recurrence.kind) }
-    var weekDays by remember {
+    // Tudo o que a pessoa mexeu aqui tem que atravessar a recriação da tela: girar o
+    // aparelho no meio da conferência não pode devolver o recado do parser.
+    var title by rememberSaveable { mutableStateOf(initial.title) }
+    var date by rememberSaveable(stateSaver = NullableLocalDateSaver) { mutableStateOf(initial.localDate) }
+    var time by rememberSaveable(stateSaver = NullableLocalTimeSaver) { mutableStateOf(initial.localTime) }
+    var kind by rememberSaveable { mutableStateOf(initial.recurrence.kind) }
+    var weekDays by rememberSaveable(stateSaver = WeekDaysSaver) {
         mutableStateOf(
             initial.recurrence.weekDays.ifEmpty {
                 initial.localDate?.let { setOf(it.dayOfWeek) } ?: emptySet()
             },
         )
     }
-    var amountText by remember {
+    var amountText by rememberSaveable {
         mutableStateOf(initial.amountCents?.let { formatAmountInput(it) }.orEmpty())
     }
-    var observation by remember { mutableStateOf(initial.observation) }
+    var observation by rememberSaveable { mutableStateOf(initial.observation) }
     var showDate by remember { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
     LaunchedEffect(editing) {
@@ -99,7 +103,7 @@ fun ConfirmDraftScreen(
         runCatching { titleFocus.requestFocus() }
     }
     var showTime by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var error by rememberSaveable { mutableStateOf<String?>(null) }
     val haptic = LocalHapticFeedback.current
 
     val missing = remember(title, date, time) {
@@ -486,6 +490,27 @@ private fun PickerRow(
         }
     }
 }
+
+private const val NO_DATE = Long.MIN_VALUE
+private const val NO_TIME = -1
+
+/** `LocalDate`/`LocalTime`/`Set<DayOfWeek>` não cabem no Bundle: vão como epoch, segundo do dia e nomes. */
+private val NullableLocalDateSaver = Saver<LocalDate?, Long>(
+    save = { it?.toEpochDay() ?: NO_DATE },
+    restore = { epochDay -> if (epochDay == NO_DATE) null else LocalDate.ofEpochDay(epochDay) },
+)
+
+private val NullableLocalTimeSaver = Saver<LocalTime?, Int>(
+    save = { it?.toSecondOfDay() ?: NO_TIME },
+    restore = { secondOfDay -> if (secondOfDay == NO_TIME) null else LocalTime.ofSecondOfDay(secondOfDay.toLong()) },
+)
+
+private val WeekDaysSaver = Saver<Set<DayOfWeek>, ArrayList<String>>(
+    save = { days -> ArrayList(days.sortedBy { it.value }.map { it.name }) },
+    restore = { names ->
+        names.mapNotNull { name -> DayOfWeek.entries.firstOrNull { it.name == name } }.toSet()
+    },
+)
 
 private fun LocalDate.toUtcMillis(): Long =
     atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()

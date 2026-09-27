@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -42,8 +43,10 @@ fun WriteTaskScreen(
     externalError: String? = null,
     onTextChanged: () -> Unit = {},
 ) {
-    var text by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
+    // O que foi ditado ou digitado não pode sumir ao girar o aparelho: o campo volta
+    // preenchido, com o mesmo texto que a pessoa escreveu.
+    var text by rememberSaveable { mutableStateOf("") }
+    var error by rememberSaveable { mutableStateOf<String?>(null) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
 

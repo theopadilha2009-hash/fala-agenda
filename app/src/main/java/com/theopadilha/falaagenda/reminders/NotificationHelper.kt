@@ -6,12 +6,27 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.theopadilha.falaagenda.R
 
 object NotificationHelper {
     const val CHANNEL_ID = "fala_agenda_reminders"
+
+    private const val TAG = "NotificationHelper"
+
+    /** Como terminou a tentativa de mostrar um lembrete. */
+    enum class ReminderDelivery {
+        /** A notificação foi postada. */
+        POSTED,
+
+        /** O app está sem permissão de notificação: nada foi postado. */
+        BLOCKED,
+
+        /** O sistema recusou a notificação. */
+        FAILED,
+    }
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -28,8 +43,30 @@ object NotificationHelper {
         }
     }
 
-    fun showReminder(context: Context, occurrenceId: String, seriesId: String, title: String) {
+    /**
+     * O próximo lembrete vai sair sem som, sem vibração e sem aparecer sobre a tela?
+     * Acontece quando o app está sem permissão de notificação ou quando o canal foi
+     * rebaixado nas configurações do aparelho. A resposta vem do canal gravado, não
+     * da constante: o sistema ignora uma criação que tente subir a importância de volta.
+     */
+    fun remindersWillBeSilent(context: Context): Boolean {
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return true
+        val channel = context.getSystemService(NotificationManager::class.java)
+            .getNotificationChannel(CHANNEL_ID) ?: return false
+        return channel.importance < NotificationManager.IMPORTANCE_DEFAULT
+    }
+
+    fun showReminder(
+        context: Context,
+        occurrenceId: String,
+        seriesId: String,
+        title: String,
+    ): ReminderDelivery {
         ensureChannel(context)
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            Log.w(TAG, "Lembrete $occurrenceId não emitido: notificações bloqueadas para o app")
+            return ReminderDelivery.BLOCKED
+        }
         val open = PendingIntent.getActivity(
             context,
             AlarmIds.requestCode(occurrenceId, AlarmIds.ACTION_OPEN),
@@ -49,11 +86,16 @@ object NotificationHelper {
             .addAction(0, context.getString(R.string.complete), complete)
             .addAction(0, context.getString(R.string.snooze_30), snooze)
             .build()
-        if (NotificationManagerCompat.from(context).areNotificationsEnabled()) {
-            runCatching {
-                NotificationManagerCompat.from(context)
-                    .notify(AlarmIds.requestCode(occurrenceId, "notif"), notification)
+        return try {
+            NotificationManagerCompat.from(context)
+                .notify(AlarmIds.requestCode(occurrenceId, "notif"), notification)
+            if (remindersWillBeSilent(context)) {
+                Log.w(TAG, "Lembrete $occurrenceId apareceu sem som: canal $CHANNEL_ID rebaixado")
             }
+            ReminderDelivery.POSTED
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Lembrete $occurrenceId recusado pelo sistema", e)
+            ReminderDelivery.FAILED
         }
     }
 

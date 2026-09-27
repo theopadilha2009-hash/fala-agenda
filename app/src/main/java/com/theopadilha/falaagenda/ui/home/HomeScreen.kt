@@ -1,6 +1,9 @@
 package com.theopadilha.falaagenda.ui.home
 
 import android.Manifest
+import android.app.Activity
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -9,6 +12,7 @@ import android.provider.Settings
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +23,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
@@ -52,7 +56,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -70,6 +77,7 @@ import com.theopadilha.falaagenda.domain.insight.MonthInsights
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.platform.DeviceIntents
+import com.theopadilha.falaagenda.reminders.NotificationHelper
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
@@ -112,13 +120,32 @@ fun HomeScreen(
     val inexact by viewModel.inexactWarning.collectAsState()
     val busy by viewModel.busy.collectAsState()
     val availableUpdate by viewModel.availableUpdate.collectAsState()
+    val writeError by viewModel.writeError.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var widgetHelp by remember { mutableStateOf(false) }
+    var quickSaveError by remember { mutableStateOf<String?>(null) }
     val batteryOk = DeviceIntents.isBatteryUnrestricted(context)
+    val activity = context as? Activity
+    var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
+    var micRefused by rememberSaveable { mutableStateOf(false) }
+    var alerts by remember { mutableStateOf(reminderAlerts(context)) }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        // Voltou dos Ajustes: o cartão some sozinho quando o que faltava foi ligado.
+        micGranted = hasMicPermission(context)
+        alerts = reminderAlerts(context)
+    }
+
+    // Negado de vez: o Android não mostra mais o pedido e só os Ajustes resolvem.
+    // Binder síncrono dentro do remember: a home recompõe a cada parcial da fala.
+    val micBlocked = remember(micGranted, micRefused, activity) {
+        !micGranted && micRefused && activity != null &&
+            !activity.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)
+    }
     val closeAnd: (() -> Unit) -> Unit = { action ->
         scope.launch {
             drawerState.close()
@@ -155,8 +182,15 @@ fun HomeScreen(
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) voice.start(context) else {
-            scope.launch { snackbar.showSnackbar("Preciso do microfone só enquanto você fala.") }
+        micGranted = granted
+        if (granted) {
+            micRefused = false
+            voice.start(context)
+        } else {
+            micRefused = true
+            scope.launch {
+                snackbar.showSnackbar("Preciso do microfone só enquanto você fala. Se não quiser permitir, use Escrever tarefa.")
+            }
         }
     }
 
@@ -217,7 +251,11 @@ fun HomeScreen(
         val text = voiceUi.finalText?.trim().orEmpty()
         if (text.isEmpty()) return@LaunchedEffect
         voice.consumeFinal()
-        val draft = viewModel.parse(text)
+        val draft = runCatching { viewModel.parse(text) }.getOrNull()
+        if (draft == null) {
+            snackbar.showSnackbar("Não consegui entender o recado. Tente de novo ou escreva a tarefa.")
+            return@LaunchedEffect
+        }
         handleDraft(draft)
     }
 
@@ -231,6 +269,12 @@ fun HomeScreen(
         val message = statusMessage ?: return@LaunchedEffect
         snackbar.showSnackbar(message)
         onStatusConsumed()
+    }
+
+    LaunchedEffect(writeError) {
+        val message = writeError ?: return@LaunchedEffect
+        viewModel.consumeWriteError()
+        snackbar.showSnackbar(message, duration = SnackbarDuration.Long)
     }
 
     LaunchedEffect(openOccurrenceId, agenda) {
@@ -358,6 +402,63 @@ fun HomeScreen(
                         )
                     }
                 }
+                if (micBlocked) {
+                    item {
+                        QuietCard {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("O microfone está bloqueado", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "Toque em Abrir Ajustes e permita o microfone para falar o recado. Enquanto isso, use Escrever tarefa.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                TextButton(
+                                    onClick = {
+                                        context.startActivity(
+                                            Intent(
+                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                Uri.parse("package:${context.packageName}"),
+                                            ),
+                                        )
+                                    },
+                                    modifier = Modifier.heightIn(min = 56.dp),
+                                ) { Text("Abrir Ajustes", style = MaterialTheme.typography.labelLarge) }
+                            }
+                        }
+                    }
+                }
+                if (alerts != ReminderAlerts.OK) {
+                    item {
+                        QuietCard {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    when (alerts) {
+                                        ReminderAlerts.OFF -> "Os avisos estão desligados"
+                                        else -> "Os avisos estão sem som"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    when (alerts) {
+                                        ReminderAlerts.OFF ->
+                                            "Assim o lembrete não aparece na hora marcada. Toque em Abrir ajustes de aviso e ligue os avisos do Fala Agenda."
+                                        else ->
+                                            "Assim o lembrete pode passar despercebido. Toque em Abrir ajustes de aviso e deixe os avisos com som."
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                TextButton(
+                                    onClick = {
+                                        context.startActivity(
+                                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                                        )
+                                    },
+                                    modifier = Modifier.heightIn(min = 56.dp),
+                                ) { Text("Abrir ajustes de aviso", style = MaterialTheme.typography.labelLarge) }
+                            }
+                        }
+                    }
+                }
                 availableUpdate?.let { update ->
                     item {
                         QuietCard(onClick = onOpenUpdate) {
@@ -472,7 +573,7 @@ fun HomeScreen(
                 Text("Na tela inicial do celular, segure um espaço vazio, escolha Widgets e acrescente Fala Agenda. Aparece a próxima tarefa e o botão Falar.")
             },
             confirmButton = {
-                TextButton(onClick = { widgetHelp = false }, modifier = Modifier.height(48.dp)) {
+                TextButton(onClick = { widgetHelp = false }, modifier = Modifier.heightIn(min = 56.dp)) {
                     Text("Entendi")
                 }
             },
@@ -484,18 +585,24 @@ fun HomeScreen(
             draft = draft,
             saving = busy,
             onSave = { confirmed ->
-                viewModel.saveDraft(confirmed, onDone = { usedInexact ->
-                    quickDraft = null
-                    val date = confirmed.localDate
-                    val time = confirmed.localTime
-                    val message = if (date != null && time != null) {
-                        AgendaFormat.announce(date, time, LocalDate.now())
-                    } else {
-                        "Tarefa salva."
-                    }
-                    scope.launch { snackbar.showSnackbar(message) }
-                    viewModel.setInexactWarning(usedInexact)
-                })
+                viewModel.saveDraft(
+                    draft = confirmed,
+                    onDone = { usedInexact ->
+                        quickDraft = null
+                        val date = confirmed.localDate
+                        val time = confirmed.localTime
+                        val message = if (date != null && time != null) {
+                            AgendaFormat.announce(date, time, LocalDate.now())
+                        } else {
+                            "Tarefa salva."
+                        }
+                        scope.launch { snackbar.showSnackbar(message) }
+                        viewModel.setInexactWarning(usedInexact)
+                    },
+                    // A caixa fica aberta com o recado: o aviso aparece por cima dela
+                    // (snackbar atrás de um diálogo o idoso não veria).
+                    onError = { message -> quickSaveError = message },
+                )
             },
             onEdit = { current ->
                 quickDraft = null
@@ -504,6 +611,36 @@ fun HomeScreen(
             onCancel = { quickDraft = null },
         )
     }
+
+    quickSaveError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { quickSaveError = null },
+            title = { Text("Não deu para salvar") },
+            text = { Text("$message O recado continua aqui: toque em Salvar para tentar de novo.") },
+            confirmButton = {
+                TextButton(
+                    onClick = { quickSaveError = null },
+                    modifier = Modifier.heightIn(min = 56.dp),
+                ) { Text("Entendi") }
+            },
+        )
+    }
+}
+
+private fun hasMicPermission(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+        PackageManager.PERMISSION_GRANTED
+
+private enum class ReminderAlerts { OK, OFF, QUIET }
+
+/** Mesma checagem do NotificationHelper; dá para unificar lá quando os dois lados mexerem juntos. */
+private fun reminderAlerts(context: Context): ReminderAlerts {
+    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return ReminderAlerts.OFF
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return ReminderAlerts.OK
+    val manager = context.getSystemService(NotificationManager::class.java) ?: return ReminderAlerts.OK
+    val importance = manager.getNotificationChannel(NotificationHelper.CHANNEL_ID)?.importance
+        ?: return ReminderAlerts.OK
+    return if (importance < NotificationManager.IMPORTANCE_DEFAULT) ReminderAlerts.QUIET else ReminderAlerts.OK
 }
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
@@ -549,7 +686,8 @@ private fun MicDock(
             contentDescription = action,
             onClick = onMic,
         )
-        if (state == VoiceState.IDLE) {
+        if (state == VoiceState.IDLE || state == VoiceState.ERROR) {
+            // No erro a saída de escrever é obrigatória: se o microfone não vai, é por aqui que ele cria a tarefa.
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -559,12 +697,12 @@ private fun MicDock(
                     FilterChip(
                         selected = false,
                         onClick = { onQuick(minutes) },
-                        modifier = Modifier.height(48.dp),
+                        modifier = Modifier.heightIn(min = 56.dp),
                         label = { Text(chip, style = MaterialTheme.typography.labelLarge) },
                     )
                 }
             }
-            TextButton(onClick = onWrite, modifier = Modifier.height(56.dp)) {
+            TextButton(onClick = onWrite, modifier = Modifier.heightIn(min = 56.dp)) {
                 Text("Escrever tarefa", style = MaterialTheme.typography.labelLarge)
             }
         }
@@ -649,7 +787,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                     if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
                         TextButton(
                             onClick = { onComplete(item) },
-                            modifier = Modifier.height(56.dp),
+                            modifier = Modifier.heightIn(min = 56.dp),
                         ) { Text("Concluir") }
                     }
                 }

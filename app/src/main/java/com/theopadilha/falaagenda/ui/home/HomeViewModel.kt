@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui.home
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.theopadilha.falaagenda.data.repo.AgendaItem
@@ -14,11 +15,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.LocalTime
+
+private const val TAG = "FalaAgendaHome"
 
 class HomeViewModel(
     private val container: AppContainer,
@@ -38,6 +42,10 @@ class HomeViewModel(
     private val _availableUpdate = MutableStateFlow<UpdateCheck?>(null)
     val availableUpdate: StateFlow<UpdateCheck?> = _availableUpdate
 
+    /** Recado que o ViewModel não conseguiu entregar: a tela mostra e descarta. */
+    private val _writeError = MutableStateFlow<String?>(null)
+    val writeError: StateFlow<String?> = _writeError
+
     init {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -51,64 +59,108 @@ class HomeViewModel(
         _inexactWarning.value = value
     }
 
-    fun saveDraft(draft: ParsedTaskDraft, onDone: (Boolean) -> Unit, onError: (String) -> Unit = {}) {
+    fun consumeWriteError() {
+        _writeError.value = null
+    }
+
+    /**
+     * Toda escrita passa por aqui: sem try/catch uma exceção de IO derrubava o processo
+     * e o usuário não sabia se a tarefa foi salva. Falha sem [onError] cai em [writeError],
+     * que a tela mostra — falhar calado não é uma opção.
+     */
+    private fun <T> write(
+        action: String,
+        onError: ((String) -> Unit)? = null,
+        onSuccess: (T) -> Unit = {},
+        block: suspend () -> T,
+    ) = viewModelScope.launch {
+        try {
+            val result = withContext(Dispatchers.IO) { block() }
+            onSuccess(result)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            fail(action, error, onError)
+        }
+    }
+
+    private fun fail(action: String, error: Exception, onError: ((String) -> Unit)?) {
+        val message = "$action Tente de novo."
+        Log.w(TAG, action, error)
+        if (onError != null) onError(message) else _writeError.value = message
+    }
+
+    fun saveDraft(draft: ParsedTaskDraft, onDone: (Boolean) -> Unit, onError: ((String) -> Unit)? = null) {
         viewModelScope.launch {
             _busy.value = true
             try {
                 val result = withContext(Dispatchers.IO) { container.tasks.saveDraft(draft) }
                 onDone(result.usedInexactAlarm)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
             } catch (error: Exception) {
-                onError(error.message ?: "Não foi possível salvar.")
+                fail("Não consegui salvar o recado.", error, onError)
             } finally {
                 _busy.value = false
             }
         }
     }
 
-    fun complete(item: AgendaItem, onDone: () -> Unit = {}) = viewModelScope.launch {
-        lastCompleted = item
-        withContext(Dispatchers.IO) { container.tasks.complete(item.occurrence.id) }
-        onDone()
-    }
+    fun complete(item: AgendaItem, onDone: () -> Unit = {}) = write(
+        action = "Não consegui marcar como feito.",
+        onSuccess = {
+            lastCompleted = item
+            onDone()
+        },
+    ) { container.tasks.complete(item.occurrence.id) }
 
-    fun undoComplete() = viewModelScope.launch {
-        val item = lastCompleted ?: return@launch
+    fun undoComplete() {
+        val item = lastCompleted ?: return
         lastCompleted = null
-        withContext(Dispatchers.IO) { container.tasks.uncomplete(item) }
+        write("Não consegui desfazer.") { container.tasks.uncomplete(item) }
     }
 
     private var lastCompleted: AgendaItem? = null
     private var lastDeleted: AgendaItem? = null
 
-    fun delete(item: AgendaItem, onDeleted: () -> Unit = {}) = viewModelScope.launch {
-        lastDeleted = item
-        withContext(Dispatchers.IO) { container.tasks.deleteOccurrence(item.occurrence.id) }
-        onDeleted()
-    }
+    fun delete(item: AgendaItem, onDeleted: () -> Unit = {}) = write(
+        action = "Não consegui excluir.",
+        onSuccess = {
+            lastDeleted = item
+            onDeleted()
+        },
+    ) { container.tasks.deleteOccurrence(item.occurrence.id) }
 
-    fun undoDelete() = viewModelScope.launch {
-        val item = lastDeleted ?: return@launch
+    fun undoDelete() {
+        val item = lastDeleted ?: return
         lastDeleted = null
-        withContext(Dispatchers.IO) { container.tasks.restore(item) }
-    }
-    fun endSeries(seriesId: String) = viewModelScope.launch {
-        withContext(Dispatchers.IO) { container.tasks.endSeries(seriesId) }
-    }
-    fun snooze(id: String, minutes: Long = 30, onDone: (String) -> Unit = {}) = viewModelScope.launch {
-        withContext(Dispatchers.IO) { container.tasks.snooze(id, minutes) }
-        val at = java.time.ZonedDateTime.now().plusMinutes(minutes)
-        onDone(AgendaFormat.announce(at.toLocalDate(), at.toLocalTime().withSecond(0).withNano(0), LocalDate.now()))
+        write("Não consegui desfazer.") { container.tasks.restore(item) }
     }
 
-    fun retryMissed(id: String, onDone: (String) -> Unit = {}) = viewModelScope.launch {
-        val result = withContext(Dispatchers.IO) { container.tasks.retryMissed(id) }
-        if (result == null) {
-            onDone("Não deu para remarcar esta tarefa.")
-            return@launch
-        }
-        val whenLabel = AgendaFormat.dateLabel(result.date, LocalDate.now()).lowercase()
-        onDone("Vai avisar $whenLabel às ${AgendaFormat.time(result.time)}.")
-    }
+    fun endSeries(seriesId: String, onDone: () -> Unit = {}) = write(
+        action = "Não consegui encerrar a série.",
+        onSuccess = { onDone() },
+    ) { container.tasks.endSeries(seriesId) }
+
+    fun snooze(id: String, minutes: Long = 30, onDone: (String) -> Unit = {}) = write(
+        action = "Não consegui adiar.",
+        onSuccess = {
+            val at = java.time.ZonedDateTime.now().plusMinutes(minutes)
+            onDone(AgendaFormat.announce(at.toLocalDate(), at.toLocalTime().withSecond(0).withNano(0), LocalDate.now()))
+        },
+    ) { container.tasks.snooze(id, minutes) }
+
+    fun retryMissed(id: String, onDone: (String) -> Unit = {}) = write(
+        action = "Não consegui remarcar.",
+        onSuccess = { result ->
+            if (result == null) {
+                onDone("Não deu para remarcar esta tarefa.")
+            } else {
+                val whenLabel = AgendaFormat.dateLabel(result.date, LocalDate.now()).lowercase()
+                onDone("Vai avisar $whenLabel às ${AgendaFormat.time(result.time)}.")
+            }
+        },
+    ) { container.tasks.retryMissed(id) }
 
     fun edit(
         id: String,
@@ -118,10 +170,14 @@ class HomeViewModel(
         recurrence: RecurrenceRule,
         amountCents: Long? = null,
         observation: String = "",
-    ) = viewModelScope.launch {
-        withContext(Dispatchers.IO) {
-            container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)
-        }
+        onDone: () -> Unit = {},
+        onError: ((String) -> Unit)? = null,
+    ) = write(
+        action = "Não consegui salvar a mudança.",
+        onError = onError,
+        onSuccess = { onDone() },
+    ) {
+        container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)
     }
 
     fun quickRemind(title: String, minutes: Long, onDone: (String) -> Unit = {}) {

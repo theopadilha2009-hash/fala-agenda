@@ -39,6 +39,8 @@ fun WriteTaskScreen(
     confirmLabel: String,
     onConfirm: (String) -> Unit,
     onCancel: () -> Unit,
+    externalError: String? = null,
+    onTextChanged: () -> Unit = {},
 ) {
     var text by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -66,6 +68,7 @@ fun WriteTaskScreen(
                 onValueChange = {
                     text = it
                     error = null
+                    onTextChanged()
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -75,8 +78,8 @@ fun WriteTaskScreen(
                 placeholder = { Text(placeholder) },
                 minLines = 2,
                 maxLines = 5,
-                isError = error != null,
-                supportingText = error?.let { { Text(it) } },
+                isError = (externalError ?: error) != null,
+                supportingText = (externalError ?: error)?.let { { Text(it) } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(
                     onDone = {

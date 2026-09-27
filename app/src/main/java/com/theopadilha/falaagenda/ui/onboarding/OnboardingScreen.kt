@@ -16,7 +16,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -38,6 +42,7 @@ fun OnboardingScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var micRefused by remember { mutableStateOf(false) }
 
     fun finish() {
         scope.launch {
@@ -60,11 +65,21 @@ fun OnboardingScreen(
     val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         requestExactAlarm()
     }
-    val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+
+    fun requestNotifications() {
         if (Build.VERSION.SDK_INT >= 33) {
             notif.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
             requestExactAlarm()
+        }
+    }
+
+    val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            requestNotifications()
+        } else {
+            // Negou o microfone: não dá para seguir como se tivesse aceitado.
+            micRefused = true
         }
     }
 
@@ -93,7 +108,21 @@ fun OnboardingScreen(
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.weight(1f))
-            PrimaryButton("Começar") { mic.launch(Manifest.permission.RECORD_AUDIO) }
+            if (micRefused) {
+                Text(
+                    "Você não permitiu o microfone. Sem ele o aplicativo não ouve o recado — mas dá para escrever a tarefa.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    "Para permitir depois: Ajustes do celular → Aplicativos → Fala Agenda → Permissões.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
+                PrimaryButton("Continuar") { requestNotifications() }
+            } else {
+                PrimaryButton("Começar") { mic.launch(Manifest.permission.RECORD_AUDIO) }
+            }
             SecondaryButton("Agora não") { finish() }
         }
     }

@@ -38,7 +38,26 @@ class VoiceCaptureController(private val context: Context) {
     private var hostContext: Context = context
     private var backend = VoiceEngine.Capture.IN_APP_DEFAULT
 
+    private val watchdog = Runnable { onWatchdog() }
+
+    private fun armWatchdog(millis: Long) {
+        handler.removeCallbacks(watchdog)
+        handler.postDelayed(watchdog, millis)
+    }
+
+    /** Nenhum estado de escuta pode durar para sempre: se o motor não responde, sai daqui. */
+    private fun onWatchdog() {
+        if (!session) return
+        when (_ui.value.state) {
+            VoiceState.PREPARING -> switchOrFail(VoiceRetry.CLIENT)
+            VoiceState.LISTENING -> failWith(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+            VoiceState.UNDERSTANDING -> failWith(SpeechRecognizer.ERROR_NO_MATCH)
+            else -> Unit
+        }
+    }
+
     fun start(host: Context = context) {
+        if (session) stopInternal()
         hostContext = host
         val speechHost = unwrapActivity(host)
         backend = VoiceEngine.initial(
@@ -95,6 +114,7 @@ class VoiceCaptureController(private val context: Context) {
         }
         recognizer = sr
         sr.setRecognitionListener(listener)
+        armWatchdog(PREPARING_TIMEOUT_MS)
         runCatching { sr.startListening(listenIntent()) }
             .onFailure { switchOrFail(VoiceRetry.CLIENT) }
     }
@@ -142,11 +162,13 @@ class VoiceCaptureController(private val context: Context) {
     private fun finishWith(text: String) {
         session = false
         stopRecognizerOnly()
-        _ui.value = VoiceUiState(
-            state = VoiceState.IDLE,
-            finalText = text.ifBlank { null },
-            error = if (text.isBlank()) "Não entendi o que foi dito." else null,
-        )
+        val clean = text.trim()
+        _ui.value = if (clean.isEmpty()) {
+            // Erro com estado IDLE some da tela: a mensagem precisa do estado ERROR para aparecer.
+            VoiceUiState(state = VoiceState.ERROR, error = "Não entendi o que foi dito.")
+        } else {
+            VoiceUiState(state = VoiceState.IDLE, finalText = clean)
+        }
     }
 
     private fun requestSystemUi() {
@@ -184,7 +206,8 @@ class VoiceCaptureController(private val context: Context) {
                 backend = next
                 retries = 0
                 heardReady = false
-                _ui.value = _ui.value.copy(state = VoiceState.PREPARING, error = null)
+                startedAt = SystemClock.elapsedRealtime()
+                _ui.value = VoiceUiState(state = VoiceState.PREPARING)
                 handler.removeCallbacksAndMessages(null)
                 handler.postDelayed({ if (session) beginListening() }, 350)
             }
@@ -202,6 +225,7 @@ class VoiceCaptureController(private val context: Context) {
         override fun onReadyForSpeech(params: Bundle?) {
             if (!session) return
             heardReady = true
+            armWatchdog(LISTENING_TIMEOUT_MS)
             _ui.value = _ui.value.copy(state = VoiceState.LISTENING, error = null)
         }
 
@@ -221,6 +245,7 @@ class VoiceCaptureController(private val context: Context) {
 
         override fun onEndOfSpeech() {
             if (session) {
+                armWatchdog(UNDERSTANDING_TIMEOUT_MS)
                 _ui.value = _ui.value.copy(state = VoiceState.UNDERSTANDING)
             }
         }
@@ -234,10 +259,9 @@ class VoiceCaptureController(private val context: Context) {
                     retries += 1
                     destroyRecognizer()
                     handler.removeCallbacksAndMessages(null)
-                    _ui.value = _ui.value.copy(
-                        state = if (heardReady) VoiceState.LISTENING else VoiceState.PREPARING,
-                        error = null,
-                    )
+                    heardReady = false
+                    // O partial da tentativa anterior não pode virar o texto final da próxima.
+                    _ui.value = VoiceUiState(state = VoiceState.PREPARING)
                     handler.postDelayed({ if (session) beginListening() }, 350)
                 }
                 VoiceRetry.Action.FAIL -> switchOrFail(error)
@@ -255,6 +279,12 @@ class VoiceCaptureController(private val context: Context) {
         }
 
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
+    private companion object {
+        const val PREPARING_TIMEOUT_MS = 10_000L
+        const val LISTENING_TIMEOUT_MS = 20_000L
+        const val UNDERSTANDING_TIMEOUT_MS = 8_000L
     }
 }
 

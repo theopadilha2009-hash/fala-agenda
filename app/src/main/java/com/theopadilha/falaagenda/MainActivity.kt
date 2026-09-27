@@ -24,7 +24,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val app = application as FalaAgendaApplication
-        val mode = runBlocking { app.container.settings.themeMode.first() }
+        // Preferências com problema não podem impedir o app de abrir: sem tema lido,
+        // vale o do sistema.
+        val mode = runCatching { runBlocking { app.container.settings.themeMode.first() } }
+            .getOrDefault(ThemeMode.SYSTEM)
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
         val dark = when (mode) {

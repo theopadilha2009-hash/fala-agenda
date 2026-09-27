@@ -33,6 +33,7 @@ import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
@@ -43,27 +44,42 @@ fun OnboardingScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var micRefused by remember { mutableStateOf(false) }
+    var notifRefused by remember { mutableStateOf(false) }
 
     fun finish() {
         scope.launch {
-            settings.setOnboardingComplete()
-            onFinished()
+            // A gravação não pode segurar a saída daqui: sem o runCatching a corrotina
+            // morria antes do onFinished e o toque em "Começar" não fazia nada.
+            runCatching { settings.setOnboardingComplete() }
+            // Se a tela saiu de cena no meio, navegar no controller já descartado quebra.
+            if (isActive) onFinished()
         }
     }
 
     fun requestExactAlarm() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            context.startActivity(
-                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                    data = Uri.parse("package:${context.packageName}")
-                },
-            )
+            // Aparelho sem essa tela responde com ActivityNotFoundException na thread
+            // principal — o app fecharia no primeiro uso dela. Sem a tela, o cartão de
+            // alarme exato na home cobre depois.
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    },
+                )
+            }
         }
         finish()
     }
 
-    val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        requestExactAlarm()
+    val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            requestExactAlarm()
+        } else {
+            // Negou (ou o sistema nem mostrou o pedido): sem notificação não toca lembrete
+            // nenhum. Ela sai daqui sabendo onde reativar, e o botão não a prende.
+            notifRefused = true
+        }
     }
 
     fun requestNotifications() {
@@ -119,9 +135,24 @@ fun OnboardingScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                 )
-                PrimaryButton("Continuar") { requestNotifications() }
-            } else {
-                PrimaryButton("Começar") { mic.launch(Manifest.permission.RECORD_AUDIO) }
+            }
+            if (notifRefused) {
+                Text(
+                    "Você não permitiu os avisos. Sem eles o aplicativo não consegue avisar na hora marcada.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    "Para permitir depois: Ajustes do celular → Aplicativos → Fala Agenda → Notificações.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            when {
+                // Os avisos já foram pedidos: o que falta é a tela de alarme exato.
+                notifRefused -> PrimaryButton("Continuar") { requestExactAlarm() }
+                micRefused -> PrimaryButton("Continuar") { requestNotifications() }
+                else -> PrimaryButton("Começar") { mic.launch(Manifest.permission.RECORD_AUDIO) }
             }
             SecondaryButton("Agora não") { finish() }
         }

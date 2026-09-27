@@ -28,10 +28,11 @@ class AppUpdater(
         .followSslRedirects(true)
         .build(),
     private val json: Json = Json { ignoreUnknownKeys = true },
+    private val certificates: SigningCertificates = AndroidSigningCertificates(context),
 ) {
-    fun check(): UpdateCheck {
+    fun check(apiUrl: String = LATEST_API): UpdateCheck {
         val request = Request.Builder()
-            .url(LATEST_API)
+            .url(apiUrl)
             .header("User-Agent", "FalaAgenda/${BuildConfig.VERSION_NAME}")
             .header("Accept", "application/vnd.github+json")
             .get()
@@ -57,20 +58,60 @@ class AppUpdater(
     fun download(url: String, sha256Url: String? = null): File {
         if (!allowedDownloadUrl(url)) error("Fonte de atualização inválida.")
         val dest = File(updatesDir(context), "Fala-Agenda-update.apk")
-        fetchTo(url, dest, MAX_APK_BYTES)
-        if (!sha256Url.isNullOrBlank()) {
-            if (!allowedDownloadUrl(sha256Url)) error("Fonte de atualização inválida.")
-            val sumFile = File(updatesDir(context), "apk.sha256")
-            fetchTo(sha256Url, sumFile, 8 * 1024)
-            val expected = parseSha256Sum(sumFile.readText())
-                ?: error("Não deu para ler a assinatura do instalador.")
-            val actual = sha256(dest)
-            if (!expected.equals(actual, ignoreCase = true)) {
-                dest.delete()
-                error("O arquivo veio diferente do publicado. Não instalei.")
+        val origem = File(updatesDir(context), "Fala-Agenda-update.source")
+        if (jaBaixado(dest, origem, url)) return dest
+        return try {
+            dest.delete()
+            origem.delete()
+            fetchTo(url, dest, MAX_APK_BYTES)
+            if (!sha256Url.isNullOrBlank()) {
+                if (!allowedDownloadUrl(sha256Url)) error("Fonte de atualização inválida.")
+                val sumFile = File(updatesDir(context), "apk.sha256")
+                fetchTo(sha256Url, sumFile, 8 * 1024)
+                val expected = parseSha256Sum(sumFile.readText())
+                    ?: error("Não deu para ler a assinatura do instalador.")
+                val actual = sha256(dest)
+                if (!expected.equals(actual, ignoreCase = true)) {
+                    error("O arquivo veio diferente do publicado. Não instalei.")
+                }
             }
+            requireTrustedSignature(dest)
+            origem.writeText(url)
+            dest
+        } catch (e: Exception) {
+            // Arquivo pela metade ou recusado nunca fica no cache passando por bom.
+            dest.delete()
+            origem.delete()
+            throw e
         }
-        return dest
+    }
+
+    /**
+     * O APK daquela versão já está no cache e continua assinado pela chave do app instalado?
+     * Baixar 20 MB de novo a cada vez que a tela abre custa os dados de quem usa o aparelho.
+     */
+    private fun jaBaixado(apk: File, origem: File, url: String): Boolean {
+        if (!apk.isFile || apk.length() == 0L) return false
+        if (!origem.isFile || origem.readText().trim() != url) return false
+        return ApkSignature.verdict(certificates.installed(), certificates.archive(apk)) ==
+            ApkSignatureVerdict.TRUSTED
+    }
+
+    /**
+     * O APK só chega ao instalador se for assinado pela mesma chave do aplicativo já instalado.
+     * É o que separa uma release legítima de um APK trocado no caminho: o `.sha256` publicado
+     * junto do arquivo prova integridade, não autoria — quem troca o APK troca a soma também.
+     * Sem como ler as certidões, não instala: falhar fechado é o certo para quem usa o app.
+     */
+    private fun requireTrustedSignature(apk: File) {
+        val verdict = ApkSignature.verdict(certificates.installed(), certificates.archive(apk))
+        if (verdict == ApkSignatureVerdict.TRUSTED) return
+        error(
+            when (verdict) {
+                ApkSignatureVerdict.MISMATCH -> ASSINATURA_DIFERENTE
+                else -> ASSINATURA_ILEGIVEL
+            },
+        )
     }
 
     private fun fetchTo(url: String, dest: File, maxBytes: Long) {
@@ -100,6 +141,7 @@ class AppUpdater(
                 }
             }
             if (total == 0L) error("O arquivo veio vazio.")
+            if (declared >= 0 && total != declared) error("O instalador veio incompleto.")
         }
     }
 
@@ -114,6 +156,12 @@ class AppUpdater(
         fun isDebugInstall(): Boolean = BuildConfig.APPLICATION_ID.endsWith(".debug")
 
         const val MAX_APK_BYTES = 40L * 1024 * 1024
+
+        const val ASSINATURA_DIFERENTE =
+            "O instalador não tem a assinatura deste aplicativo. Apaguei o arquivo e não instalei nada."
+
+        const val ASSINATURA_ILEGIVEL =
+            "Não consegui conferir a assinatura do instalador. Por segurança, não instalei nada."
 
         fun allowedDownloadUrl(url: String): Boolean {
             val host = runCatching { URI(url).host }.getOrNull()?.lowercase() ?: return false

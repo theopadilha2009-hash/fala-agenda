@@ -73,9 +73,15 @@ class TaskRepository(
         }
         val today = clock.today()
         val pending = items.filter { it.occurrence.status == OccurrenceStatus.PENDING }
+        // A pendente que atravessou a meia-noite (aviso adiado pela noite, ainda tocando)
+        // continua acionável: ela entra em "Hoje" e vem antes das de hoje, porque é a mais
+        // urgente. Fora daqui ela não caía em nenhuma das quatro seções — invisível no app,
+        // e o toque na notificação respondia "Esta tarefa não está mais na agenda".
+        val (atrasadas, deHoje) = pending.partition { it.occurrence.localDate.isBefore(today) }
         return AgendaSections(
-            today = pending.filter { it.occurrence.localDate == today }
-                .sortedBy { it.occurrence.scheduledAt },
+            today = atrasadas.sortedBy { it.occurrence.scheduledAt } +
+                deHoje.filter { it.occurrence.localDate == today }
+                    .sortedBy { it.occurrence.scheduledAt },
             upcoming = pending.filter { it.occurrence.localDate.isAfter(today) }
                 .sortedBy { it.occurrence.scheduledAt },
             completed = items.filter { it.occurrence.status == OccurrenceStatus.COMPLETED }

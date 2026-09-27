@@ -363,6 +363,121 @@ class TaskRepositoryTest {
     }
 
     /**
+     * A pendente que atravessou a meia-noite (aviso adiado pela noite, ainda tocando)
+     * continua acionável: ela entra em "Hoje", que para esta usuária é "o que eu preciso
+     * fazer agora", e vem antes das de hoje porque é a mais urgente. Antes ela não caía
+     * em nenhuma das quatro seções — invisível no app.
+     */
+    @Test
+    fun pendenteAtrasadaApareceEmHojeAntesDasDeHoje() {
+        runBlocking {
+            val remedio = serieDe("s-rem", "Remédio")
+            val agua = serieDe("s-agua", "Água")
+            listOf(remedio, agua).forEach { seriesDao.upsert(it.toEntity()) }
+            // Duas atrasadas e duas de hoje, em séries diferentes: a ordem esperada prova
+            // que as atrasadas vêm primeiro e que cada grupo sai por scheduledAt.
+            val atrasada = ocorrenciaDe(remedio.id, LocalDate.of(2026, 8, 18), LocalTime.of(20, 0), OccurrenceStatus.PENDING)
+            val atrasadaOutra = ocorrenciaDe(agua.id, LocalDate.of(2026, 8, 19), LocalTime.of(8, 0), OccurrenceStatus.PENDING)
+            val cedo = ocorrenciaDe(remedio.id, LocalDate.of(2026, 8, 20), LocalTime.of(7, 0), OccurrenceStatus.PENDING)
+            val tarde = ocorrenciaDe(agua.id, LocalDate.of(2026, 8, 20), LocalTime.of(21, 0), OccurrenceStatus.PENDING)
+            listOf(atrasada, atrasadaOutra, cedo, tarde).forEach { occurrenceDao.upsert(it.toEntity()) }
+
+            val sections = repo.snapshotAgenda()
+
+            assertThat(sections.today.map { it.occurrence.id })
+                .containsExactly(atrasada.id, atrasadaOutra.id, cedo.id, tarde.id)
+                .inOrder()
+            // Cada ocorrência em exatamente uma seção: nada de item duplicado.
+            assertThat(
+                (sections.today + sections.upcoming + sections.completed + sections.missed)
+                    .map { it.occurrence.id },
+            ).containsExactly(atrasada.id, atrasadaOutra.id, cedo.id, tarde.id)
+        }
+    }
+
+    /** O toque na notificação resolve a ocorrência por `find`: a atrasada pendente tem que estar lá. */
+    @Test
+    fun findAchaPendenteAtrasada() {
+        runBlocking {
+            val series = serieDe("s-rem", "Remédio")
+            seriesDao.upsert(series.toEntity())
+            val atrasada = ocorrenciaDe(series.id, LocalDate.of(2026, 8, 19), LocalTime.of(8, 0), OccurrenceStatus.PENDING)
+            occurrenceDao.upsert(atrasada.toEntity())
+
+            val found = repo.snapshotAgenda().find(atrasada.id)
+
+            assertThat(found).isNotNull()
+            assertThat(found!!.occurrence.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(found.series.title).isEqualTo("Remédio")
+        }
+    }
+
+    /** A não realizada não é acionável: continua só em "não realizadas", fora de "Hoje". */
+    @Test
+    fun naoRealizadaAtrasadaFicaSoEmNaoRealizadas() {
+        runBlocking {
+            val series = serieDe("s-rem", "Remédio")
+            seriesDao.upsert(series.toEntity())
+            val vencida = ocorrenciaDe(
+                series.id,
+                LocalDate.of(2026, 8, 19),
+                LocalTime.of(8, 0),
+                OccurrenceStatus.MISSED,
+                missedAt = clock.instant(),
+            )
+            val deHoje = ocorrenciaDe(series.id, LocalDate.of(2026, 8, 20), LocalTime.of(8, 0), OccurrenceStatus.PENDING)
+            listOf(vencida, deHoje).forEach { occurrenceDao.upsert(it.toEntity()) }
+
+            val sections = repo.snapshotAgenda()
+
+            assertThat(sections.today.map { it.occurrence.id }).containsExactly(deHoje.id)
+            assertThat(sections.missed.map { it.occurrence.id }).containsExactly(vencida.id)
+        }
+    }
+
+    /** Pendente de amanhã continua só em "Próximas". */
+    @Test
+    fun pendenteDeAmanhaContinuaSoEmProximas() {
+        runBlocking {
+            val series = serieDe("s-rem", "Remédio")
+            seriesDao.upsert(series.toEntity())
+            val amanha = ocorrenciaDe(series.id, LocalDate.of(2026, 8, 21), LocalTime.of(8, 0), OccurrenceStatus.PENDING)
+            occurrenceDao.upsert(amanha.toEntity())
+
+            val sections = repo.snapshotAgenda()
+
+            assertThat(sections.today).isEmpty()
+            assertThat(sections.upcoming.map { it.occurrence.id }).containsExactly(amanha.id)
+        }
+    }
+
+    private fun serieDe(id: String, title: String) = TaskSeries(
+        id = id,
+        title = title,
+        zoneId = zone,
+        localTime = LocalTime.of(8, 0),
+        startLocalDate = LocalDate.of(2026, 8, 18),
+        recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+        createdAt = clock.instant(),
+        updatedAt = clock.instant(),
+    )
+
+    private fun ocorrenciaDe(
+        seriesId: String,
+        dia: LocalDate,
+        hora: LocalTime,
+        status: OccurrenceStatus,
+        missedAt: Instant? = null,
+    ) = TaskOccurrence(
+        id = OccurrenceIds.of(seriesId, dia),
+        seriesId = seriesId,
+        localDate = dia,
+        scheduledAt = dia.atTime(hora).atZone(zone).toInstant(),
+        status = status,
+        missedAt = missedAt,
+    )
+
+    /**
      * O lembrete adiado pelo horário de silêncio só toca às 08:00 do dia seguinte — quando
      * a ocorrência já é de ontem. O disparo que chega alguns segundos depois da hora marcada
      * não pode ser engolido pela varredura de ciclo de vida: é o último instante em que

@@ -37,9 +37,17 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
+          # -z sozinho deixava passar secret com espaco/quebra de linha: o app usa
+          # isNotBlank(), entao " " era aceito aqui e desligava a ajuda extra no aparelho.
+          so_espaco() { [ -z "${1//[[:space:]]/}" ]; }
           faltando=0
-          [ -n "$SUPABASE_URL" ] || { echo "::error::SUPABASE_URL vazio"; faltando=1; }
-          [ -n "$SUPABASE_ANON_KEY" ] || { echo "::error::SUPABASE_ANON_KEY vazio"; faltando=1; }
+          # if, nao "&& { }": o runner roda com bash -e e o ramo falso abortaria o passo.
+          if so_espaco "$SUPABASE_URL"; then echo "::error::SUPABASE_URL vazio"; faltando=1; fi
+          if so_espaco "$SUPABASE_ANON_KEY"; then echo "::error::SUPABASE_ANON_KEY vazio"; faltando=1; fi
+          case "$SUPABASE_URL" in
+            https://*.supabase.co) ;;
+            *) echo "::error::SUPABASE_URL nao parece https://<projeto>.supabase.co (valor nao exibido)"; faltando=1 ;;
+          esac
           if [ "$faltando" -ne 0 ]; then
             echo "Sem as duas o APK sai sem a ajuda extra (SupabaseConfig.isConfigured = false)."
             echo "Configure em Settings > Secrets and variables > Actions > Secrets:"
@@ -79,10 +87,16 @@ jobs:
 
           # (a) a config do Supabase tem que estar dentro do dex
           falhou=0
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+          so_espaco() { [ -z "${1//[[:space:]]/}" ]; }
+          if so_espaco "$SUPABASE_URL" || so_espaco "$SUPABASE_ANON_KEY"; then
             echo "::error::SUPABASE_URL/SUPABASE_ANON_KEY vazios neste step (repository secrets nao configurados)."
             exit 1
           fi
+          # Busca por espaco em branco casaria com qualquer byte do dex e passaria verde.
+          case "$SUPABASE_URL" in
+            https://*.supabase.co) ;;
+            *) echo "::error::SUPABASE_URL nao parece https://<projeto>.supabase.co"; falhou=1 ;;
+          esac
           DEX="$RUNNER_TEMP/dex"
           rm -rf "$DEX"
           mkdir -p "$DEX"

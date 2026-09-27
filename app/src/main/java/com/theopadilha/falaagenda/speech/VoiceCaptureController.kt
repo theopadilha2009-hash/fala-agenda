@@ -229,7 +229,11 @@ class VoiceCaptureController(private val context: Context) {
             _ui.value = _ui.value.copy(state = VoiceState.LISTENING, error = null)
         }
 
-        override fun onBeginningOfSpeech() = Unit
+        override fun onBeginningOfSpeech() {
+            // O motor começou a ouvir de fato: o prazo de escuta recomeça daqui.
+            if (session) armWatchdog(LISTENING_TIMEOUT_MS)
+        }
+
         override fun onRmsChanged(rmsdB: Float) = Unit
         override fun onBufferReceived(buffer: ByteArray?) = Unit
 
@@ -239,6 +243,9 @@ class VoiceCaptureController(private val context: Context) {
                 ?.firstOrNull()
                 .orEmpty()
             if (text.isNotBlank() && session) {
+                // Re-arma: quem está falando há mais de 20 s não pode ser cortado no meio.
+                // O prazo existe para o motor calado, não para quem está ditando.
+                armWatchdog(LISTENING_TIMEOUT_MS)
                 _ui.value = _ui.value.copy(state = VoiceState.LISTENING, partial = text)
             }
         }

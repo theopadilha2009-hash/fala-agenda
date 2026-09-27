@@ -74,6 +74,7 @@ class HomeViewModel(
         onSuccess: (T) -> Unit = {},
         block: suspend () -> T,
     ) = viewModelScope.launch {
+        _busy.value = true
         try {
             val result = withContext(Dispatchers.IO) { block() }
             onSuccess(result)
@@ -81,6 +82,10 @@ class HomeViewModel(
             throw cancellation
         } catch (error: Exception) {
             fail(action, error, onError)
+        } finally {
+            // Sem isto o botão Salvar segue ativo durante a gravação e dois toques
+            // disparam dois editOccurrence concorrentes.
+            _busy.value = false
         }
     }
 

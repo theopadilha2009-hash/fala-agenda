@@ -14,6 +14,7 @@ import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,15 @@ class HomeViewModel(
         SharingStarted.WhileSubscribed(5_000),
         com.theopadilha.falaagenda.data.repo.AgendaSections(emptyList(), emptyList(), emptyList(), emptyList()),
     )
+
+    /**
+     * Primeira lista vinda do banco. Antes dela a agenda está vazia só por não ter
+     * carregado — quem chega por um lembrete precisa saber a diferença antes de ouvir
+     * que a tarefa não existe mais.
+     */
+    val agendaLoaded: StateFlow<Boolean> = container.tasks.observeAgenda()
+        .map { true }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     private val _inexactWarning = MutableStateFlow(false)
     val inexactWarning: StateFlow<Boolean> = _inexactWarning
@@ -128,10 +138,18 @@ class HomeViewModel(
     private var lastCompleted: AgendaItem? = null
     private var lastDeleted: AgendaItem? = null
 
+    /**
+     * Exclusão que ainda dá para desfazer. Enquanto isto não for nulo, a home mostra o
+     * aviso de "Tarefa excluída" com o botão de desfazer.
+     */
+    private val _undoableDelete = MutableStateFlow<AgendaItem?>(null)
+    val undoableDelete: StateFlow<AgendaItem?> = _undoableDelete
+
     fun delete(item: AgendaItem, onDeleted: () -> Unit = {}) = write(
         action = "Não consegui excluir.",
         onSuccess = {
             lastDeleted = item
+            _undoableDelete.value = item
             onDeleted()
         },
     ) { container.tasks.deleteOccurrence(item.occurrence.id) }
@@ -139,7 +157,14 @@ class HomeViewModel(
     fun undoDelete() {
         val item = lastDeleted ?: return
         lastDeleted = null
+        _undoableDelete.value = null
         write("Não consegui desfazer.") { container.tasks.restore(item) }
+    }
+
+    /** O aviso saiu da tela sem desfazer: a exclusão deixou de estar ao alcance. */
+    fun forgetUndoDelete() {
+        lastDeleted = null
+        _undoableDelete.value = null
     }
 
     fun endSeries(seriesId: String, onDone: () -> Unit = {}) = write(

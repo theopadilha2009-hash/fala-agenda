@@ -9,4 +9,20 @@
     <color name="widget_muted">#5E5C56</color>
     <color name="widget_accent">#2F6B52</color>
     <color name="widget_on_accent">#F4F1E8</color>
+
+    <!--
+      Cores do widget por tema gravado em Aparência. Existem SÓ aqui: se ganharem par em
+      values-night, o modo noturno do celular volta a sobrescrever a escolha dela.
+    -->
+    <color name="widget_light_bg">#F4F1E8</color>
+    <color name="widget_light_text">#1A1A18</color>
+    <color name="widget_light_muted">#5E5C56</color>
+    <color name="widget_light_accent">#2F6B52</color>
+    <color name="widget_light_on_accent">#F4F1E8</color>
+
+    <color name="widget_dark_bg">#1A221E</color>
+    <color name="widget_dark_text">#F4F1EA</color>
+    <color name="widget_dark_muted">#C2C0B8</color>
+    <color name="widget_dark_accent">#8FCBB0</color>
+    <color name="widget_dark_on_accent">#1A221E</color>
 </resources>

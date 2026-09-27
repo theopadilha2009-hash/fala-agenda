@@ -21,10 +21,12 @@ interface AppClock {
 }
 
 class SystemAppClock(
-    private val clock: Clock = Clock.systemDefaultZone(),
+    private val clock: Clock = Clock.systemUTC(),
 ) : AppClock {
     override fun instant(): Instant = clock.instant()
-    override fun zoneId(): ZoneId = clock.zone
+
+    // Fuso lido a cada chamada: a Application não é recriada quando o usuário troca o fuso em Ajustes.
+    override fun zoneId(): ZoneId = ZoneId.systemDefault()
 }
 
 class FixedAppClock(

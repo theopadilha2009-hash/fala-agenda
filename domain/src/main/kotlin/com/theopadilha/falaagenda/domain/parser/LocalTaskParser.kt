@@ -88,7 +88,15 @@ class LocalTaskParser(
 
         if (localDate == null && recurrence.isRecurring) {
             val today = clock.today()
-            localDate = RecurrenceEngine.firstOnOrAfter(recurrence, today, today)
+            val time = localTime
+            var next = RecurrenceEngine.firstOnOrAfter(recurrence, today, today)
+            if (time != null && next == today) {
+                val scheduled = today.atTime(time).atZone(clock.zoneId()).toInstant()
+                if (scheduled.isBefore(clock.instant())) {
+                    next = RecurrenceEngine.firstOnOrAfter(recurrence, today, today.plusDays(1))
+                }
+            }
+            localDate = next
         }
 
         val title = extractTitle(remaining, original)
@@ -198,7 +206,8 @@ class LocalTaskParser(
             )
         }
 
-        val weekdaysPhrase = Regex("""\b(?:em\s+|nos\s+|nas\s+)?dias\s+uteis\b""")
+        val weekdaysPhrase =
+            Regex("""\b(?:(?:em|nos|nas|todos?|todas?)\s+)?(?:os\s+|as\s+)?dias?\s+(?:uteis|util)\b""")
         if (weekdaysPhrase.containsMatchIn(remaining)) {
             remaining = remaining.replace(weekdaysPhrase, " ")
             return RecurrenceHit(RecurrenceRule(RecurrenceKind.WEEKDAYS), remaining, false)
@@ -252,13 +261,15 @@ class LocalTaskParser(
             )
         }
 
-        Regex("""\bmeio[-\s]?dia\b""").find(remaining)?.let {
-            remaining = remaining.replace(it.value, " ")
-            return TimeHit(LocalTime.NOON, remaining, false)
+        Regex("""\bmeio[-\s]?dia\b""").find(remaining)?.let { m ->
+            val tail = trailingMinutes(remaining, m.range.last + 1)
+            remaining = remaining.replace(m.value + (tail?.second ?: ""), " ")
+            return TimeHit(LocalTime.of(12, tail?.first ?: 0), remaining, false)
         }
-        Regex("""\bmeia[-\s]?noite\b""").find(remaining)?.let {
-            remaining = remaining.replace(it.value, " ")
-            return TimeHit(LocalTime.MIDNIGHT, remaining, false)
+        Regex("""\bmeia[-\s]?noite\b""").find(remaining)?.let { m ->
+            val tail = trailingMinutes(remaining, m.range.last + 1)
+            remaining = remaining.replace(m.value + (tail?.second ?: ""), " ")
+            return TimeHit(LocalTime.of(0, tail?.first ?: 0), remaining, false)
         }
 
         data class ClockMatch(val match: MatchResult, val hourRaw: Int, val minute: Int, val period: String)
@@ -285,9 +296,26 @@ class LocalTaskParser(
         if (hit.hourRaw !in 0..23 || hit.minute !in 0..59) {
             return TimeHit(null, remaining.replace(hit.match.value, " "), true)
         }
+        var minute = hit.minute
+        var consumed = hit.match.value
+        trailingMinutes(remaining, hit.match.range.last + 1)?.let { tail ->
+            if (minute + tail.first <= 59) {
+                minute += tail.first
+                consumed += tail.second
+            }
+        }
         val hour = applyPeriodHour(hit.hourRaw, hit.period)
-        remaining = remaining.replace(hit.match.value, " ")
-        return TimeHit(LocalTime.of(hour % 24, hit.minute), remaining, false)
+        remaining = remaining.replace(consumed, " ")
+        return TimeHit(LocalTime.of(hour % 24, minute), remaining, false)
+    }
+
+    /** "às 9 e meia", "às nove e vinte": o "e <minutos>" colado no relógio vira o minuto. */
+    private fun trailingMinutes(text: String, from: Int): Pair<Int, String>? {
+        val m = MINUTE_TAIL.find(text, from) ?: return null
+        if (m.range.first != from) return null
+        val raw = m.groupValues[1]
+        val extra = raw.toIntOrNull() ?: MINUTE_TAIL_WORDS[raw] ?: return null
+        return if (extra in 0..59) extra to m.value else null
     }
 
     private data class RelativeHit(val time: LocalTime, val date: LocalDate, val remaining: String)
@@ -303,12 +331,12 @@ class LocalTaskParser(
             )
         }
         val amount = Regex(
-            """\b(?:daqui(?:\s+a)?|em)\s+(\d+|uma|um|duas|dois|quinze|trinta|quarenta|quarenta\s+e\s+cinco)\s+(minutos?|horas?)\b""",
+            """\b(?:daqui(?:\s+a)?|em)\s+(\d+|[a-z]+(?:\s+e\s+[a-z]+)?)\s+(min\.?|minutos?|horas?)(?!\w)""",
         )
         amount.find(text)?.let { m ->
-            val raw = m.groupValues[1]
+            val raw = TextNormalizer.compactSpaces(m.groupValues[1])
             val unit = m.groupValues[2]
-            val n = raw.toIntOrNull() ?: WORD_AMOUNTS[raw.replace("\\s+".toRegex(), " ")] ?: return null
+            val n = raw.toIntOrNull() ?: WORD_AMOUNTS[raw] ?: return null
             val target = if (unit.startsWith("hora")) {
                 clock.now().plusHours(n.toLong())
             } else {
@@ -398,15 +426,15 @@ class LocalTaskParser(
         almoco.find(text)?.let {
             return PeriodHit("vague", "depois do almoço", text.replace(it.value, " "))
         }
-        val night = Regex("""\b(?:a|da|na)\s+noite\b""")
+        val night = Regex("""\b(?:a|da|de|na)\s+noite\b""")
         night.find(text)?.let {
             return PeriodHit("noite", "à noite", text.replace(it.value, " "))
         }
-        val afternoon = Regex("""\b(?:a|da|na)\s+tarde\b""")
+        val afternoon = Regex("""\b(?:a|da|de|na)\s+tarde\b""")
         afternoon.find(text)?.let {
             return PeriodHit("tarde", "à tarde", text.replace(it.value, " "))
         }
-        val morning = Regex("""\b(?:a|da|na)\s+manha\b""")
+        val morning = Regex("""\b(?:a|da|de|na)\s+manha\b""")
         morning.find(text)?.let {
             return PeriodHit("manha", "de manhã", text.replace(it.value, " "))
         }
@@ -493,13 +521,25 @@ class LocalTaskParser(
 
     companion object {
         private val CLOCK_NUMERIC = Regex(
-            """\b(?:as\s+)?(\d{1,2})(?:[:h](\d{2})|\s*h(?:oras?)?(?:\s*(\d{2}))?)(?:\s*(da\s+manha|da\s+tarde|da\s+noite|da\s+madrugada))?\b""",
+            """\b(?:as\s+)?(\d{1,2})(?:[:h](\d{2})|\s*h(?:oras?)?(?:\s*(\d{2}))?)(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?\b""",
         )
         private val CLOCK_WORD = Regex(
-            """\bas\s+(uma|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)(?:\s*h(?:oras?)?(?:\s*(\d{2}))?)?(?:\s*(da\s+manha|da\s+tarde|da\s+noite|da\s+madrugada))?\b""",
+            """\bas\s+(uma|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)(?:\s*h(?:oras?)?(?:\s*(\d{2}))?)?(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?\b""",
         )
         private val CLOCK_BARE = Regex(
-            """\bas\s+(\d{1,2})\b(?:\s*(da\s+manha|da\s+tarde|da\s+noite|da\s+madrugada))?""",
+            """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
+        )
+
+        private val MINUTE_TAIL =
+            Regex("""\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})\b""")
+
+        private val MINUTE_TAIL_WORDS = mapOf(
+            "meia" to 30,
+            "quinze" to 15,
+            "vinte" to 20,
+            "trinta" to 30,
+            "quarenta" to 40,
+            "cinquenta" to 50,
         )
 
         private val WEEKDAY_PATTERNS = listOf(
@@ -533,10 +573,31 @@ class LocalTaskParser(
             "um" to 1,
             "duas" to 2,
             "dois" to 2,
+            "tres" to 3,
+            "quatro" to 4,
+            "cinco" to 5,
+            "seis" to 6,
+            "sete" to 7,
+            "oito" to 8,
+            "nove" to 9,
+            "dez" to 10,
+            "onze" to 11,
+            "doze" to 12,
+            "treze" to 13,
+            "catorze" to 14,
+            "quatorze" to 14,
             "quinze" to 15,
+            "dezesseis" to 16,
+            "dezessete" to 17,
+            "dezoito" to 18,
+            "dezenove" to 19,
+            "vinte" to 20,
+            "vinte e cinco" to 25,
+            "meia" to 30,
             "trinta" to 30,
             "quarenta" to 40,
             "quarenta e cinco" to 45,
+            "cinquenta" to 50,
         )
 
         private val FILLERS = setOf(

@@ -11,6 +11,7 @@ import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.YearMonth
+import java.time.temporal.WeekFields
 import java.util.Locale
 
 /**
@@ -62,7 +63,7 @@ class LocalTaskParser(
         if (timeHit.ambiguous) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += "O horário ficou ambíguo."
+            notes += timeHit.note ?: "O horário ficou ambíguo."
         }
 
         val dateHit = extractDate(remaining, recurrence)
@@ -90,6 +91,7 @@ class LocalTaskParser(
             val today = clock.today()
             val time = localTime
             var next = RecurrenceEngine.firstOnOrAfter(recurrence, today, today)
+            if (recurrenceHit.nextWeek && next != null) next = nextWeekOf(next, today)
             if (time != null && next == today) {
                 val scheduled = today.atTime(time).atZone(clock.zoneId()).toInstant()
                 if (scheduled.isBefore(clock.instant())) {
@@ -139,6 +141,8 @@ class LocalTaskParser(
         val rule: RecurrenceRule,
         val remaining: String,
         val ambiguous: Boolean,
+        /** "toda quinta que vem": a série começa na ocorrência da próxima semana. */
+        val nextWeek: Boolean = false,
     )
 
     private fun extractRecurrence(text: String): RecurrenceHit {
@@ -225,9 +229,15 @@ class LocalTaskParser(
             val after = remaining.substring(weekly.range.last + 1)
             val days = extractWeekDays(after)
             if (days.isNotEmpty()) {
+                val nextWeek = WEEKDAY_NEXT_WEEK.containsMatchIn(after)
                 remaining = remaining.replaceRange(weekly.range.first, remaining.length, stripWeekDays(after))
                 remaining = TextNormalizer.compactSpaces(remaining)
-                return RecurrenceHit(RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = days), remaining, false)
+                return RecurrenceHit(
+                    RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = days),
+                    remaining,
+                    false,
+                    nextWeek,
+                )
             }
             ambiguous = true
         }
@@ -237,19 +247,41 @@ class LocalTaskParser(
             val after = remaining.substring(m.range.last + 1)
             val days = extractWeekDays(after)
             if (days.isNotEmpty()) {
+                val nextWeek = WEEKDAY_NEXT_WEEK.containsMatchIn(after)
                 remaining = remaining.replaceRange(m.range.first, remaining.length, stripWeekDays(after))
                 remaining = TextNormalizer.compactSpaces(remaining)
-                return RecurrenceHit(RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = days), remaining, false)
+                return RecurrenceHit(
+                    RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = days),
+                    remaining,
+                    false,
+                    nextWeek,
+                )
             }
         }
 
         return RecurrenceHit(RecurrenceRule(), remaining, ambiguous)
     }
 
-    private data class TimeHit(val time: LocalTime?, val remaining: String, val ambiguous: Boolean)
+    private data class TimeHit(
+        val time: LocalTime?,
+        val remaining: String,
+        val ambiguous: Boolean,
+        val note: String? = null,
+    )
 
     private fun extractTime(text: String): TimeHit {
         var remaining = text
+
+        // "de 8 em 8 horas", "a cada 2 horas": intervalo entre doses, não um horário do dia.
+        INTERVAL.find(remaining)?.let { m ->
+            remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            return TimeHit(
+                null,
+                remaining,
+                true,
+                "“${m.value}” é um intervalo, não um horário do dia. Diga o horário da primeira dose.",
+            )
+        }
 
         val relative = extractRelative(remaining)
         if (relative != null) {
@@ -309,12 +341,22 @@ class LocalTaskParser(
         return TimeHit(LocalTime.of(hour % 24, minute), remaining, false)
     }
 
-    /** "às 9 e meia", "às nove e vinte": o "e <minutos>" colado no relógio vira o minuto. */
+    /**
+     * "às 9 e meia", "às nove e vinte e cinco": o "e <minutos>" colado no relógio vira o minuto.
+     * Dezena por extenso aceita a unidade: "quarenta e cinco" são 45, não 40 + "cinco" solto no título.
+     */
     private fun trailingMinutes(text: String, from: Int): Pair<Int, String>? {
         val m = MINUTE_TAIL.find(text, from) ?: return null
         if (m.range.first != from) return null
         val raw = m.groupValues[1]
-        val extra = raw.toIntOrNull() ?: MINUTE_TAIL_WORDS[raw] ?: return null
+        val base = raw.toIntOrNull() ?: MINUTE_TAIL_WORDS[raw] ?: return null
+        val unit = m.groupValues[2]
+        val extra = if (unit.isBlank()) {
+            base
+        } else {
+            if (raw !in MINUTE_TENS) return null
+            base + (MINUTE_UNITS[unit] ?: return null)
+        }
         return if (extra in 0..59) extra to m.value else null
     }
 
@@ -337,15 +379,24 @@ class LocalTaskParser(
             val raw = TextNormalizer.compactSpaces(m.groupValues[1])
             val unit = m.groupValues[2]
             val n = raw.toIntOrNull() ?: WORD_AMOUNTS[raw] ?: return null
+            var consumed = m.value
+            var extraMinutes = 0L
+            if (unit.startsWith("hora")) {
+                val meia = MEIA_HORA_TAIL.find(text, m.range.last + 1)
+                if (meia != null && meia.range.first == m.range.last + 1) {
+                    extraMinutes = 30
+                    consumed += meia.value
+                }
+            }
             val target = if (unit.startsWith("hora")) {
                 clock.now().plusHours(n.toLong())
             } else {
                 clock.now().plusMinutes(n.toLong())
-            }
+            }.plusMinutes(extraMinutes)
             return RelativeHit(
                 time = target.toLocalTime().withSecond(0).withNano(0),
                 date = target.toLocalDate(),
-                remaining = text.replace(m.value, " "),
+                remaining = text.replace(consumed, " "),
             )
         }
         return null
@@ -403,13 +454,18 @@ class LocalTaskParser(
         if (!recurrence.isRecurring) {
             val days = extractWeekDays(remaining)
             if (days.size == 1) {
+                val nextWeek = WEEKDAY_NEXT_WEEK.containsMatchIn(remaining)
                 remaining = stripWeekDays(remaining)
                 val date = RecurrenceEngine.firstOnOrAfter(
                     RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = days),
                     today,
                     today,
                 )
-                return DateHit(date, remaining, false)
+                return DateHit(
+                    date?.let { if (nextWeek) nextWeekOf(it, today) else it },
+                    remaining,
+                    false,
+                )
             }
             if (days.size > 1) {
                 return DateHit(null, remaining, true)
@@ -449,10 +505,20 @@ class LocalTaskParser(
     private fun applyPeriodHour(hourRaw: Int, period: String): Int = when {
         period.contains("tarde") && hourRaw in 1..11 -> hourRaw + 12
         period.contains("noite") && hourRaw in 1..11 -> hourRaw + 12
+        // "às 12 da noite" é meia-noite; "às 12 da manhã" também.
+        period.contains("noite") && hourRaw == 12 -> 0
         period.contains("manha") && hourRaw == 12 -> 0
         period.contains("madrugada") && hourRaw == 12 -> 0
         else -> hourRaw
     }
+
+    /** "que vem"/"próxima" no dia da semana: a ocorrência da PRÓXIMA semana, não a desta. */
+    private fun nextWeekOf(occurrence: LocalDate, today: LocalDate): LocalDate =
+        if (sameIsoWeek(occurrence, today)) occurrence.plusWeeks(1) else occurrence
+
+    private fun sameIsoWeek(a: LocalDate, b: LocalDate): Boolean =
+        a.get(WeekFields.ISO.weekOfWeekBasedYear()) == b.get(WeekFields.ISO.weekOfWeekBasedYear()) &&
+            a.get(WeekFields.ISO.weekBasedYear()) == b.get(WeekFields.ISO.weekBasedYear())
 
     private fun inferYear(today: LocalDate, month: Int, day: Int): Int {
         val candidate = try {
@@ -494,7 +560,8 @@ class LocalTaskParser(
     }
 
     private fun stripWeekDays(text: String): String {
-        var remaining = text
+        // "quinta que vem" / "próxima sexta": sai inteiro, senão "vem" sobra no título.
+        var remaining = text.replace(WEEKDAY_NEXT_WEEK, " ")
         WEEKDAY_PATTERNS.forEach { (regex, _) ->
             remaining = remaining.replace(regex, " ")
         }
@@ -530,8 +597,9 @@ class LocalTaskParser(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
 
-        private val MINUTE_TAIL =
-            Regex("""\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})\b""")
+        private val MINUTE_TAIL = Regex(
+            """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
+        )
 
         private val MINUTE_TAIL_WORDS = mapOf(
             "meia" to 30,
@@ -540,6 +608,38 @@ class LocalTaskParser(
             "trinta" to 30,
             "quarenta" to 40,
             "cinquenta" to 50,
+        )
+
+        private val MINUTE_TENS = setOf("vinte", "trinta", "quarenta", "cinquenta")
+
+        private val MINUTE_UNITS = mapOf(
+            "um" to 1,
+            "dois" to 2,
+            "duas" to 2,
+            "tres" to 3,
+            "quatro" to 4,
+            "cinco" to 5,
+            "seis" to 6,
+            "sete" to 7,
+            "oito" to 8,
+            "nove" to 9,
+        )
+
+        /** "de 8 em 8 horas", "a cada duas horas": intervalo entre doses. */
+        private val INTERVAL = Regex(
+            """\bde\s+(?:\d{1,2}|[a-z]+)\s+em\s+(?:\d{1,2}|[a-z]+)\s+(?:horas?|minutos?)\b""" +
+                """|\b(?:a\s+)?cada\s+(?:\d{1,2}|[a-z]+)\s+(?:horas?|minutos?)\b""",
+        )
+
+        /** "daqui a duas horas e meia": o "e meia" depois do valor relativo vale 30 minutos. */
+        private val MEIA_HORA_TAIL = Regex("""\s*e\s+meia(?:\s+horas?)?\b""")
+
+        private const val WEEKDAY_ALT = "domingos?|segundas?|tercas?|quartas?|quintas?|sextas?|sabados?"
+
+        /** "quinta que vem", "próxima sexta", "quinta da semana que vem". */
+        private val WEEKDAY_NEXT_WEEK = Regex(
+            """\b(?:$WEEKDAY_ALT)(?:-?feira)?\s+(?:(?:da\s+)?semana\s+)?(?:que\s+vem|proxim[ao]s?)\b""" +
+                """|\bproxim[ao]s?\s+(?:$WEEKDAY_ALT)\b""",
         )
 
         private val WEEKDAY_PATTERNS = listOf(

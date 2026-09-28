@@ -113,7 +113,10 @@ class AgendaFormatTest {
         assertThat(AgendaFormat.fromNow(now.plusSeconds(3 * 24 * 3600), now)).isNull()
     }
 
-    /** A hora cheia perde os minutos: "daqui 1 h" para um aviso a 1 h 30 min. */
+    /**
+     * A hora cheia não engole os minutos que sobram: a 1 h 30 min o aviso sai "daqui 1 h 30
+     * min", e só a hora redonda fica sem os minutos ("daqui 23 h").
+     */
     @Test
     fun fromNowHorasComMinutosRestantes() {
         val now = LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant()

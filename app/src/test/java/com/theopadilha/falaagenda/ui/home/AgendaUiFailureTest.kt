@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
@@ -25,6 +26,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * O `loaded` é o que a tela de confirmação espera para decidir entre editar e criar
@@ -43,6 +45,56 @@ class AgendaUiFailureTest {
 
         assertThat(estado.loaded).isTrue()
         assertThat(estado.sections).isEqualTo(vazia)
+    }
+
+    /**
+     * A falha antes de qualquer emissão não pode sair como "li a agenda e ela está vazia":
+     * as duas são iguais em conteúdo, e quem decide por elas lê `failed`. Com a vazia no
+     * lugar da falha, a tela de edição vira criação (segunda série, segundo alarme) e o
+     * efeito do aviso anuncia "Esta tarefa não está mais na agenda" para uma agenda que não
+     * foi lida.
+     */
+    @Test
+    fun falhaAntesDaPrimeiraEmissaoNaoEhLeituraDeAgendaVazia() = runBlocking {
+        val quebrado = flow<AgendaSections> { throw IllegalStateException("o banco não abriu") }
+
+        val estado = withTimeout(5_000) { agendaUiFrom(quebrado).first() }
+
+        assertThat(estado.failed).isTrue()
+    }
+
+    /**
+     * "Falhou antes de emitir" é sobre a coleta que está acontecendo, e não sobre o processo:
+     * o `stateIn` reinicia a coleta do mesmo fluxo quando a última assinatura sai e outra
+     * volta, e uma bandeira guardada fora da cadeia fazia a segunda falha não virar estado
+     * nenhum — a tela ficava com a lista da leitura anterior como se a leitura tivesse
+     * funcionado.
+     */
+    @Test
+    fun aFalhaEhDaColetaENaoDoProcesso() = runBlocking {
+        val cheia = AgendaSections(listOf(itemDeHoje("s1:2026-08-20")), emptyList(), emptyList(), emptyList())
+        val tentativas = AtomicInteger()
+        val fonte = flow<AgendaSections> {
+            if (tentativas.incrementAndGet() == 1) {
+                emit(cheia)
+                throw IllegalStateException("a leitura caiu depois da lista")
+            }
+            throw IllegalStateException("o banco não abriu")
+        }
+        val agenda = agendaUiFrom(fonte)
+
+        // Primeira assinatura: a lista chegou e depois a leitura caiu — a lista fica.
+        val primeira = agenda.first { it.loaded }
+        assertThat(primeira.sections).isEqualTo(cheia)
+        assertThat(primeira.failed).isFalse()
+
+        // A segunda coleta (a home voltou para a tela, o `stateIn` reiniciou o fluxo) cai
+        // antes de emitir: é falha, e não uma lista válida.
+        val segunda = withTimeout(5_000) { agenda.toList() }
+
+        assertThat(segunda).hasSize(1)
+        assertThat(segunda.single().loaded).isTrue()
+        assertThat(segunda.single().failed).isTrue()
     }
 
     /**
@@ -70,6 +122,7 @@ class AgendaUiFailureTest {
 
             assertThat(estado.value.loaded).isTrue()
             assertThat(estado.value.sections).isEqualTo(cheia)
+            assertThat(estado.value.failed).isFalse()
         } finally {
             escopo.cancel()
         }

@@ -2,10 +2,15 @@ package com.theopadilha.falaagenda.ui
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -18,6 +23,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -35,6 +43,7 @@ import com.theopadilha.falaagenda.ui.capture.ConfirmDraftScreen
 import com.theopadilha.falaagenda.ui.capture.WriteStep
 import com.theopadilha.falaagenda.ui.capture.WriteTaskScreen
 import com.theopadilha.falaagenda.ui.capture.writeStepFor
+import com.theopadilha.falaagenda.ui.components.SecondaryButton
 import com.theopadilha.falaagenda.ui.home.DraftSaveOrigin
 import com.theopadilha.falaagenda.ui.home.DraftSaveOutcome
 import com.theopadilha.falaagenda.ui.home.HomeScreen
@@ -171,11 +180,13 @@ fun FalaAgendaRoot(
             return@LaunchedEffect
         }
         // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou a
-        // agenda ainda não chegou do banco. Só o segundo caso merece espera — e o
-        // "carregou" sai do mesmo valor que a busca de cima, então ele não pode ser de uma
-        // lista que não passou por aqui. O recado sai pela home, que é onde ele aparece, e
-        // fica guardado até ela mostrá-lo.
-        if (agendaUi.loaded) {
+        // agenda ainda não chegou do banco, ou a leitura da agenda falhou. Só o primeiro caso
+        // merece o recado — e o "carregou" sai do mesmo valor que a busca de cima, então ele
+        // não pode ser de uma lista que não passou por aqui. Na falha o id fica pendente e
+        // ninguém diz nada: anunciar "Esta tarefa não está mais na agenda" quando a agenda não
+        // foi lida é a mentira que este efeito não pode contar. O recado sai pela home, que é
+        // onde ele aparece, e fica guardado até ela mostrá-lo.
+        if (agendaUi.loaded && !agendaUi.failed) {
             pendingOccurrenceId = null
             homeVm.publishStatus("Esta tarefa não está mais na agenda.")
         }
@@ -249,6 +260,13 @@ fun FalaAgendaRoot(
             // caminho de criar — uma segunda série com o mesmo título e o mesmo horário, e
             // um segundo alarme. A tela espera o banco em vez de decidir.
             val awaitingEditingItem = editingItemId != null && !agendaUi.loaded
+            // A agenda respondeu, e respondeu que não conseguiu ler: a tarefa editada não
+            // está aqui porque a leitura falhou, e não porque ela não existe mais. Seguir
+            // para o `ConfirmDraftScreen` com `editing = false` era o que transformava
+            // "Editar tarefa" em tarefa nova — segunda série com o mesmo título e o mesmo
+            // horário, e um segundo alarme. Aqui a tela diz o que aconteceu e devolve ela
+            // para a home.
+            val editingUnavailable = editingItemId != null && agendaUi.failed && editingItem == null
             val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
             // Os pedidos de gravação que ainda não foram mostrados a ninguém (ver
             // `pendingDraftSaves`): a gravação *desta* tela, e não o `busy` do ViewModel, que
@@ -295,6 +313,15 @@ fun FalaAgendaRoot(
                     CircularProgressIndicator()
                 }
             }
+            // Sem a agenda não dá para saber o que a tarefa editada tem hoje no banco, e o
+            // "Salvar" daqui criaria uma série nova: a tela sai do caminho de edição e diz
+            // por quê.
+            if (current != null && editingUnavailable) {
+                AgendaReadFailure(onBack = {
+                    editingItemId = null
+                    nav.popBackStack()
+                })
+            }
             // A tela é reiniciada quando o rascunho ou a ocorrência mudam. O aviso é atendido
             // aqui, que compõe em qualquer destino: com ela já na confirmação, o
             // `launchSingleTop` do `openForEdit` reaproveita a mesma entrada do `NavHost` e
@@ -304,7 +331,7 @@ fun FalaAgendaRoot(
             // remédio com o texto dela, e "Concluir"/"Excluir" agiam no remédio enquanto ela
             // lia outra coisa. Com a chave, o que está na tela é o que as ações vão alterar.
             // A entrada continua sendo reaproveitada (não empilha tela a cada abertura).
-            if (current != null && !awaitingEditingItem) {
+            if (current != null && !awaitingEditingItem && !editingUnavailable) {
                 key(current, editingItemId) {
                     ConfirmDraftScreen(
                         initial = current,
@@ -513,6 +540,36 @@ fun FalaAgendaRoot(
     }
 }
 
+/**
+ * A leitura da agenda falhou com a tela de edição aberta — a morte do processo no meio da
+ * edição é o caso: o Bundle devolve o id da tarefa, a primeira leitura do banco estoura, e
+ * sem a lista não há como saber o que a tarefa tem hoje. É a saída que não oferece o
+ * "Salvar": o caminho de criação criaria uma série nova no lugar de editar a antiga.
+ */
+@Composable
+private fun AgendaReadFailure(onBack: () -> Unit) {
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Text(
+                "Não consegui abrir a tarefa",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.semantics { heading() },
+            )
+            Text(
+                "Não deu para ler a sua agenda agora, então não dá para abrir esta tarefa. Nada foi mudado.",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            SecondaryButton("Voltar", onClick = onBack)
+        }
+    }
+}
+
 private const val NO_EPOCH_DAY = Long.MIN_VALUE
 private const val NO_SECOND_OF_DAY = -1
 private const val NO_DAY_OF_MONTH = -1
@@ -530,6 +587,11 @@ private const val NO_AMOUNT = Long.MIN_VALUE
  *
  * A ordem dos campos em [DraftSaver] é o formato salvo: mexer nela exige mexer em
  * [draftFrom].
+ *
+ * A igualdade do rascunho que volta é load-bearing: o `key(current, editingItemId)` da
+ * confirmação só continua na mesma tela (sem reiniciar os campos e apagar o que ela digitou)
+ * se o rascunho restaurado for `equals` ao anterior. Campo novo em `ParsedTaskDraft` sem o
+ * [draftFrom] correspondente perde a digitação dela na rotação, em silêncio.
  */
 internal val DraftSaver = Saver<ParsedTaskDraft?, ArrayList<Any?>>(
     save = { draft ->

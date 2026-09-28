@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
@@ -26,24 +28,37 @@ import java.time.LocalDate
 import java.time.LocalTime
 
 /**
- * A lista e a resposta para "isto já veio do banco?" no mesmo valor.
+ * A lista, a resposta para "isto já veio do banco?" e a resposta para "e o que ele
+ * respondeu?" no mesmo valor.
  *
  * Eram duas assinaturas independentes de `observeAgenda()`, e a resposta de um fluxo valia
  * para a lista do outro: com o app em outra tela, os valores retidos dos dois `stateIn`
  * diziam "carregou" enquanto a lista ainda era a inicial vazia, e o toque no aviso do
  * remédio respondia "Esta tarefa não está mais na agenda" — descartando o id. Quem busca a
- * ocorrência por id lê os dois campos da mesma emissão: [loaded] nunca fala de uma lista
- * que não é [sections].
+ * ocorrência por id lê os três campos da mesma emissão: [loaded] nunca fala de uma lista
+ * que não é [sections], e [failed] diz *o que* a resposta foi (ver [agendaUiFrom]).
  */
 data class AgendaUi(
     val sections: AgendaSections,
+    /** O fluxo respondeu: chegou uma leitura ou uma falha. Não diz *o que* respondeu. */
     val loaded: Boolean,
+    /**
+     * O que respondeu foi "não consegui ler a agenda". A falha antes de qualquer emissão
+     * publica a lista vazia, e uma agenda lida e vazia é igual a ela em conteúdo: sem esta
+     * bandeira, a tela de edição trata a falha como tarefa que não existe mais — "Editar
+     * tarefa" vira criação (segunda série com o mesmo título e o mesmo horário, segundo
+     * alarme) e o aviso anuncia que a tarefa saiu da agenda quando a agenda não foi lida.
+     * A falha que chega **depois** de uma lista boa não emite nada, e aí esta bandeira não
+     * vale: o que está na tela é a última lista lida, que é o que a tela de edição lê.
+     */
+    val failed: Boolean,
 )
 
 /** Antes da primeira emissão: nada de concluir por ausência. */
 internal val initialAgendaUi = AgendaUi(
     sections = AgendaSections(emptyList(), emptyList(), emptyList(), emptyList()),
     loaded = false,
+    failed = false,
 )
 
 /**
@@ -55,22 +70,36 @@ internal val initialAgendaUi = AgendaUi(
  * botão, sem saída a não ser o Back do sistema. Ler o banco é uma tarefa que pode falhar, e
  * falhar tem que virar estado utilizável, nunca uma espera sem fim.
  *
+ * O que respondeu sai em `failed`: uma falha antes de qualquer emissão não pode sair como "li
+ * a agenda e ela está vazia" — as duas listas são iguais, e quem trata a falha como agenda
+ * vazia lê a ocorrência editada como inexistente ("Editar tarefa" vira tarefa nova, com uma
+ * segunda série e um segundo alarme) e anuncia "Esta tarefa não está mais na agenda" para uma
+ * agenda que nunca foi lida.
+ *
  * A falha que chega **depois** de a agenda já ter vindo não emite nada de propósito: o
  * `stateIn` guarda o último valor bom, e é essa lista que a tela de confirmação lê para saber
  * que a tarefa editada existe. Trocá-la por uma agenda vazia transformaria "Editar tarefa" em
  * "tarefa nova" — segunda série com o mesmo título e o mesmo horário, e um segundo alarme.
+ * Por isso `failed` só diz respeito à coleta que ainda não entregou lista nenhuma.
  */
-internal fun agendaUiFrom(source: Flow<AgendaSections>): Flow<AgendaUi> {
+internal fun agendaUiFrom(source: Flow<AgendaSections>): Flow<AgendaUi> = flow {
+    // `emitiu` mora na coleta, e não na cadeia: o `stateIn` reinicia a coleta do mesmo fluxo
+    // toda vez que a última assinatura sai e outra volta, e uma bandeira de fora da coleta
+    // fazia "primeira emissão" querer dizer "primeira desde que o processo abriu" — a segunda
+    // leitura caindo não virava falha nenhuma, e a tela ficava com a lista da leitura anterior
+    // como se essa leitura tivesse funcionado.
     var emitiu = false
-    return source
-        .map { sections ->
-            emitiu = true
-            AgendaUi(sections = sections, loaded = true)
-        }
-        .catch { error ->
-            Log.w(TAG, "Não consegui ler a agenda.", error)
-            if (!emitiu) emit(initialAgendaUi.copy(loaded = true))
-        }
+    emitAll(
+        source
+            .map { sections ->
+                emitiu = true
+                AgendaUi(sections = sections, loaded = true, failed = false)
+            }
+            .catch { error ->
+                Log.w(TAG, "Não consegui ler a agenda.", error)
+                if (!emitiu) emit(initialAgendaUi.copy(loaded = true, failed = true))
+            },
+    )
 }
 
 /**

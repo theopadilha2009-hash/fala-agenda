@@ -51,10 +51,17 @@ class SpeechSession(
         val mine = ++generation
         inFlight?.cancel()
         inFlight = scope.launch {
+            // A espera pelo turno é a espera dela. O parse é uma chamada de rede bloqueante
+            // (OkHttp com `callTimeout`): o `cancel` de quem perdeu a vez não a interrompe, e
+            // o turno só é solto quando ela termina. Anunciar o entendimento apenas *depois*
+            // do lock deixava esses segundos com a tela limpa — o "Continuar" na mão dela e
+            // sem "Entendendo o recado…" —, e cada toque enfileirava mais um parse. Quem
+            // publica é a geração viva: a limpeza de uma abandonada (ver `catch` abaixo e
+            // [discard]) não passa por aqui.
+            if (mine == generation) _state.value = SpeechUiState(understanding = true)
             lock.withLock {
                 // A fala que perdeu a vez morre com o número dela, sem tocar no estado.
                 if (mine != generation) return@withLock
-                _state.value = SpeechUiState(understanding = true)
                 val arrived = try {
                     SpeechUiState(draft = parse(heard))
                 } catch (cancelled: CancellationException) {

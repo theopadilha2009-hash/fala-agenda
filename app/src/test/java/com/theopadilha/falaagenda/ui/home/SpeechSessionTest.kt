@@ -7,9 +7,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.junit.Test
 import java.time.LocalDate
 import java.time.LocalTime
@@ -159,6 +161,38 @@ class SpeechSessionTest {
 
         assertThat(session.state.value.error).isNull()
         assertThat(session.state.value.understanding).isFalse()
+    }
+
+    /**
+     * O parse é uma chamada de rede bloqueante (OkHttp): cancelar o `Job` não a interrompe, e
+     * o turno fica com ele até o fim. A espera pelo turno é a espera dela — a tela precisa
+     * dizer "Entendendo o recado…" e tirar o "Continuar" da mão dela desde o toque; com o
+     * estado limpo por um `discard` (ela tocou em "Escrever tarefa" e voltou) e o anúncio só
+     * saindo depois do lock, a tela mostrava o botão livre e sem espera nenhuma — cada toque
+     * enfileirava mais um parse.
+     */
+    @Test
+    fun aEsperaPeloTurnoJaSeAnunciaNaTela() {
+        val preso = CompletableDeferred<Unit>()
+        val session = SpeechSession(escopoSemConfinamento()) { texto ->
+            // Como o parse de verdade: a espera não é cancelável.
+            if (texto == "comprar pão") withContext(NonCancellable) { preso.await() }
+            recado(texto)
+        }
+
+        session.understand("comprar pão")
+        session.discard()
+        session.understand("tomar água")
+
+        // O turno ainda é do parse abandonado, e é isso que a tela tem que mostrar.
+        assertThat(session.state.value.understanding).isTrue()
+        assertThat(session.state.value.draft).isNull()
+
+        preso.complete(Unit)
+
+        // Terminada a espera, quem manda é a fala nova — e a tela para de esperar.
+        assertThat(session.state.value.understanding).isFalse()
+        assertThat(session.state.value.draft?.title).isEqualTo("tomar água")
     }
 
     /** O que ela escreveu e mandou de novo não fica atrás de um parse abandonado. */

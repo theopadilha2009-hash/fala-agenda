@@ -385,9 +385,11 @@ precisa ler antes de abrir PR.
 **Não verificado nesta segunda onda:** não há device nesta máquina e esta passada não rodou
 build; o que sustenta os itens acima é leitura de código e os testes escritos junto de cada
 fix — não output de execução. O `:app` que não compilava na árvore de `6607b18` (item 3
-acima) está fechado: `a76bc2f` passa o `occurrenceDay` no call site, e o
-`:app:testDebugUnitTest` roda 173 testes, 0 falhas (`app/build/test-results/`).
-*(O 173 é o retrato da árvore de `a76bc2f`. O número final está no adendo 3.)*
+acima) está fechado: `a76bc2f` passa o `occurrenceDay` no call site. O
+`:app:testDebugUnitTest` daquela onda eram **173 testes**, a contagem da árvore de
+`eeb126d` — o último commit do grupo (`git grep -c "@Test" eeb126d -- app/src/test`);
+`a76bc2f` tinha 164. O número da árvore mergeada é **230**, com 0 falhas
+(`app/build/test-results/`) — ver o adendo 3.
 
 ---
 
@@ -404,8 +406,10 @@ ler antes dos adendos 1 e 2.
 
 - PR **#15**, `fix/auditoria-2` → `main`, squash em **`d836d8d`** (2026-09-28 00:19): 69
   arquivos, 7 150 inserções, 658 remoções (`git show --stat d836d8d`). A branch tinha **42
-  commits** (`git rev-list --count 0a46352..cd78073`), 13 dos quais merges das frentes em
-  worktree — as 13 frentes do adendo 2. A rodada 2 leu a árvore quando ela tinha 36 commits
+  commits** (`git rev-list --count 0a46352..cd78073`), 13 dos quais merges de frentes
+  trabalhadas em worktree paralelo (`git log --oneline --merges 0a46352..cd78073`: 11
+  `worktree-agent-*` + `fix/widget-crash-e-tema` + `fix/estado-sobrevive-a-recriacao`). A
+  rodada 2 leu a árvore quando ela tinha 36 commits
   (`git rev-list --count 0a46352..d2c02b4`); os consertos dela aterrissaram depois.
 
 Ordem em que os consertos chegaram (a ordem em que o review os pediu é outra — ver a tabela

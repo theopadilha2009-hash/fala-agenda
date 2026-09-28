@@ -48,6 +48,63 @@ internal val initialAgendaUi = AgendaUi(
 internal fun agendaUiFrom(source: Flow<AgendaSections>): Flow<AgendaUi> =
     source.map { AgendaUi(sections = it, loaded = true) }
 
+/**
+ * De onde partiu a gravação de um rascunho. O desfecho sai por [HomeViewModel.draftSaveOutcome]
+ * e quem o consome é a tela que pediu a gravação — a home não age sobre o desfecho da
+ * confirmação, e vice-versa.
+ */
+enum class DraftSaveOrigin {
+    /** A caixa "Pode salvar?" da home. */
+    HOME_QUICK,
+
+    /** A tela de confirmação: salvar o recado, salvar a mudança ou repetir amanhã. */
+    CONFIRM,
+
+    /** A tela "Daqui N min". */
+    QUICK_REMIND,
+}
+
+/**
+ * Como terminou a gravação de um rascunho.
+ *
+ * O desfecho mora no ViewModel, e não no `onDone` da composição que pediu a gravação,
+ * porque a escrita pode terminar depois de o aparelho girar: o `onDone` escrevia num
+ * estado já descartado, a caixa "Pode salvar?" continuava cheia e sem confirmação
+ * nenhuma, e o toque seguinte salvava o mesmo recado de novo — duas tarefas, dois
+ * alarmes. A falha tinha o mesmo destino, calada.
+ */
+sealed interface DraftSaveOutcome {
+    /**
+     * Identidade do evento. Dois desfechos iguais em sequência — o mesmo recado salvo
+     * dentro do mesmo minuto, que dá a mesma frase — são coisas diferentes, e o
+     * `StateFlow` não emite valor igual ao atual: sem esta identidade o segundo desfecho
+     * não chegava a ninguém, a tela ficava esperando e salvava de novo a cada toque.
+     * Ninguém decide nada por ele.
+     */
+    val seq: Long
+
+    val origin: DraftSaveOrigin
+
+    /**
+     * Gravou: [message] é o que a tela anuncia. [usedInexactAlarm] é o aviso de alarme
+     * inexato a deixar no estado da home; é nulo quando a ação não tem opinião sobre ele
+     * (salvar uma mudança não agenda alarme novo).
+     */
+    data class Saved(
+        override val seq: Long,
+        override val origin: DraftSaveOrigin,
+        val message: String,
+        val usedInexactAlarm: Boolean? = null,
+    ) : DraftSaveOutcome
+
+    /** Não gravou: [message] é o que a tela mostra, com o rascunho ainda no lugar. */
+    data class Failed(
+        override val seq: Long,
+        override val origin: DraftSaveOrigin,
+        val message: String,
+    ) : DraftSaveOutcome
+}
+
 private const val TAG = "FalaAgendaHome"
 
 class HomeViewModel(
@@ -78,6 +135,17 @@ class HomeViewModel(
     private val _writeError = MutableStateFlow<String?>(null)
     val writeError: StateFlow<String?> = _writeError
 
+    /**
+     * O desfecho da última gravação de rascunho, esperando a tela que a pediu. Fica aqui
+     * — e não no `onDone` da composição — porque a escrita atravessa o giro do aparelho:
+     * quem volta encontra o desfecho e age, uma vez só.
+     */
+    private val _draftSaveOutcome = MutableStateFlow<DraftSaveOutcome?>(null)
+    val draftSaveOutcome: StateFlow<DraftSaveOutcome?> = _draftSaveOutcome
+
+    /** Ver [DraftSaveOutcome.seq]: é o que faz dois desfechos iguais serem dois eventos. */
+    private var outcomeSeq = 0L
+
     init {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -93,6 +161,11 @@ class HomeViewModel(
 
     fun consumeWriteError() {
         _writeError.value = null
+    }
+
+    /** A tela agiu sobre o desfecho: ele não volta numa próxima composição. */
+    fun consumeDraftSaveOutcome() {
+        _draftSaveOutcome.value = null
     }
 
     /**
@@ -127,19 +200,32 @@ class HomeViewModel(
         if (onError != null) onError(message) else _writeError.value = message
     }
 
-    fun saveDraft(draft: ParsedTaskDraft, onDone: (Boolean) -> Unit, onError: ((String) -> Unit)? = null) {
-        viewModelScope.launch {
-            _busy.value = true
-            try {
-                val result = withContext(Dispatchers.IO) { container.tasks.saveDraft(draft) }
-                onDone(result.usedInexactAlarm)
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                fail("Não consegui salvar o recado.", error, onError)
-            } finally {
-                _busy.value = false
-            }
+    /**
+     * A gravação do rascunho não pertence à tela: o resultado sai por [draftSaveOutcome],
+     * que sobrevive ao giro, e quem pediu a gravação o consome.
+     */
+    fun saveDraft(draft: ParsedTaskDraft, origin: DraftSaveOrigin) = write(
+        action = "Não consegui salvar o recado.",
+        onError = { message -> publishFailed(origin, message) },
+        onSuccess = { result -> publishSaved(origin, announceOf(draft), result.usedInexactAlarm) },
+    ) { container.tasks.saveDraft(draft) }
+
+    private fun publishSaved(origin: DraftSaveOrigin, message: String, usedInexactAlarm: Boolean? = null) {
+        _draftSaveOutcome.value = DraftSaveOutcome.Saved(++outcomeSeq, origin, message, usedInexactAlarm)
+    }
+
+    private fun publishFailed(origin: DraftSaveOrigin, message: String) {
+        _draftSaveOutcome.value = DraftSaveOutcome.Failed(++outcomeSeq, origin, message)
+    }
+
+    /** O que se anuncia ao salvar: o horário em que o aviso vai tocar. */
+    private fun announceOf(draft: ParsedTaskDraft): String {
+        val date = draft.localDate
+        val time = draft.localTime
+        return if (date != null && time != null) {
+            AgendaFormat.announce(date, time, LocalDate.now())
+        } else {
+            "Tarefa salva."
         }
     }
 
@@ -222,17 +308,16 @@ class HomeViewModel(
         recurrence: RecurrenceRule,
         amountCents: Long? = null,
         observation: String = "",
-        onDone: () -> Unit = {},
-        onError: ((String) -> Unit)? = null,
     ) = write(
         action = "Não consegui salvar a mudança.",
-        onError = onError,
-        onSuccess = { onDone() },
+        onError = { message -> publishFailed(DraftSaveOrigin.CONFIRM, message) },
+        // Salvar uma mudança não agenda alarme novo: o aviso de alarme inexato fica onde está.
+        onSuccess = { publishSaved(DraftSaveOrigin.CONFIRM, AgendaFormat.announce(date, time, LocalDate.now())) },
     ) {
         container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)
     }
 
-    fun repeatTomorrow(item: AgendaItem, onDone: (String) -> Unit = {}) {
+    fun repeatTomorrow(item: AgendaItem) {
         val tomorrow = LocalDate.now().plusDays(1)
         val draft = ParsedTaskDraft(
             title = item.series.title,
@@ -247,10 +332,8 @@ class HomeViewModel(
             amountCents = item.series.amountCents,
             observation = item.series.observation,
         )
-        saveDraft(draft, onDone = { usedInexact ->
-            setInexactWarning(usedInexact)
-            onDone(AgendaFormat.announce(tomorrow, item.series.localTime, LocalDate.now()))
-        })
+        // O anúncio sai do próprio rascunho: "amanhã às 8h" é a data e a hora dele.
+        saveDraft(draft, DraftSaveOrigin.CONFIRM)
     }
 
     suspend fun parse(text: String): ParsedTaskDraft =

@@ -33,6 +33,8 @@ import com.theopadilha.falaagenda.ui.capture.ConfirmDraftScreen
 import com.theopadilha.falaagenda.ui.capture.WriteStep
 import com.theopadilha.falaagenda.ui.capture.WriteTaskScreen
 import com.theopadilha.falaagenda.ui.capture.writeStepFor
+import com.theopadilha.falaagenda.ui.home.DraftSaveOrigin
+import com.theopadilha.falaagenda.ui.home.DraftSaveOutcome
 import com.theopadilha.falaagenda.ui.home.HomeScreen
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
 import com.theopadilha.falaagenda.ui.month.MonthSummaryScreen
@@ -204,8 +206,30 @@ fun FalaAgendaRoot(
             // Activity sem guardar o item inteiro no Bundle e sem ficar com cópia velha.
             val agendaUi by homeVm.agendaUi.collectAsState()
             val editingItem = editingItemId?.let { id -> agendaUi.sections.find(id) }
+            val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
+            // Esta tela pediu a gravação. O pedido atravessa o giro junto com o desfecho:
+            // a tela recriada age sobre o que ela mesma pediu, uma vez só.
+            var savePending by rememberSaveable { mutableStateOf(false) }
             LaunchedEffect(current) {
                 if (current == null) nav.popBackStack() else confirmError = null
+            }
+            // A escrita pode terminar depois do giro, e aí o desfecho não pode ir para o
+            // `onDone` de uma composição descartada (a tela ficava presa, sem navegar e
+            // sem aviso). Quem pediu a gravação consome o desfecho e é ele que navega.
+            LaunchedEffect(saveOutcome) {
+                val outcome = saveOutcome ?: return@LaunchedEffect
+                if (outcome.origin != DraftSaveOrigin.CONFIRM || !savePending) return@LaunchedEffect
+                homeVm.consumeDraftSaveOutcome()
+                savePending = false
+                when (outcome) {
+                    is DraftSaveOutcome.Failed -> confirmError = outcome.message
+                    is DraftSaveOutcome.Saved -> {
+                        editingItemId = null
+                        outcome.usedInexactAlarm?.let(homeVm::setInexactWarning)
+                        statusMessage = outcome.message
+                        nav.popBackStack()
+                    }
+                }
             }
             if (current != null) {
                 ConfirmDraftScreen(
@@ -250,11 +274,8 @@ fun FalaAgendaRoot(
                     },
                     onRepeat = editingItem?.let { item ->
                         {
-                            homeVm.repeatTomorrow(item) { message ->
-                                statusMessage = message
-                            }
-                            editingItemId = null
-                            nav.popBackStack()
+                            savePending = true
+                            homeVm.repeatTomorrow(item)
                         }
                     },
                     onEndSeries = editingItem?.let { item ->
@@ -272,6 +293,9 @@ fun FalaAgendaRoot(
                         val editId = editingItem?.occurrence?.id
                         val date = confirmed.localDate
                         val time = confirmed.localTime
+                        // Só registra o pedido: o desfecho chega pelo ViewModel, que
+                        // atravessa o giro.
+                        savePending = true
                         if (editId != null && date != null && time != null) {
                             homeVm.edit(
                                 editId,
@@ -281,29 +305,9 @@ fun FalaAgendaRoot(
                                 confirmed.recurrence,
                                 confirmed.amountCents,
                                 confirmed.observation,
-                                onDone = {
-                                    editingItemId = null
-                                    statusMessage = AgendaFormat.announce(date, time, LocalDate.now())
-                                    nav.popBackStack()
-                                },
-                                onError = { message -> confirmError = message },
                             )
                         } else {
-                            homeVm.saveDraft(
-                                draft = confirmed,
-                                onDone = { usedInexact ->
-                                    val savedDate = confirmed.localDate
-                                    val savedTime = confirmed.localTime
-                                    statusMessage = if (savedDate != null && savedTime != null) {
-                                        AgendaFormat.announce(savedDate, savedTime, LocalDate.now())
-                                    } else {
-                                        "Tarefa salva."
-                                    }
-                                    nav.popBackStack()
-                                    homeVm.setInexactWarning(usedInexact)
-                                },
-                                onError = { message -> confirmError = message },
-                            )
+                            homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)
                         }
                     },
                     saveError = confirmError,
@@ -355,6 +359,27 @@ fun FalaAgendaRoot(
             val minutes = entry.arguments?.getString("minutes")?.toLongOrNull() ?: 15L
             val label = if (minutes == 60L) "1 hora" else "$minutes min"
             var quickError by rememberSaveable { mutableStateOf<String?>(null) }
+            val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
+            // O pedido de gravação desta tela: sem ele, o desfecho de uma gravação antiga
+            // (desta ou de outra tela) mexeria na tela nova.
+            var savePending by rememberSaveable { mutableStateOf(false) }
+            // Só sai da tela depois que o banco confirmou, senão uma gravação que falhou
+            // joga a pessoa de volta sem ela saber que o aviso não existe. O desfecho sai
+            // do ViewModel: girar o aparelho no meio da gravação não deixa a tela presa.
+            LaunchedEffect(saveOutcome) {
+                val outcome = saveOutcome ?: return@LaunchedEffect
+                if (outcome.origin != DraftSaveOrigin.QUICK_REMIND || !savePending) return@LaunchedEffect
+                homeVm.consumeDraftSaveOutcome()
+                savePending = false
+                when (outcome) {
+                    is DraftSaveOutcome.Failed -> quickError = outcome.message
+                    is DraftSaveOutcome.Saved -> {
+                        outcome.usedInexactAlarm?.let(homeVm::setInexactWarning)
+                        statusMessage = outcome.message
+                        nav.popBackStack()
+                    }
+                }
+            }
             WriteTaskScreen(
                 heading = "Daqui $label",
                 help = "Escreva o que precisa ser feito. O aviso toca daqui $label.",
@@ -364,25 +389,19 @@ fun FalaAgendaRoot(
                 externalError = quickError,
                 onTextChanged = { quickError = null },
                 onConfirm = { title ->
-                    // Só sai da tela depois que o banco confirmou, senão uma gravação que
-                    // falhou joga a pessoa de volta sem ela saber que o aviso não existe.
-                    val quick = QuickRemind.draft(title, minutes, ZonedDateTime.now())
-                    homeVm.saveDraft(
-                        draft = quick,
-                        onDone = { usedInexact ->
-                            homeVm.setInexactWarning(usedInexact)
-                            // QuickRemind monta data e horário a partir do "daqui N
-                            // minutos": os dois vêm sempre, e o título vazio já foi
-                            // barrado na tela de escrita.
-                            statusMessage = AgendaFormat.announce(
-                                quick.localDate!!,
-                                quick.localTime!!,
-                                LocalDate.now(),
-                            )
-                            nav.popBackStack()
-                        },
-                        onError = { message -> quickError = message },
-                    )
+                    // A tela de escrita não recebe o `busy` que desabilita o botão nas
+                    // outras duas telas, e a gravação leva o tempo do alarme e do banco sem
+                    // nenhum "Salvando…": sem esta guarda, dois toques seguidos criavam
+                    // duas tarefas e dois alarmes.
+                    if (!savePending) {
+                        savePending = true
+                        // QuickRemind monta data e horário a partir do "daqui N minutos":
+                        // os dois vêm sempre, e o título vazio já foi barrado na tela.
+                        homeVm.saveDraft(
+                            draft = QuickRemind.draft(title, minutes, ZonedDateTime.now()),
+                            origin = DraftSaveOrigin.QUICK_REMIND,
+                        )
+                    }
                 },
             )
         }

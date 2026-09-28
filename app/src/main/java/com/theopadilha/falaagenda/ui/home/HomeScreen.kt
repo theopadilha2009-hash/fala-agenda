@@ -123,6 +123,7 @@ fun HomeScreen(
     val busy by viewModel.busy.collectAsState()
     val availableUpdate by viewModel.availableUpdate.collectAsState()
     val writeError by viewModel.writeError.collectAsState()
+    val saveOutcome by viewModel.draftSaveOutcome.collectAsState()
     val undoableDelete by viewModel.undoableDelete.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -133,6 +134,10 @@ fun HomeScreen(
     // O erro e o rascunho da caixa somem juntos: os dois atravessam o giro (ver o
     // `quickDraft` abaixo).
     var quickSaveError by rememberSaveable { mutableStateOf<String?>(null) }
+    // A caixa pediu a gravação. Guardado aqui para esta tela só agir sobre o desfecho da
+    // gravação dela — e para o desfecho de uma gravação já consumida não mexer na caixa
+    // de um recado novo.
+    var quickSavePending by rememberSaveable { mutableStateOf(false) }
     // Binder síncrono: se ficasse na recomposição, rodaria a cada parcial da fala.
     var batteryOk by remember { mutableStateOf(DeviceIntents.isBatteryUnrestricted(context)) }
     var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
@@ -354,6 +359,36 @@ fun HomeScreen(
         val message = writeError ?: return@LaunchedEffect
         snackbar.showSnackbar(message, duration = SnackbarDuration.Long)
         viewModel.consumeWriteError()
+    }
+
+    // O desfecho da gravação da caixa "Pode salvar?" mora no ViewModel, já fora do alcance
+    // do giro: a tela recriada o encontra esperando, fecha a caixa e anuncia — ou mostra a
+    // falha com o rascunho no lugar. O `onDone` de antes escrevia no estado da composição
+    // descartada, e o toque seguinte salvava o mesmo recado de novo (tarefa e alarme
+    // duplicados).
+    LaunchedEffect(saveOutcome) {
+        val outcome = saveOutcome ?: return@LaunchedEffect
+        if (outcome.origin != DraftSaveOrigin.HOME_QUICK || !quickSavePending) return@LaunchedEffect
+        when (outcome) {
+            // A caixa fica aberta com o recado: o aviso aparece por cima dela (snackbar
+            // atrás de um diálogo o idoso não veria).
+            is DraftSaveOutcome.Failed -> {
+                quickSaveError = outcome.message
+                viewModel.consumeDraftSaveOutcome()
+                quickSavePending = false
+            }
+            is DraftSaveOutcome.Saved -> {
+                quickDraft = null
+                outcome.usedInexactAlarm?.let(viewModel::setInexactWarning)
+                snackbar.say(outcome.message)
+                // Consumidos só depois de o aviso sair inteiro, a mesma ordem dos outros
+                // recados desta tela: girar no meio não apaga a confirmação — a tela nova
+                // ainda encontra o desfecho e o mostra de novo, em vez de fechar a caixa
+                // calada.
+                viewModel.consumeDraftSaveOutcome()
+                quickSavePending = false
+            }
+        }
     }
 
     LaunchedEffect(openOccurrenceId, agendaUi) {
@@ -692,24 +727,9 @@ fun HomeScreen(
             draft = draft,
             saving = busy,
             onSave = { confirmed ->
-                viewModel.saveDraft(
-                    draft = confirmed,
-                    onDone = { usedInexact ->
-                        quickDraft = null
-                        val date = confirmed.localDate
-                        val time = confirmed.localTime
-                        val message = if (date != null && time != null) {
-                            AgendaFormat.announce(date, time, LocalDate.now())
-                        } else {
-                            "Tarefa salva."
-                        }
-                        scope.launch { snackbar.showSnackbar(message) }
-                        viewModel.setInexactWarning(usedInexact)
-                    },
-                    // A caixa fica aberta com o recado: o aviso aparece por cima dela
-                    // (snackbar atrás de um diálogo o idoso não veria).
-                    onError = { message -> quickSaveError = message },
-                )
+                // Quem consome o desfecho é o efeito lá de cima, que sobrevive ao giro.
+                quickSavePending = true
+                viewModel.saveDraft(confirmed, DraftSaveOrigin.HOME_QUICK)
             },
             onEdit = { current ->
                 quickDraft = null

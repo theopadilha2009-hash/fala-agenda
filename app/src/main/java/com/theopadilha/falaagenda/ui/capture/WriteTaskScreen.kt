@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui.capture
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -39,13 +41,37 @@ fun WriteTaskScreen(
     confirmLabel: String,
     onConfirm: (String) -> Unit,
     onCancel: () -> Unit,
+    understanding: Boolean = false,
+    saving: Boolean = false,
     externalError: String? = null,
     onTextChanged: () -> Unit = {},
 ) {
-    var text by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
+    // O que foi ditado ou digitado não pode sumir ao girar o aparelho: o campo volta
+    // preenchido, com o mesmo texto que a pessoa escreveu.
+    var text by rememberSaveable { mutableStateOf("") }
+    var error by rememberSaveable { mutableStateOf<String?>(null) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
+    // Com IA o parse leva até ~20 s: sem isto o toque não tem resposta nenhuma, e o
+    // recado já entregue seria entregue de novo. Um por vez, como na home. A gravação
+    // (o "Daqui N min") tem o mesmo problema com o tempo do alarme e do banco, e o mesmo
+    // tratamento: o botão sai da mão dela e a tela diz que está trabalhando.
+    val busy = understanding || saving
+    // Sair no meio da gravação deixava o desfecho sem quem o anunciasse: a gravação termina
+    // no escopo do ViewModel, a tela que a pediu já não existe, e ela nunca fica sabendo se
+    // o aviso valeu — nem aparece o cartão do alarme inexato. O botão Cancelar já sai da
+    // mão dela neste estado; o gesto de voltar do sistema precisa da mesma guarda. A tela
+    // de escrever (o entendimento da fala) sai daqui com `saving` falso: o rascunho dela
+    // fica na sessão até alguém mostrá-lo, então voltar não perde nada.
+    BackHandler(enabled = saving) { }
+    val submit = {
+        val value = text.trim()
+        if (value.isBlank()) {
+            error = "Escreva o recado neste campo."
+        } else if (!busy) {
+            onConfirm(value)
+        }
+    }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
@@ -81,26 +107,20 @@ fun WriteTaskScreen(
                 isError = (externalError ?: error) != null,
                 supportingText = (externalError ?: error)?.let { { Text(it) } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(
-                    onDone = {
-                        val value = text.trim()
-                        if (value.isBlank()) {
-                            error = "Escreva o recado neste campo."
-                        } else {
-                            onConfirm(value)
-                        }
-                    },
-                ),
+                keyboardActions = KeyboardActions(onDone = { submit() }),
             )
-            PrimaryButton(confirmLabel) {
-                val value = text.trim()
-                if (value.isBlank()) {
-                    error = "Escreva o recado neste campo."
-                } else {
-                    onConfirm(value)
-                }
+            if (busy) {
+                // Ela apertou e o app está pensando: dizer isso é a diferença entre
+                // esperar e achar que o toque não pegou.
+                Text(
+                    if (understanding) "Entendendo o recado…" else "Salvando…",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
             }
-            SecondaryButton("Cancelar", onClick = onCancel)
+            PrimaryButton(confirmLabel, enabled = !busy, onClick = submit)
+            // Sair no meio da gravação deixaria o aviso salvo sem ninguém para anunciá-lo:
+            // o desfecho chega quando a tela já não existe e ela nunca sabe se valeu.
+            SecondaryButton("Cancelar", enabled = !saving, onClick = onCancel)
         }
     }
 }

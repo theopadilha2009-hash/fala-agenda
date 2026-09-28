@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -16,10 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,11 +31,14 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.data.prefs.SettingsStore
+import com.theopadilha.falaagenda.platform.DeviceIntents
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+
+private const val TAG = "FalaAgendaOnboarding"
 
 @Composable
 fun OnboardingScreen(
@@ -41,19 +46,43 @@ fun OnboardingScreen(
     settings: SettingsStore,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var micRefused by remember { mutableStateOf(false) }
+    var notifRefused by remember { mutableStateOf(false) }
+    // A saída daqui fica guardada num estado que o giro não apaga, e quem a executa é o
+    // efeito abaixo. No escopo da composição, girar o aparelho logo depois do toque
+    // cancelava a gravação do `onboardingComplete` no meio (ou antes de ela começar, no
+    // despacho) e o onboarding voltava a aparecer na abertura seguinte — ela já tinha
+    // começado a usar o aplicativo.
+    var finishing by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(finishing) {
+        if (!finishing) return@LaunchedEffect
+        try {
+            settings.setOnboardingComplete()
+        } catch (cancellation: CancellationException) {
+            // Sair de cena no meio não é falha: a tela recriada encontra a saída guardada
+            // e grava de novo.
+            throw cancellation
+        } catch (error: Exception) {
+            // A gravação não pode segurar a saída daqui: ela segue para a home do mesmo
+            // jeito, e o onboarding (e o botão) continuam valendo na próxima abertura.
+            Log.w(TAG, "Não consegui marcar o onboarding como visto.", error)
+        }
+        finishing = false
+        onFinished()
+    }
 
     fun finish() {
-        scope.launch {
-            settings.setOnboardingComplete()
-            onFinished()
-        }
+        finishing = true
     }
 
     fun requestExactAlarm() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            context.startActivity(
+            // Aparelho sem essa tela responde com ActivityNotFoundException na thread
+            // principal — o app fecharia no primeiro uso dela. Sem a tela, o toque segue
+            // para a home (é a resposta que ela espera) e o cartão de alarme exato cobre
+            // depois: aqui um recado não seria lido, a tela troca no mesmo toque.
+            DeviceIntents.open(
+                context,
                 Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                     data = Uri.parse("package:${context.packageName}")
                 },
@@ -62,8 +91,14 @@ fun OnboardingScreen(
         finish()
     }
 
-    val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        requestExactAlarm()
+    val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            requestExactAlarm()
+        } else {
+            // Negou (ou o sistema nem mostrou o pedido): sem notificação não toca lembrete
+            // nenhum. Ela sai daqui sabendo onde reativar, e o botão não a prende.
+            notifRefused = true
+        }
     }
 
     fun requestNotifications() {
@@ -119,9 +154,24 @@ fun OnboardingScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                 )
-                PrimaryButton("Continuar") { requestNotifications() }
-            } else {
-                PrimaryButton("Começar") { mic.launch(Manifest.permission.RECORD_AUDIO) }
+            }
+            if (notifRefused) {
+                Text(
+                    "Você não permitiu os avisos. Sem eles o aplicativo não consegue avisar na hora marcada.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    "Para permitir depois: Ajustes do celular → Aplicativos → Fala Agenda → Notificações.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            when {
+                // Os avisos já foram pedidos: o que falta é a tela de alarme exato.
+                notifRefused -> PrimaryButton("Continuar") { requestExactAlarm() }
+                micRefused -> PrimaryButton("Continuar") { requestNotifications() }
+                else -> PrimaryButton("Começar") { mic.launch(Manifest.permission.RECORD_AUDIO) }
             }
             SecondaryButton("Agora não") { finish() }
         }

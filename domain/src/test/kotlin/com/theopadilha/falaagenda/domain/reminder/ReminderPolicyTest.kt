@@ -3,6 +3,7 @@ package com.theopadilha.falaagenda.domain.reminder
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.domain.model.QuietHours
 import org.junit.Test
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
@@ -26,28 +27,32 @@ class ReminderPolicyTest {
     @Test
     fun repeticaoQuinzeDepoisTrintaDepoisSessenta() {
         val t0 = instant(2026, 8, 20, 10, 0)
+        val dia = LocalDate.of(2026, 8, 20)
         val s1 = ReminderPolicy.nextRepetition(
             from = t0,
             nextStep = ReminderPolicy.STEP_PLUS_15,
             zoneId = zone,
             quietHours = quiet,
             interval = ReminderPolicy.intervalAfterStep(ReminderPolicy.STEP_FIRST),
+            occurrenceDay = dia,
         )
         assertThat(s1.fireAt).isEqualTo(instant(2026, 8, 20, 10, 15))
         val s2 = ReminderPolicy.nextRepetition(
-            from = s1.fireAt,
+            from = requireNotNull(s1.fireAt),
             nextStep = ReminderPolicy.STEP_PLUS_30,
             zoneId = zone,
             quietHours = quiet,
             interval = ReminderPolicy.intervalAfterStep(ReminderPolicy.STEP_PLUS_15),
+            occurrenceDay = dia,
         )
         assertThat(s2.fireAt).isEqualTo(instant(2026, 8, 20, 10, 45))
         val s3 = ReminderPolicy.nextRepetition(
-            from = s2.fireAt,
+            from = requireNotNull(s2.fireAt),
             nextStep = ReminderPolicy.STEP_HOURLY,
             zoneId = zone,
             quietHours = quiet,
             interval = ReminderPolicy.intervalAfterStep(ReminderPolicy.STEP_PLUS_30),
+            occurrenceDay = dia,
         )
         assertThat(s3.fireAt).isEqualTo(instant(2026, 8, 20, 11, 45))
     }
@@ -61,6 +66,7 @@ class ReminderPolicyTest {
             zoneId = zone,
             quietHours = quiet,
             interval = java.time.Duration.ofMinutes(15),
+            occurrenceDay = LocalDate.of(2026, 8, 20),
         )
         assertThat(plan.fireAt).isEqualTo(instant(2026, 8, 21, 8, 0))
         assertThat(plan.skippedQuietHours).isTrue()

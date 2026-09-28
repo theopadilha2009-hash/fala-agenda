@@ -84,10 +84,12 @@ fun PrimaryButton(
 fun SecondaryButton(
     text: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 56.dp)

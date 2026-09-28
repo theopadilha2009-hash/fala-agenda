@@ -1,56 +1,78 @@
 package com.theopadilha.falaagenda.data.prefs
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.theopadilha.falaagenda.domain.model.QuietHours
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.time.LocalTime
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
-private val Context.dataStore by preferencesDataStore("fala_agenda_settings")
+// Arquivo corrompido não pode inutilizar as preferências para sempre: o handler troca o
+// arquivo pelo padrão na primeira leitura e as gravações voltam a funcionar.
+internal fun replaceCorruptedPreferences(): ReplaceFileCorruptionHandler<Preferences> =
+    ReplaceFileCorruptionHandler { emptyPreferences() }
 
-class SettingsStore(private val context: Context) {
+private val Context.dataStore by preferencesDataStore(
+    name = "fala_agenda_settings",
+    corruptionHandler = replaceCorruptedPreferences(),
+)
+
+class SettingsStore internal constructor(private val store: DataStore<Preferences>) {
+    constructor(context: Context) : this(context.dataStore)
+
     private val quietStartMin = intPreferencesKey("quiet_start_min")
     private val quietEndMin = intPreferencesKey("quiet_end_min")
     private val onboardingDone = booleanPreferencesKey("onboarding_done")
-    private val exactAlarmWarned = booleanPreferencesKey("exact_alarm_warned")
     private val themeModeKey = stringPreferencesKey("theme_mode")
 
-    val quietHours: Flow<QuietHours> = context.dataStore.data.map { prefs ->
+    // Erro de leitura (IO, disco cheio) não pode subir como exceção: o collect morre — e
+    // aí o onboarding fica num spinner eterno e o tema derruba o onCreate. Falhou a
+    // leitura, vale o padrão, como se a chave não existisse.
+    private val prefs: Flow<Preferences> = store.data.catch { emit(emptyPreferences()) }
+
+    val quietHours: Flow<QuietHours> = prefs.map { p ->
         QuietHours(
-            start = LocalTime.ofSecondOfDay(((prefs[quietStartMin] ?: (22 * 60)) * 60).toLong()),
-            end = LocalTime.ofSecondOfDay(((prefs[quietEndMin] ?: (8 * 60)) * 60).toLong()),
+            start = LocalTime.ofSecondOfDay(((p[quietStartMin] ?: (22 * 60)) * 60).toLong()),
+            end = LocalTime.ofSecondOfDay(((p[quietEndMin] ?: (8 * 60)) * 60).toLong()),
         )
     }
 
-    val onboardingComplete: Flow<Boolean> =
-        context.dataStore.data.map { it[onboardingDone] == true }
+    val onboardingComplete: Flow<Boolean> = prefs.map { it[onboardingDone] == true }
 
-    val themeMode: Flow<ThemeMode> = context.dataStore.data.map { prefs ->
-        runCatching { ThemeMode.valueOf(prefs[themeModeKey] ?: ThemeMode.SYSTEM.name) }
+    val themeMode: Flow<ThemeMode> = prefs.map { p ->
+        runCatching { ThemeMode.valueOf(p[themeModeKey] ?: ThemeMode.SYSTEM.name) }
             .getOrDefault(ThemeMode.SYSTEM)
     }
 
+    // Gravação que falha sobe para quem chamou: a tela de ajustes só anuncia "atualizado"
+    // depois que isto volta sem exceção. Engolir o erro aqui deixava o cartão com o horário
+    // antigo e a tela dizendo que tinha salvo. Cada chamador trata — nenhum deles pode
+    // deixar a exceção derrubar o processo.
     suspend fun setQuietHours(hours: QuietHours) {
-        context.dataStore.edit {
+        store.edit {
             it[quietStartMin] = hours.start.hour * 60 + hours.start.minute
             it[quietEndMin] = hours.end.hour * 60 + hours.end.minute
         }
     }
 
     suspend fun setOnboardingComplete() {
-        context.dataStore.edit { it[onboardingDone] = true }
+        store.edit { it[onboardingDone] = true }
     }
 
     suspend fun setThemeMode(mode: ThemeMode) {
-        context.dataStore.edit { it[themeModeKey] = mode.name }
+        store.edit { it[themeModeKey] = mode.name }
     }
 
     suspend fun currentQuietHours(): QuietHours = quietHours.first()

@@ -1,7 +1,6 @@
 package com.theopadilha.falaagenda.ui.home
 
 import android.Manifest
-import android.app.Activity
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
@@ -81,6 +80,7 @@ import com.theopadilha.falaagenda.reminders.NotificationHelper
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
+import com.theopadilha.falaagenda.ui.DraftSaver
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
@@ -110,26 +110,40 @@ fun HomeScreen(
     onQuick: (Long) -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
-    statusMessage: String? = null,
-    onStatusConsumed: () -> Unit = {},
     openOccurrenceId: String? = null,
     onOpenOccurrenceConsumed: () -> Unit = {},
 ) {
-    val agenda by viewModel.agenda.collectAsState()
+    val agendaUi by viewModel.agendaUi.collectAsState()
+    val agenda = agendaUi.sections
     val voiceUi by voice.ui.collectAsState()
+    val speech by viewModel.speech.state.collectAsState()
     val inexact by viewModel.inexactWarning.collectAsState()
     val busy by viewModel.busy.collectAsState()
     val availableUpdate by viewModel.availableUpdate.collectAsState()
     val writeError by viewModel.writeError.collectAsState()
+    val saveOutcome by viewModel.draftSaveOutcome.collectAsState()
+    // Os pedidos de gravação cujo desfecho ainda não foi mostrado a ninguém: é a gravação
+    // *desta* caixa, e não o `busy` do ViewModel, que também fica verdadeiro para a escrita
+    // de outra tela.
+    val pendingSaves by viewModel.pendingDraftSaves.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var widgetHelp by remember { mutableStateOf(false) }
-    var quickSaveError by remember { mutableStateOf<String?>(null) }
-    val batteryOk = DeviceIntents.isBatteryUnrestricted(context)
-    val activity = context as? Activity
+    // O erro e o rascunho da caixa somem juntos: os dois atravessam o giro (ver o
+    // `quickDraft` abaixo).
+    var quickSaveError by rememberSaveable { mutableStateOf<String?>(null) }
+    // A caixa pediu a gravação, e o id do pedido é o que a tela recriada pelo giro
+    // reconhece como dela: o booleano de antes voltava do Bundle valendo verdadeiro e a
+    // caixa consumia o desfecho de uma gravação anterior como se fosse o dela.
+    // `NO_SAVE_REQUEST` é "nenhum pedido em voo".
+    var quickSaveRequest by rememberSaveable { mutableStateOf(NO_SAVE_REQUEST) }
+    val quickSaving = quickSaveRequest in pendingSaves
+    // Binder síncrono: se ficasse na recomposição, rodaria a cada parcial da fala.
+    var batteryOk by remember { mutableStateOf(DeviceIntents.isBatteryUnrestricted(context)) }
     var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
     var micRefused by rememberSaveable { mutableStateOf(false) }
     var alerts by remember { mutableStateOf(reminderAlerts(context)) }
@@ -138,35 +152,59 @@ fun HomeScreen(
         // Voltou dos Ajustes: o cartão some sozinho quando o que faltava foi ligado.
         micGranted = hasMicPermission(context)
         alerts = reminderAlerts(context)
+        batteryOk = DeviceIntents.isBatteryUnrestricted(context)
     }
 
-    // Negado de vez: o Android não mostra mais o pedido e só os Ajustes resolvem.
-    // Binder síncrono dentro do remember: a home recompõe a cada parcial da fala.
-    val micBlocked = remember(micGranted, micRefused, activity) {
-        !micGranted && micRefused && activity != null &&
-            !activity.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)
-    }
+    // Negado nesta sessão: no Android 11+ a rationale continua true depois da primeira
+    // recusa, e o pedido seguinte nem abre a caixa. Sem o cartão já na primeira recusa
+    // ela ficaria só com um aviso de 4 s e sem caminho para os Ajustes.
+    // Quem nunca foi perguntado (micRefused ainda false) não vê cartão nenhum.
+    val micBlocked = !micGranted && micRefused
+
+    // A fala já foi ouvida e agora está sendo entendida (com IA o parse leva até 20 s).
+    // O estado vem do ViewModel: girar o aparelho no meio não devolve o microfone à mão
+    // dela nem joga fora o recado que está sendo entendido.
+    val understanding = speech.understanding
+    // O menu fecha e o que ela tocou acontece no mesmo toque — sem esperar a animação.
+    // Enquanto a ação esperava o `close()` (que é suspenso), girar o aparelho no meio
+    // cancelava a corrotina e o destino nunca abria, calado.
     val closeAnd: (() -> Unit) -> Unit = { action ->
-        scope.launch {
-            drawerState.close()
-            action()
+        scope.launch { drawerState.close() }
+        action()
+    }
+    // Tela de sistema não existe em todo aparelho: o DeviceIntents.open concentra o
+    // runCatching e diz se abriu. O toque nunca fica sem resposta — sem isso o
+    // ActivityNotFoundException solto fechava o app na mão dela.
+    val openOrReport: (Intent, String) -> Unit = { intent, failure ->
+        if (!DeviceIntents.open(context, intent)) {
+            scope.launch { snackbar.showSnackbar(failure) }
         }
     }
-    val completeWithUndo: (AgendaItem) -> Unit = { item ->
-        viewModel.complete(item) {
-            scope.launch {
-                val result = snackbar.showSnackbar(
-                    message = "Feito.",
-                    actionLabel = "Desfazer",
-                    duration = SnackbarDuration.Long,
-                )
-                if (result == SnackbarResult.ActionPerformed) {
-                    viewModel.undoComplete()
-                }
-            }
+    // "Enviar o aplicativo" copia o APK instalado inteiro (segundos) antes de abrir o
+    // seletor: girar no meio cancelava a cópia e o seletor nunca abria, calado. O pedido
+    // fica guardado até o seletor abrir — a tela recriada ainda o encontra.
+    var shareApp by rememberSaveable { mutableStateOf(false) }
+    // O "não está mais na agenda" do aviso tocado: guardado até sair na tela.
+    var missingNotice by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(shareApp) {
+        if (!shareApp) return@LaunchedEffect
+        val apk = withContext(Dispatchers.IO) {
+            runCatching { DeviceIntents.copyInstalledApk(context) }.getOrNull()
         }
+        openOrReport(
+            DeviceIntents.shareChooser(context, apk),
+            "Não consegui abrir o compartilhamento neste celular.",
+        )
+        shareApp = false
     }
-    var quickDraft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
+    val completeWithUndo: (AgendaItem) -> Unit = { item -> viewModel.complete(item) }
+    // A caixa "Pode salvar?" guarda o rascunho num estado que a rotação recria: o efeito
+    // abaixo já tirou o recado da sessão para abrir a caixa (consumeDraft), então um
+    // `remember` aqui apagava a fala reconhecida e parseada no giro, sem erro nenhum.
+    // É o mesmo `DraftSaver` que a tela de confirmação usa em FalaAgendaRoot.
+    var quickDraft by rememberSaveable(stateSaver = DraftSaver) {
+        mutableStateOf<ParsedTaskDraft?>(null)
+    }
     val handleDraft: (ParsedTaskDraft) -> Unit = { draft ->
         if (draft.canQuickConfirm(Instant.now(), ZoneId.systemDefault())) {
             quickDraft = draft
@@ -220,14 +258,16 @@ fun HomeScreen(
     }
 
     val onMic: () -> Unit = {
-        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        if (voiceUi.state == VoiceState.PREPARING ||
-            voiceUi.state == VoiceState.LISTENING ||
-            voiceUi.state == VoiceState.UNDERSTANDING
-        ) {
-            voice.cancel()
-        } else {
-            startVoice()
+        if (!understanding) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            if (voiceUi.state == VoiceState.PREPARING ||
+                voiceUi.state == VoiceState.LISTENING ||
+                voiceUi.state == VoiceState.UNDERSTANDING
+            ) {
+                voice.cancel()
+            } else {
+                startVoice()
+            }
         }
     }
 
@@ -251,12 +291,27 @@ fun HomeScreen(
         val text = voiceUi.finalText?.trim().orEmpty()
         if (text.isEmpty()) return@LaunchedEffect
         voice.consumeFinal()
-        val draft = runCatching { viewModel.parse(text) }.getOrNull()
-        if (draft == null) {
-            snackbar.showSnackbar("Não consegui entender o recado. Tente de novo ou escreva a tarefa.")
-            return@LaunchedEffect
-        }
+        // O parse vive no ViewModel, fora do escopo da tela: consumir o texto final zera
+        // `finalText` e o LaunchedEffect seria cancelado no meio do parse, calado.
+        viewModel.speech.understand(text)
+    }
+
+    // O recado entendido pode chegar com a home fora da tela (rotação, Ajustes, Mês): fica
+    // guardado na sessão até alguém mostrá-lo, em vez de sumir com o rascunho.
+    LaunchedEffect(speech.draft) {
+        val draft = speech.draft ?: return@LaunchedEffect
+        viewModel.speech.consumeDraft()
         handleDraft(draft)
+    }
+
+    // O erro da fala mora na sessão até alguém mostrá-lo, e quem o tira de lá é esta tela:
+    // o `consumeError` só roda depois que o aviso saiu inteiro. Consumido antes, girar o
+    // aparelho com o aviso na tela (que fica segundos suspenso neste ponto) apagava a
+    // mensagem para sempre — a fala falhava e ela não ficava sabendo.
+    LaunchedEffect(speech.error) {
+        val message = speech.error ?: return@LaunchedEffect
+        snackbar.say(message)
+        viewModel.speech.consumeError()
     }
 
     LaunchedEffect(inexact) {
@@ -265,25 +320,100 @@ fun HomeScreen(
         }
     }
 
+    // O recado da última ação mora no ViewModel (ver `StatusMessage`): a escrita atravessa
+    // o giro, e o `onDone` de antes escrevia no estado da composição descartada — a tarefa
+    // era concluída, excluída ou adiada e o aviso não aparecia.
     LaunchedEffect(statusMessage) {
         val message = statusMessage ?: return@LaunchedEffect
-        snackbar.showSnackbar(message)
-        onStatusConsumed()
+        val undo = message.undo
+        when (undo) {
+            null -> snackbar.say(message.text)
+            // O desfazer anda junto do aviso — e desfaz o item *deste* recado, que viaja
+            // dentro dele. O aviso só é dado por consumido quando ele sai da tela: sem
+            // isso, o giro no meio do aviso apagava a frase e deixava o desfazer armado —
+            // o próximo aviso qualquer aparecia com um "Desfazer" que ressuscitava uma ação
+            // já aceita.
+            is StatusMessage.Undo.Complete -> {
+                val result = snackbar.say(message.text, actionLabel = "Desfazer", duration = SnackbarDuration.Long)
+                if (result == SnackbarResult.ActionPerformed) viewModel.undoComplete(undo.item)
+            }
+            is StatusMessage.Undo.Delete -> {
+                val result = snackbar.say(message.text, actionLabel = "Desfazer", duration = SnackbarDuration.Long)
+                if (result == SnackbarResult.ActionPerformed) viewModel.undoDelete(undo.item)
+            }
+        }
+        // Consumido só depois de o aviso sair inteiro: girar no meio não apaga o recado —
+        // a tela nova ainda o encontra esperando e o mostra de novo.
+        viewModel.consumeStatusMessage()
     }
 
+    // Mesmo desenho dos outros avisos: a falha de gravação fica no ViewModel até a tela
+    // mostrá-la inteira. Consumida antes, o giro apagava o único lugar onde ela aparece.
     LaunchedEffect(writeError) {
         val message = writeError ?: return@LaunchedEffect
-        viewModel.consumeWriteError()
         snackbar.showSnackbar(message, duration = SnackbarDuration.Long)
+        viewModel.consumeWriteError()
     }
 
-    LaunchedEffect(openOccurrenceId, agenda) {
+    // O desfecho da gravação da caixa "Pode salvar?" mora no ViewModel, já fora do alcance
+    // do giro: a tela recriada o encontra esperando, fecha a caixa e anuncia — ou mostra a
+    // falha com o rascunho no lugar. O `onDone` de antes escrevia no estado da composição
+    // descartada, e o toque seguinte salvava o mesmo recado de novo (tarefa e alarme
+    // duplicados).
+    LaunchedEffect(saveOutcome) {
+        val outcome = saveOutcome ?: return@LaunchedEffect
+        if (outcome.origin != DraftSaveOrigin.HOME_QUICK || outcome.requestId != quickSaveRequest) {
+            return@LaunchedEffect
+        }
+        when (outcome) {
+            // A caixa fica aberta com o recado: o aviso aparece por cima dela (snackbar
+            // atrás de um diálogo o idoso não veria).
+            is DraftSaveOutcome.Failed -> {
+                quickSaveError = outcome.message
+                viewModel.consumeDraftSaveOutcome()
+                quickSaveRequest = NO_SAVE_REQUEST
+            }
+            is DraftSaveOutcome.Saved -> {
+                quickDraft = null
+                outcome.usedInexactAlarm?.let(viewModel::setInexactWarning)
+                snackbar.say(outcome.message)
+                // Consumidos só depois de o aviso sair inteiro, a mesma ordem dos outros
+                // recados desta tela: girar no meio não apaga a confirmação — a tela nova
+                // ainda encontra o desfecho e o mostra de novo, em vez de fechar a caixa
+                // calada.
+                viewModel.consumeDraftSaveOutcome()
+                quickSaveRequest = NO_SAVE_REQUEST
+            }
+        }
+    }
+
+    LaunchedEffect(openOccurrenceId, agendaUi) {
         val id = openOccurrenceId ?: return@LaunchedEffect
-        val item = agenda.find(id)
+        val item = agendaUi.sections.find(id)
         if (item != null) {
             onEditItem(item)
             onOpenOccurrenceConsumed()
+            return@LaunchedEffect
         }
+        // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou
+        // a agenda ainda não chegou do banco. Só o segundo caso merece espera — e o
+        // "carregou" sai do mesmo valor que a busca de cima, então ele não pode ser de
+        // uma lista que não passou por aqui.
+        if (agendaUi.loaded) {
+            // O pedido é dado por consumido aqui, mas o aviso fica guardado até sair
+            // inteiro: este efeito depende da agenda, que muda sozinha (o alarme grava, o
+            // dia vira) — deixar o pedido de pé faria a mesma frase voltar do começo a
+            // cada mudança. Girar com o aviso na tela não o apaga: a tela recriada ainda
+            // o encontra esperando.
+            onOpenOccurrenceConsumed()
+            missingNotice = true
+        }
+    }
+
+    LaunchedEffect(missingNotice) {
+        if (!missingNotice) return@LaunchedEffect
+        snackbar.showSnackbar("Esta tarefa não está mais na agenda.")
+        missingNotice = false
     }
 
     ModalNavigationDrawer(
@@ -296,34 +426,37 @@ fun HomeScreen(
                 onUpdate = { closeAnd(onOpenUpdate) },
                 onShareDay = {
                     closeAnd {
+                        val today = LocalDate.now()
                         val text = AgendaFormat.todayShare(
                             agenda.today.map {
                                 AgendaFormat.DayShareLine(
                                     title = it.series.title,
                                     time = it.series.localTime,
                                     observation = it.series.observation,
+                                    // A pendente que atravessou a meia-noite entra em
+                                    // "Hoje": sem a marca, ela era mandada para a família
+                                    // como se fosse de hoje.
+                                    dayMark = AgendaFormat.shareDayMark(it.occurrence.localDate, today),
                                 )
                             },
                         )
-                        context.startActivity(DeviceIntents.shareText(text, "Enviar o dia"))
+                        openOrReport(
+                            DeviceIntents.shareText(text, "Enviar o dia"),
+                            "Não consegui abrir o compartilhamento neste celular.",
+                        )
                     }
                 },
-                onShare = {
-                    closeAnd {
-                        scope.launch {
-                            val apk = withContext(Dispatchers.IO) {
-                                runCatching { DeviceIntents.copyInstalledApk(context) }.getOrNull()
-                            }
-                            context.startActivity(DeviceIntents.shareChooser(context, apk))
-                        }
-                    }
-                },
+                onShare = { closeAnd { shareApp = true } },
                 onBattery = {
                     closeAnd {
-                        context.startActivity(DeviceIntents.batterySettings(context))
+                        val opened = DeviceIntents.open(context, DeviceIntents.batterySettings(context))
                         scope.launch {
                             snackbar.showSnackbar(
-                                "Se o aviso continuar falhando no Xiaomi/Samsung: Ajustes → Apps → Fala Agenda → bateria sem restrição e autostart.",
+                                if (opened) {
+                                    "Se o aviso continuar falhando no Xiaomi/Samsung: Ajustes → Apps → Fala Agenda → bateria sem restrição e autostart."
+                                } else {
+                                    "Não consegui abrir os ajustes de bateria deste celular."
+                                },
                             )
                         }
                     }
@@ -339,10 +472,12 @@ fun HomeScreen(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             MicDock(
-                state = voiceUi.state,
+                state = if (understanding) VoiceState.UNDERSTANDING else voiceUi.state,
                 partial = voiceUi.partial,
                 error = voiceUi.error,
-                onMic = onMic,
+                // Entendendo o recado o botão sai da mão dela: um toque aqui não pode
+                // cancelar a fala que ainda está virando tarefa.
+                onMic = if (understanding) null else onMic,
                 onWrite = onWrite,
                 onQuick = onQuick,
             )
@@ -413,11 +548,12 @@ fun HomeScreen(
                                 )
                                 TextButton(
                                     onClick = {
-                                        context.startActivity(
+                                        openOrReport(
                                             Intent(
                                                 Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                                 Uri.parse("package:${context.packageName}"),
                                             ),
+                                            "Não consegui abrir os ajustes deste celular.",
                                         )
                                     },
                                     modifier = Modifier.heightIn(min = 56.dp),
@@ -448,9 +584,10 @@ fun HomeScreen(
                                 )
                                 TextButton(
                                     onClick = {
-                                        context.startActivity(
+                                        openOrReport(
                                             Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                                                 .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                                            "Não consegui abrir os ajustes de aviso deste celular.",
                                         )
                                     },
                                     modifier = Modifier.heightIn(min = 56.dp),
@@ -485,10 +622,11 @@ fun HomeScreen(
                                 Text("O Android não deixou o alarme exato. A tarefa foi salva.")
                                 TextButton(onClick = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        context.startActivity(
+                                        openOrReport(
                                             Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                                                 data = Uri.parse("package:${context.packageName}")
                                             },
+                                            "Não consegui abrir os ajustes de alarme deste celular.",
                                         )
                                     }
                                     viewModel.setInexactWarning(false)
@@ -583,26 +721,16 @@ fun HomeScreen(
     quickDraft?.let { draft ->
         QuickConfirmDialog(
             draft = draft,
-            saving = busy,
+            // A gravação *desta* caixa: o `busy` do ViewModel é de qualquer escrita, e com
+            // ele a caixa dizia "Salvando…" (e travava a saída) por causa de uma gravação
+            // de outra tela.
+            saving = quickSaving,
             onSave = { confirmed ->
-                viewModel.saveDraft(
-                    draft = confirmed,
-                    onDone = { usedInexact ->
-                        quickDraft = null
-                        val date = confirmed.localDate
-                        val time = confirmed.localTime
-                        val message = if (date != null && time != null) {
-                            AgendaFormat.announce(date, time, LocalDate.now())
-                        } else {
-                            "Tarefa salva."
-                        }
-                        scope.launch { snackbar.showSnackbar(message) }
-                        viewModel.setInexactWarning(usedInexact)
-                    },
-                    // A caixa fica aberta com o recado: o aviso aparece por cima dela
-                    // (snackbar atrás de um diálogo o idoso não veria).
-                    onError = { message -> quickSaveError = message },
-                )
+                // Quem consome o desfecho é o efeito lá de cima, que sobrevive ao giro — e
+                // pelo id que este pedido devolve.
+                if (!quickSaving) {
+                    quickSaveRequest = viewModel.saveDraft(confirmed, DraftSaveOrigin.HOME_QUICK)
+                }
             },
             onEdit = { current ->
                 quickDraft = null
@@ -627,6 +755,19 @@ fun HomeScreen(
     }
 }
 
+/**
+ * Aviso novo não fica na fila atrás do antigo: o desfazer vive 10 s na tela e a resposta
+ * do toque seguinte chegaria depois desse tempo todo — o mesmo que não chegar.
+ */
+private suspend fun SnackbarHostState.say(
+    message: String,
+    actionLabel: String? = null,
+    duration: SnackbarDuration = SnackbarDuration.Short,
+): SnackbarResult {
+    currentSnackbarData?.dismiss()
+    return showSnackbar(message = message, actionLabel = actionLabel, duration = duration)
+}
+
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -649,21 +790,23 @@ private fun MicDock(
     state: VoiceState,
     partial: String,
     error: String?,
-    onMic: () -> Unit,
+    onMic: (() -> Unit)?,
     onWrite: () -> Unit,
     onQuick: (Long) -> Unit,
 ) {
     val label = when (state) {
         VoiceState.PREPARING -> "Espera um instante…"
         VoiceState.LISTENING -> "Pode falar agora"
-        VoiceState.UNDERSTANDING -> "Entendendo…"
+        VoiceState.UNDERSTANDING -> "Entendendo o recado…"
         VoiceState.ERROR -> error ?: "Não consegui ouvir"
         VoiceState.IDLE -> "Toque no microfone e fale"
     }
-    val action = when (state) {
-        VoiceState.PREPARING, VoiceState.LISTENING, VoiceState.UNDERSTANDING -> "Parar de ouvir"
-        VoiceState.ERROR -> "Tentar de novo. $label"
-        VoiceState.IDLE -> "Falar uma tarefa"
+    val action = when {
+        // Sem clique, o que a leitura de tela anuncia é o que está acontecendo.
+        onMic == null -> "Entendendo o recado, espere um instante"
+        state == VoiceState.ERROR -> "Tentar de novo. $label"
+        state == VoiceState.IDLE -> "Falar uma tarefa"
+        else -> "Parar de ouvir"
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -739,16 +882,30 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
             val date = AgendaFormat.dateLabel(item.occurrence.localDate, today)
             val time = AgendaFormat.time(item.series.localTime)
             val relative = AgendaFormat.fromNow(item.occurrence.scheduledAt, Instant.now())
+            // A pendente de ontem vive na seção "Hoje": ela diz que está atrasada em vez de
+            // um "há N h" que se lê igual ao das tarefas de hoje.
+            val late = if (item.occurrence.status == OccurrenceStatus.PENDING) {
+                AgendaFormat.lateMark(item.occurrence.localDate, today)
+            } else {
+                null
+            }
             val detail = buildString {
                 append(date)
                 append(" · ")
                 append(time)
-                if (relative != null && item.occurrence.status == OccurrenceStatus.PENDING) {
-                    append(" · ")
-                    append(relative)
-                } else {
-                    append(" · ")
-                    append(item.series.recurrence.describePtBr())
+                when {
+                    late != null -> {
+                        append(" · ")
+                        append(late)
+                    }
+                    relative != null && item.occurrence.status == OccurrenceStatus.PENDING -> {
+                        append(" · ")
+                        append(relative)
+                    }
+                    else -> {
+                        append(" · ")
+                        append(item.series.recurrence.describePtBr())
+                    }
                 }
                 item.series.amountCents?.let { cents ->
                     append(" · ")

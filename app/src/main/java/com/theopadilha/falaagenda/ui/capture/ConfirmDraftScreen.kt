@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui.capture
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -31,6 +32,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -77,21 +80,23 @@ fun ConfirmDraftScreen(
     onEndSeries: (() -> Unit)? = null,
     saveError: String? = null,
 ) {
-    var title by remember { mutableStateOf(initial.title) }
-    var date by remember { mutableStateOf(initial.localDate) }
-    var time by remember { mutableStateOf(initial.localTime) }
-    var kind by remember { mutableStateOf(initial.recurrence.kind) }
-    var weekDays by remember {
+    // Tudo o que a pessoa mexeu aqui tem que atravessar a recriação da tela: girar o
+    // aparelho no meio da conferência não pode devolver o recado do parser.
+    var title by rememberSaveable { mutableStateOf(initial.title) }
+    var date by rememberSaveable(stateSaver = NullableLocalDateSaver) { mutableStateOf(initial.localDate) }
+    var time by rememberSaveable(stateSaver = NullableLocalTimeSaver) { mutableStateOf(initial.localTime) }
+    var kind by rememberSaveable { mutableStateOf(initial.recurrence.kind) }
+    var weekDays by rememberSaveable(stateSaver = WeekDaysSaver) {
         mutableStateOf(
             initial.recurrence.weekDays.ifEmpty {
                 initial.localDate?.let { setOf(it.dayOfWeek) } ?: emptySet()
             },
         )
     }
-    var amountText by remember {
+    var amountText by rememberSaveable {
         mutableStateOf(initial.amountCents?.let { formatAmountInput(it) }.orEmpty())
     }
-    var observation by remember { mutableStateOf(initial.observation) }
+    var observation by rememberSaveable { mutableStateOf(initial.observation) }
     var showDate by remember { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
     LaunchedEffect(editing) {
@@ -99,7 +104,7 @@ fun ConfirmDraftScreen(
         runCatching { titleFocus.requestFocus() }
     }
     var showTime by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var error by rememberSaveable { mutableStateOf<String?>(null) }
     val haptic = LocalHapticFeedback.current
 
     val missing = remember(title, date, time) {
@@ -112,6 +117,12 @@ fun ConfirmDraftScreen(
     val previewRule = remember(kind, date, weekDays) {
         recurrenceFor(kind, date ?: LocalDate.now(), weekDays)
     }
+    // A gravação é desta tela e termina no escopo do ViewModel: sair no meio deixava o
+    // desfecho sem quem o anunciasse — a tela que o pediu já não existe e ela nunca fica
+    // sabendo se salvou (nem vê o erro, que é o que importa quando não salvou). Os botões
+    // já saem da mão dela neste estado; o gesto de voltar do sistema precisa da mesma
+    // guarda.
+    BackHandler(enabled = saving) { }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
@@ -331,34 +342,39 @@ fun ConfirmDraftScreen(
                     )
                 },
             )
-            SecondaryButton("Cancelar", onClick = onCancel)
+            SecondaryButton("Cancelar", enabled = !saving, onClick = onCancel)
             if (editing) {
+                // Com uma gravação desta tela em voo, nenhuma outra ação sai daqui: duas
+                // escritas concorrentes sobre a mesma ocorrência (salvar e excluir, adiar
+                // duas vezes) se atropelam no banco, e a tela sai no mesmo toque de
+                // qualquer uma delas — sem tempo de ver a anterior ter falhado.
                 Text("Esta tarefa", style = MaterialTheme.typography.titleMedium)
                 if (
                     (occurrenceStatus == OccurrenceStatus.PENDING || occurrenceStatus == OccurrenceStatus.MISSED) &&
                     onComplete != null
                 ) {
-                    PrimaryButton("Concluir") { onComplete() }
+                    PrimaryButton("Concluir", enabled = !saving) { onComplete() }
                 }
                 if (occurrenceStatus == OccurrenceStatus.PENDING && onSnooze != null) {
                     Text("Adiar", style = MaterialTheme.typography.bodyLarge)
                     ChipRow(
                         options = listOf("10 min" to 10L, "30 min" to 30L, "1 hora" to 60L),
                         selected = null,
+                        enabled = !saving,
                         onPick = onSnooze,
                     )
                 }
                 if (occurrenceStatus == OccurrenceStatus.MISSED && !isRecurring && onRetry != null) {
-                    PrimaryButton("Fazer hoje") { onRetry() }
+                    PrimaryButton("Fazer hoje", enabled = !saving) { onRetry() }
                 }
                 if (occurrenceStatus == OccurrenceStatus.COMPLETED && !isRecurring && onRepeat != null) {
-                    PrimaryButton("Amanhã de novo") { onRepeat() }
+                    PrimaryButton("Amanhã de novo", enabled = !saving) { onRepeat() }
                 }
                 if (onDelete != null) {
-                    SecondaryButton("Excluir") { onDelete() }
+                    SecondaryButton("Excluir", enabled = !saving) { onDelete() }
                 }
                 if (isRecurring && onEndSeries != null) {
-                    SecondaryButton("Encerrar série") { onEndSeries() }
+                    SecondaryButton("Encerrar série", enabled = !saving) { onEndSeries() }
                 }
             }
             Text(
@@ -442,6 +458,7 @@ internal fun recurrenceFor(
 private fun <T> ChipRow(
     options: List<Pair<String, T>>,
     selected: T?,
+    enabled: Boolean = true,
     onPick: (T) -> Unit,
 ) {
     FlowRow(
@@ -452,6 +469,7 @@ private fun <T> ChipRow(
         options.forEach { (label, value) ->
             FilterChip(
                 selected = selected == value,
+                enabled = enabled,
                 onClick = { onPick(value) },
                 modifier = Modifier.heightIn(min = 48.dp),
                 label = { Text(label, style = MaterialTheme.typography.labelLarge) },
@@ -486,6 +504,27 @@ private fun PickerRow(
         }
     }
 }
+
+private const val NO_DATE = Long.MIN_VALUE
+private const val NO_TIME = -1
+
+/** `LocalDate`/`LocalTime`/`Set<DayOfWeek>` não cabem no Bundle: vão como epoch, segundo do dia e nomes. */
+private val NullableLocalDateSaver = Saver<LocalDate?, Long>(
+    save = { it?.toEpochDay() ?: NO_DATE },
+    restore = { epochDay -> if (epochDay == NO_DATE) null else LocalDate.ofEpochDay(epochDay) },
+)
+
+private val NullableLocalTimeSaver = Saver<LocalTime?, Int>(
+    save = { it?.toSecondOfDay() ?: NO_TIME },
+    restore = { secondOfDay -> if (secondOfDay == NO_TIME) null else LocalTime.ofSecondOfDay(secondOfDay.toLong()) },
+)
+
+private val WeekDaysSaver = Saver<Set<DayOfWeek>, ArrayList<String>>(
+    save = { days -> ArrayList(days.sortedBy { it.value }.map { it.name }) },
+    restore = { names ->
+        names.mapNotNull { name -> DayOfWeek.entries.firstOrNull { it.name == name } }.toSet()
+    },
+)
 
 private fun LocalDate.toUtcMillis(): Long =
     atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()

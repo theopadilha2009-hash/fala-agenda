@@ -19,7 +19,9 @@ import com.theopadilha.falaagenda.domain.time.AppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
@@ -44,23 +46,25 @@ class TaskRepository(
     private val clock: AppClock,
     private val scheduler: AlarmScheduler,
 ) {
-    @Volatile
-    private var cachedAgenda = AgendaSections(emptyList(), emptyList(), emptyList(), emptyList())
-
-    fun latestAgenda(): AgendaSections = cachedAgenda
+    /**
+     * Um escritor por vez. Todo start de processo dispara `rescheduleAll` num escopo de
+     * fundo e o receiver do alarme pode disparar `onAlarmFired` em paralelo: sem isto a
+     * varredura lia o banco antes e gravava depois do disparo (ou de um "Excluir" da
+     * usuária) e desfazia o que o outro caminho tinha acabado de decidir.
+     *
+     * Só as mutações passam por aqui — a agenda lida pela tela não espera por elas.
+     */
+    private val writer = Mutex()
 
     fun observeAgenda(): Flow<AgendaSections> = combine(
         seriesDao.observeAll(),
         occurrenceDao.observeAll(),
     ) { seriesRows, occurrenceRows ->
         sectionsOf(seriesRows, occurrenceRows)
-    }.onEach { cachedAgenda = it }
-
-    suspend fun snapshotAgenda(): AgendaSections {
-        val sections = sectionsOf(seriesDao.getAll(), occurrenceDao.getAll())
-        cachedAgenda = sections
-        return sections
     }
+
+    suspend fun snapshotAgenda(): AgendaSections =
+        sectionsOf(seriesDao.getAll(), occurrenceDao.getAll())
 
     private fun sectionsOf(
         seriesRows: List<SeriesEntity>,
@@ -73,9 +77,15 @@ class TaskRepository(
         }
         val today = clock.today()
         val pending = items.filter { it.occurrence.status == OccurrenceStatus.PENDING }
+        // A pendente que atravessou a meia-noite (aviso adiado pela noite, ainda tocando)
+        // continua acionável: ela entra em "Hoje" e vem antes das de hoje, porque é a mais
+        // urgente. Fora daqui ela não caía em nenhuma das quatro seções — invisível no app,
+        // e o toque na notificação respondia "Esta tarefa não está mais na agenda".
+        val (atrasadas, deHoje) = pending.partition { it.occurrence.localDate.isBefore(today) }
         return AgendaSections(
-            today = pending.filter { it.occurrence.localDate == today }
-                .sortedBy { it.occurrence.scheduledAt },
+            today = atrasadas.sortedBy { it.occurrence.scheduledAt } +
+                deHoje.filter { it.occurrence.localDate == today }
+                    .sortedBy { it.occurrence.scheduledAt },
             upcoming = pending.filter { it.occurrence.localDate.isAfter(today) }
                 .sortedBy { it.occurrence.scheduledAt },
             completed = items.filter { it.occurrence.status == OccurrenceStatus.COMPLETED }
@@ -85,7 +95,7 @@ class TaskRepository(
         )
     }
 
-    suspend fun saveDraft(draft: ParsedTaskDraft): SaveResult {
+    suspend fun saveDraft(draft: ParsedTaskDraft): SaveResult = writer.withLock {
         require(draft.isComplete) { "Confirme título, data e horário antes de salvar." }
         val now = clock.instant()
         val zone = clock.zoneId()
@@ -115,26 +125,33 @@ class TaskRepository(
                 nextReminderAt = null,
             )
         }
-        seriesDao.upsert(series.toEntity())
         val scheduled = if (occurrence.status == OccurrenceStatus.PENDING) {
             scheduler.schedule(occurrence, series, first = true)
         } else {
             SchedulerOutcome(inexact = false, scheduled = false)
         }
         val stored = occurrence.copy(inexactAlarm = scheduled.inexact)
-        occurrenceDao.upsert(stored.toEntity())
-        return SaveResult(series = series, occurrence = stored, usedInexactAlarm = scheduled.inexact)
+        // Série e primeira ocorrência na mesma transação: morrer entre as duas deixava a
+        // tarefa recém-cadastrada existindo só pela metade.
+        occurrenceDao.applyBatch(
+            seriesDao = seriesDao,
+            upserts = listOf(stored.toEntity()),
+            deletes = emptyList(),
+            series = series.toEntity(),
+            deleteSeriesRow = false,
+        )
+        SaveResult(series = series, occurrence = stored, usedInexactAlarm = scheduled.inexact)
     }
 
-    suspend fun complete(occurrenceId: String) {
+    suspend fun complete(occurrenceId: String) = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock
         val occurrence = row.toDomain()
         if (occurrence.status != OccurrenceStatus.PENDING &&
             occurrence.status != OccurrenceStatus.MISSED
         ) {
-            return
+            return@withLock
         }
         scheduler.cancel(occurrence.id)
         val done = occurrence.copy(
@@ -146,13 +163,19 @@ class TaskRepository(
         spawnNextIfNeeded(series, done.localDate, now)
     }
 
-    suspend fun uncomplete(item: AgendaItem) {
+    suspend fun uncomplete(item: AgendaItem) = writer.withLock {
         val now = clock.instant()
         val series = item.series.copy(endedAt = null, updatedAt = now)
-        seriesDao.upsert(series.toEntity())
+        val serieRow = series.toEntity()
         when (item.occurrence.status) {
             OccurrenceStatus.MISSED -> {
-                occurrenceDao.upsert(item.occurrence.toEntity())
+                occurrenceDao.applyBatch(
+                    seriesDao = seriesDao,
+                    upserts = listOf(item.occurrence.toEntity()),
+                    deletes = emptyList(),
+                    series = serieRow,
+                    deleteSeriesRow = false,
+                )
             }
             OccurrenceStatus.PENDING -> {
                 var occ = item.occurrence.copy(completedAt = null)
@@ -173,36 +196,65 @@ class TaskRepository(
                     series,
                     first = occ.reminderStep == 0 && occ.lastReminderAt == null && occ.snoozedUntil == null,
                 )
-                occurrenceDao.upsert(occ.copy(inexactAlarm = scheduled.inexact).toEntity())
+                occurrenceDao.applyBatch(
+                    seriesDao = seriesDao,
+                    upserts = listOf(occ.copy(inexactAlarm = scheduled.inexact).toEntity()),
+                    deletes = emptyList(),
+                    series = serieRow,
+                    deleteSeriesRow = false,
+                )
             }
-            else -> Unit
+            else -> seriesDao.upsert(serieRow)
         }
     }
 
-    suspend fun deleteOccurrence(occurrenceId: String) {
-        val row = occurrenceDao.get(occurrenceId) ?: return
+    suspend fun deleteOccurrence(occurrenceId: String) = writer.withLock {
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
         scheduler.cancel(occurrenceId)
-        occurrenceDao.delete(occurrenceId)
         val series = seriesDao.get(row.seriesId)?.toDomain()
-        val leftover = occurrenceDao.forSeries(row.seriesId)
+        val leftover = occurrenceDao.forSeries(row.seriesId).filterNot { it.id == occurrenceId }
         // "Excluir" é só aquela data. Numa série recorrente apagar a série aqui era o
         // mesmo que "Encerrar série", que a tela oferece como ação separada.
         if (leftover.isEmpty() && series?.recurrence?.isRecurring != true) {
-            seriesDao.delete(row.seriesId)
-            return
+            occurrenceDao.applyBatch(
+                seriesDao = seriesDao,
+                upserts = emptyList(),
+                deletes = listOf(occurrenceId),
+                series = series?.toEntity(),
+                deleteSeriesRow = series != null,
+            )
+            return@withLock
         }
         // Sem o tombstone a rotina de avanço rematerializa a data apagada no próximo start.
-        if (series == null || !series.recurrence.isRecurring) return
+        if (series == null || !series.recurrence.isRecurring) {
+            occurrenceDao.applyBatch(
+                seriesDao = seriesDao,
+                upserts = emptyList(),
+                deletes = listOf(occurrenceId),
+                series = null,
+                deleteSeriesRow = false,
+            )
+            return@withLock
+        }
         val now = clock.instant()
         val skipped = OccurrenceLifecycle.skipDate(
             series.skippedDates,
             row.toDomain().localDate,
             OccurrenceLifecycle.todayIn(series.zoneId, now),
         )
-        seriesDao.upsert(series.copy(skippedDates = skipped, updatedAt = now).toEntity())
+        // Apagar a data e gravar o tombstone na mesma transação: o processo morto no meio
+        // deixava a data apagada sem tombstone, e a varredura do próximo start a trazia de
+        // volta como se nada tivesse acontecido.
+        occurrenceDao.applyBatch(
+            seriesDao = seriesDao,
+            upserts = emptyList(),
+            deletes = listOf(occurrenceId),
+            series = series.copy(skippedDates = skipped, updatedAt = now).toEntity(),
+            deleteSeriesRow = false,
+        )
     }
 
-    suspend fun restore(item: AgendaItem) {
+    suspend fun restore(item: AgendaItem) = writer.withLock {
         val now = clock.instant()
         // Desfazer o "Excluir" tem que tirar o tombstone junto: deixá-lo marcado
         // bloquearia a data de voltar em qualquer materialização futura.
@@ -214,36 +266,50 @@ class TaskRepository(
             ),
             updatedAt = now,
         )
-        seriesDao.upsert(series.toEntity())
         val fresh = OccurrenceLifecycle.materialize(series, item.occurrence.localDate, now)
         if (fresh.scheduledAt.isBefore(now) && !series.recurrence.isRecurring) {
-            occurrenceDao.upsert(
-                fresh.copy(
-                    status = OccurrenceStatus.MISSED,
-                    missedAt = now,
-                    nextReminderAt = null,
-                ).toEntity(),
+            occurrenceDao.applyBatch(
+                seriesDao = seriesDao,
+                upserts = listOf(
+                    fresh.copy(
+                        status = OccurrenceStatus.MISSED,
+                        missedAt = now,
+                        nextReminderAt = null,
+                    ).toEntity(),
+                ),
+                deletes = emptyList(),
+                series = series.toEntity(),
+                deleteSeriesRow = false,
             )
-            return
+            return@withLock
         }
         val scheduled = scheduler.schedule(fresh, series, first = true)
-        occurrenceDao.upsert(fresh.copy(inexactAlarm = scheduled.inexact).toEntity())
+        occurrenceDao.applyBatch(
+            seriesDao = seriesDao,
+            upserts = listOf(fresh.copy(inexactAlarm = scheduled.inexact).toEntity()),
+            deletes = emptyList(),
+            series = series.toEntity(),
+            deleteSeriesRow = false,
+        )
     }
 
-    suspend fun endSeries(seriesId: String) {
+    suspend fun endSeries(seriesId: String) = writer.withLock {
         val now = clock.instant()
-        val series = seriesDao.get(seriesId)?.toDomain() ?: return
+        val series = seriesDao.get(seriesId)?.toDomain() ?: return@withLock
         val ended = series.copy(endedAt = now, updatedAt = now)
-        seriesDao.upsert(ended.toEntity())
-        occurrenceDao.forSeries(seriesId)
+        val pending = occurrenceDao.forSeries(seriesId)
             .map { it.toDomain() }
             .filter { it.status == OccurrenceStatus.PENDING }
-            .forEach {
-                scheduler.cancel(it.id)
-                occurrenceDao.upsert(
-                    it.copy(status = OccurrenceStatus.CANCELLED, nextReminderAt = null).toEntity(),
-                )
-            }
+        pending.forEach { scheduler.cancel(it.id) }
+        occurrenceDao.applyBatch(
+            seriesDao = seriesDao,
+            upserts = pending.map {
+                it.copy(status = OccurrenceStatus.CANCELLED, nextReminderAt = null).toEntity()
+            },
+            deletes = emptyList(),
+            series = ended.toEntity(),
+            deleteSeriesRow = false,
+        )
     }
 
     suspend fun editOccurrence(
@@ -254,10 +320,10 @@ class TaskRepository(
         recurrence: com.theopadilha.falaagenda.domain.model.RecurrenceRule,
         amountCents: Long? = null,
         observation: String = "",
-    ) {
+    ) = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock
         val original = row.toDomain()
         val sameWhen = original.localDate == date && series.localTime == time
         val finished = original.status == OccurrenceStatus.COMPLETED ||
@@ -271,15 +337,12 @@ class TaskRepository(
                     updatedAt = now,
                 ).toEntity(),
             )
-            return
+            return@withLock
         }
-        occurrenceDao.forSeries(series.id)
+        val pending = occurrenceDao.forSeries(series.id)
             .map { it.toDomain() }
             .filter { it.status == OccurrenceStatus.PENDING }
-            .forEach {
-                scheduler.cancel(it.id)
-                occurrenceDao.delete(it.id)
-            }
+        pending.forEach { scheduler.cancel(it.id) }
         val updatedSeries = series.copy(
             title = title.trim(),
             localTime = time,
@@ -288,52 +351,76 @@ class TaskRepository(
             amountCents = amountCents,
             observation = observation.trim(),
             updatedAt = now,
+            // Citar de volta para uma data excluída desfaz a exclusão: com o tombstone
+            // marcado junto da ocorrência viva, a data ficaria bloqueada em toda
+            // materialização futura.
+            skippedDates = OccurrenceLifecycle.unskipDate(series.skippedDates, date),
         )
-        seriesDao.upsert(updatedSeries.toEntity())
         val refreshed = OccurrenceLifecycle.materialize(updatedSeries, date, now)
+        val serieRow = updatedSeries.toEntity()
+        val substituidas = pending.map { it.id }
         if (refreshed.scheduledAt.isBefore(now) && !updatedSeries.recurrence.isRecurring) {
-            occurrenceDao.upsert(
-                refreshed.copy(
-                    status = OccurrenceStatus.MISSED,
-                    missedAt = now,
-                    nextReminderAt = null,
-                ).toEntity(),
+            occurrenceDao.applyBatch(
+                seriesDao = seriesDao,
+                upserts = listOf(
+                    refreshed.copy(
+                        status = OccurrenceStatus.MISSED,
+                        missedAt = now,
+                        nextReminderAt = null,
+                    ).toEntity(),
+                ),
+                deletes = substituidas,
+                series = serieRow,
+                deleteSeriesRow = false,
             )
-            return
+            return@withLock
         }
         val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
-        occurrenceDao.upsert(refreshed.copy(inexactAlarm = scheduled.inexact).toEntity())
-        spawnUpcomingPreview(updatedSeries, date)
+        occurrenceDao.applyBatch(
+            seriesDao = seriesDao,
+            upserts = listOf(refreshed.copy(inexactAlarm = scheduled.inexact).toEntity()),
+            deletes = substituidas,
+            series = serieRow,
+            deleteSeriesRow = false,
+        )
+        // O preview é sobre o que vem depois: ancorado na data editada, editar uma data
+        // passada criava três datas vencidas, o próximo avanço marcava todas como não
+        // realizadas e a agenda ficava sem as futuras até o app reabrir.
+        spawnUpcomingPreview(updatedSeries, OccurrenceLifecycle.todayIn(updatedSeries.zoneId, now))
     }
 
-    suspend fun retryMissed(occurrenceId: String): RetryResult? {
+    suspend fun retryMissed(occurrenceId: String): RetryResult? = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return null
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return null
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock null
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock null
         val occurrence = row.toDomain()
-        if (occurrence.status != OccurrenceStatus.MISSED) return null
-        if (series.recurrence.isRecurring) return null
+        if (occurrence.status != OccurrenceStatus.MISSED) return@withLock null
+        if (series.recurrence.isRecurring) return@withLock null
         val date = RetryPolicy.nextOpenDate(clock.today(), series.localTime, now, series.zoneId)
         scheduler.cancel(occurrence.id)
-        occurrenceDao.delete(occurrence.id)
         val updatedSeries = series.copy(
             startLocalDate = date,
             endedAt = null,
             updatedAt = now,
         )
-        seriesDao.upsert(updatedSeries.toEntity())
         val fresh = OccurrenceLifecycle.materialize(updatedSeries, date, now)
         val scheduled = scheduler.schedule(fresh, updatedSeries, first = true)
-        occurrenceDao.upsert(fresh.copy(inexactAlarm = scheduled.inexact).toEntity())
-        return RetryResult(date = date, time = series.localTime)
+        occurrenceDao.applyBatch(
+            seriesDao = seriesDao,
+            upserts = listOf(fresh.copy(inexactAlarm = scheduled.inexact).toEntity()),
+            deletes = listOf(occurrence.id),
+            series = updatedSeries.toEntity(),
+            deleteSeriesRow = false,
+        )
+        RetryResult(date = date, time = series.localTime)
     }
 
-    suspend fun snooze(occurrenceId: String, minutes: Long = 30) {
+    suspend fun snooze(occurrenceId: String, minutes: Long = 30) = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock
         val occurrence = row.toDomain()
-        if (occurrence.status != OccurrenceStatus.PENDING) return
+        if (occurrence.status != OccurrenceStatus.PENDING) return@withLock
         val quiet = scheduler.quietHours()
         val plan = ReminderPolicy.snooze(now, minutes, series.zoneId, quiet, respectQuietHours = false)
         val updated = occurrence.copy(
@@ -345,16 +432,30 @@ class TaskRepository(
         occurrenceDao.upsert(updated.copy(inexactAlarm = scheduled.inexact).toEntity())
     }
 
-    suspend fun onAlarmFired(occurrenceId: String): AlarmFireResult {
+    suspend fun onAlarmFired(occurrenceId: String): AlarmFireResult = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return AlarmFireResult(false)
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return AlarmFireResult(false)
-        applyLifecycle(series, now)
-        val occurrence = occurrenceDao.get(occurrenceId)?.toDomain() ?: return AlarmFireResult(false)
-        if (occurrence.status != OccurrenceStatus.PENDING) {
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock AlarmFireResult(false)
+        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock AlarmFireResult(false)
+        val occurrence = row.toDomain()
+        // O disparo é resolvido antes da varredura de ciclo de vida: a varredura marcaria
+        // como não realizada a ocorrência de ontem cujo aviso está tocando neste instante
+        // (adiado pela noite, ele só chega no fim do silêncio) e o lembrete morreria
+        // exatamente quando devia soar.
+        val result = if (occurrence.status == OccurrenceStatus.PENDING && !series.isEnded) {
+            fire(occurrence, series, now)
+        } else {
             scheduler.cancel(occurrenceId)
-            return AlarmFireResult(false)
+            AlarmFireResult(false)
         }
+        applyLifecycle(series, now)
+        result
+    }
+
+    private suspend fun fire(
+        occurrence: TaskOccurrence,
+        series: TaskSeries,
+        now: Instant,
+    ): AlarmFireResult {
         val quiet = scheduler.quietHours()
         if (occurrence.reminderStep > 0 && ReminderPolicy.isInQuietHours(now, series.zoneId, quiet)) {
             val resume = ReminderPolicy.shiftOutOfQuietHours(now, series.zoneId, quiet)
@@ -371,6 +472,7 @@ class TaskRepository(
             zoneId = series.zoneId,
             quietHours = quiet,
             interval = interval,
+            occurrenceDay = occurrence.localDate,
         )
         val updated = occurrence.copy(
             reminderStep = plan.step,
@@ -382,7 +484,16 @@ class TaskRepository(
         return AlarmFireResult(notify = true, title = series.title, seriesId = series.id)
     }
 
-    suspend fun rescheduleAll() {
+    /**
+     * Rede de segurança do receiver: se o tratamento de um alarme não terminou a tempo
+     * (processo morto, tempo esgotado), o mesmo disparo volta daqui a pouco em vez de a
+     * escada de repetições morrer em silêncio até o app ser aberto de novo.
+     */
+    fun scheduleRecovery(occurrenceId: String) {
+        scheduler.scheduleRecovery(occurrenceId, clock.instant().plusSeconds(RECOVERY_DELAY_SECONDS))
+    }
+
+    suspend fun rescheduleAll() = writer.withLock {
         val now = clock.instant()
         val seriesList = seriesDao.getAll().map { it.toDomain() }
         seriesList.forEach { series ->
@@ -405,11 +516,39 @@ class TaskRepository(
         val today = OccurrenceLifecycle.todayIn(series.zoneId, now)
         val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
         val change = OccurrenceLifecycle.advance(series, existing, now, today)
-        change.cancelAlarmsOf.forEach { scheduler.cancel(it) }
-        change.upserts.forEach { occ ->
-            occurrenceDao.upsert(occ.toEntity())
-        }
+        // A varredura decide "não realizada" olhando só o relógio. Um lembrete marcado para
+        // um instante que já passou mas nunca foi entregue é entrega pendente, não ocorrência
+        // vencida: o disparo atrasado pelo Doze ainda vai tocar, e arquivar aqui matava o
+        // único aviso do dia (com o "Adiar" da notificação virando no-op).
+        val pendentes = existing.filter { entregaPendente(it, now) }.associateBy { it.id }
+        change.cancelAlarmsOf
+            .filterNot { pendentes.containsKey(it) }
+            .forEach { scheduler.cancel(it) }
+        change.upserts
+            .filterNot { it.status == OccurrenceStatus.MISSED && pendentes.containsKey(it.id) }
+            .forEach { occurrenceDao.upsert(it.toEntity()) }
         spawnUpcomingPreview(series, today)
+    }
+
+    /**
+     * Alarme marcado para um instante que já passou e ainda não foi entregue é entrega
+     * pendente. Nunca tendo tocado, a escada nem começou (`lastReminderAt` nulo): o aviso das
+     * 22:00 que o Doze segurou continua pendente depois da meia-noite — sem isso a primeira
+     * varredura do dia seguinte o arquivava como não realizada e o único aviso do dia morria
+     * calado. Com um aviso já entregue, vale o critério de sempre: o que está marcado é a
+     * repetição seguinte, e ela só é entrega pendente se o último aviso ficou para trás.
+     *
+     * Vale até [JANELA_ENTREGA_PENDENTE] depois do horário marcado — dentro dela o
+     * `rescheduleAll` de todo start rearma o aviso; passada ela, o `advance` volta a decidir
+     * e a ocorrência vira não realizada, que é o terminador da entrega pendente (nada fica
+     * pendurado para sempre).
+     */
+    private fun entregaPendente(occurrence: TaskOccurrence, now: Instant): Boolean {
+        val marcado = occurrence.nextReminderAt ?: return false
+        if (marcado.isAfter(now)) return false
+        val ultimoAviso = occurrence.lastReminderAt
+        return (ultimoAviso == null || ultimoAviso.isBefore(marcado)) &&
+            now.isBefore(marcado.plus(JANELA_ENTREGA_PENDENTE))
     }
 
     private suspend fun spawnNextIfNeeded(series: TaskSeries, completedDate: java.time.LocalDate, now: Instant) {
@@ -436,6 +575,18 @@ class TaskRepository(
                 occurrenceDao.upsert(occ.copy(inexactAlarm = scheduled.inexact).toEntity())
             }
         }
+    }
+
+    companion object {
+        /** Curto de propósito: recuperação não pode virar trabalho sem limite. */
+        const val RECOVERY_DELAY_SECONDS = 60L
+
+        /**
+         * Quanto tempo um lembrete marcado e não entregue ainda conta como "vai tocar".
+         * Cobre o atraso real de entrega (Doze, alarme inexato, aparelho que ficou
+         * desligado) sem ressuscitar um aviso do dia anterior.
+         */
+        val JANELA_ENTREGA_PENDENTE: Duration = Duration.ofHours(6)
     }
 }
 

@@ -26,8 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
@@ -35,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.QuietHours
@@ -45,9 +45,6 @@ import com.theopadilha.falaagenda.ui.components.QuietCard
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.FilterChip
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.time.LocalTime
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -60,12 +57,15 @@ fun SettingsScreen(
         initial = QuietHours(LocalTime.of(22, 0), LocalTime.of(8, 0)),
     )
     val themeMode by container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
-    var picking by remember { mutableStateOf<String?>(null) }
-    var code by remember { mutableStateOf("") }
-    var message by remember { mutableStateOf<String?>(null) }
+    // Sobrevivem à rotação: girar com o seletor de horário aberto não fecha mais o diálogo
+    // (e não perde o horário já mexido, que o `TimePickerState` salva junto) nem limpa o
+    // código de ativação meio digitado.
+    var picking by rememberSaveable { mutableStateOf<String?>(null) }
+    var code by rememberSaveable { mutableStateOf("") }
     val token = container.tokenStore.token()
     val configured = container.supabase.isConfigured
-    val scope = rememberCoroutineScope()
+    val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(container))
+    val message by vm.message.collectAsState()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -106,7 +106,7 @@ fun SettingsScreen(
                         ).forEach { (mode, label) ->
                             FilterChip(
                                 selected = themeMode == mode,
-                                onClick = { scope.launch { container.settings.setThemeMode(mode) } },
+                                onClick = { vm.setThemeMode(mode) },
                                 label = { Text(label) },
                             )
                         }
@@ -163,15 +163,7 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                         PrimaryButton("Ativar") {
-                            scope.launch {
-                                message = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        val tokenValue = container.activation.activate(code)
-                                        container.tokenStore.setToken(tokenValue)
-                                        "Ativado neste aparelho."
-                                    }.getOrElse { it.message ?: "Não foi possível ativar." }
-                                }
-                            }
+                            vm.activate(code)
                         }
                     }
                 }
@@ -199,15 +191,8 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val chosen = LocalTime.of(state.hour, state.minute)
-                        val updated = if (which == "start") {
-                            QuietHours(chosen, quiet.end)
-                        } else {
-                            QuietHours(quiet.start, chosen)
-                        }
-                        scope.launch { container.settings.setQuietHours(updated) }
-                        message = "Horário de silêncio atualizado."
                         picking = null
+                        vm.setQuietHours(which, LocalTime.of(state.hour, state.minute))
                     },
                     modifier = Modifier.height(48.dp),
                 ) { Text("OK") }

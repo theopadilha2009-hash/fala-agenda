@@ -1,7 +1,9 @@
 package com.theopadilha.falaagenda.domain.reminder
 
 import com.theopadilha.falaagenda.domain.model.QuietHours
+import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -16,6 +18,11 @@ import java.time.temporal.ChronoUnit
  *
  * Horário de silêncio pausa SOMENTE as repetições (passo >= 1).
  * A repetição retomada dispara às 08:00 (fim do silêncio) no fuso da série.
+ *
+ * A escada termina no fim do dia local da ocorrência: passado esse dia não há nova
+ * repetição, e a ocorrência volta a ser encerrada pela virada do dia ("não realizada").
+ * A única travessia é o adiamento do silêncio, que empurra a última repetição do dia para
+ * as 08:00 do dia seguinte — e é o último degrau.
  */
 object ReminderPolicy {
     const val STEP_FIRST = 0
@@ -23,20 +30,27 @@ object ReminderPolicy {
     const val STEP_PLUS_30 = 2
     const val STEP_HOURLY = 3
 
-    fun intervalAfterStep(stepJustFired: Int): java.time.Duration = when (stepJustFired) {
-        STEP_FIRST -> java.time.Duration.ofMinutes(15)
-        STEP_PLUS_15 -> java.time.Duration.ofMinutes(30)
-        else -> java.time.Duration.ofMinutes(60)
+    /**
+     * Teto absoluto de passos, rede de segurança contra qualquer caminho que escape da
+     * regra do fim do dia (um dia inteiro de repetições de hora em hora fica bem abaixo).
+     */
+    const val MAX_STEP = 32
+
+    fun intervalAfterStep(stepJustFired: Int): Duration = when (stepJustFired) {
+        STEP_FIRST -> Duration.ofMinutes(15)
+        STEP_PLUS_15 -> Duration.ofMinutes(30)
+        else -> Duration.ofMinutes(60)
     }
 
     fun nextStep(currentStep: Int): Int = when (currentStep) {
         STEP_FIRST -> STEP_PLUS_15
         STEP_PLUS_15 -> STEP_PLUS_30
-        else -> STEP_HOURLY
+        else -> currentStep + 1
     }
 
+    /** [fireAt] nulo significa escada encerrada: não há novo nextReminderAt. */
     data class Plan(
-        val fireAt: Instant,
+        val fireAt: Instant?,
         val step: Int,
         val skippedQuietHours: Boolean,
     )
@@ -45,17 +59,26 @@ object ReminderPolicy {
         Plan(fireAt = occurrenceScheduledAt, step = STEP_FIRST, skippedQuietHours = false)
 
     /**
-     * Próxima repetição depois de um disparo (ou snooze).
-     * [from] é o instante de referência (último disparo, snooze, ou now).
+     * Próxima repetição depois de um disparo. [from] é o instante de referência (último
+     * disparo) e [occurrenceDay] o dia local da ocorrência.
+     *
+     * Devolve um plano sem [Plan.fireAt] quando a escada termina: o passo seguinte cairia
+     * fora do dia da ocorrência ou passaria do teto de passos. Sem novo nextReminderAt, a
+     * virada do dia volta a marcar a ocorrência como não realizada.
      */
     fun nextRepetition(
         from: Instant,
         nextStep: Int,
         zoneId: ZoneId,
         quietHours: QuietHours,
-        interval: java.time.Duration,
+        interval: Duration,
+        occurrenceDay: LocalDate,
     ): Plan {
+        if (nextStep > MAX_STEP) return ended(nextStep)
         val raw = from.plus(interval)
+        // A repetição não atravessa o fim do dia da ocorrência. O silêncio pode empurrar o
+        // disparo para as 08:00 do dia seguinte; essa travessia é o último degrau do dia.
+        if (raw.atZone(zoneId).toLocalDate() != occurrenceDay) return ended(nextStep)
         val adjusted = shiftOutOfQuietHours(raw, zoneId, quietHours)
         return Plan(
             fireAt = adjusted,
@@ -64,6 +87,12 @@ object ReminderPolicy {
         )
     }
 
+    private fun ended(step: Int) = Plan(fireAt = null, step = step, skippedQuietHours = false)
+
+    /**
+     * Snooze é ação explícita da usuária e não é repetição: vale no horário pedido, mesmo
+     * depois da meia-noite, e não é podado pelo fim do dia da ocorrência.
+     */
     fun snooze(
         from: Instant,
         minutes: Long = 30,

@@ -3,6 +3,10 @@
 Data: 2026-09-27 · Escopo: todo o repositório · 8 auditores read-only em paralelo
 Motivo: relato "o app simplesmente não funciona"
 
+> Registro do que a auditoria **encontrou**, não fotografia do que existe hoje: os nove P0
+> abaixo foram corrigidos no #14 (`0a46352`), e o que a segunda onda achou e mudou está nos
+> adendos do fim. As recomendações ("→") são o plano de então.
+
 ## Baseline verificada nesta máquina (não é opinião, é output)
 
 SDK 36 + build-tools 36.0.0 instalados nesta sessão; os 6 alvos passaram **depois** das auditorias:
@@ -248,3 +252,138 @@ série recorrente — "Excluir" virava "Encerrar série". Agora só apaga a sér
 
 Lição para o próximo review: teste com DAO falso não vê semântica de Room (FK, REPLACE, índices,
 NOT NULL). Toda mudança de schema/DAO precisa de um teste com banco real.
+
+---
+
+## Adendo 2 — segunda onda: o que a primeira passada não viu
+
+Mesma data. Depois do #14 a auditoria voltou às áreas que a primeira passada não cobriu
+(widget, tela de mês, ajustes, compartilhar, tela de atualização, `domain/insight/**`) e às
+regras que o primeiro fix encostou. Tudo abaixo está na árvore.
+
+**Parser pt-BR** (`domain/.../parser/LocalTaskParser.kt`)
+- `"quinta que vem"` caía na ocorrência da **semana corrente** (podia ser hoje, e a tarefa
+  nascia no passado) e o "Vem" sobrava no título. `WEEKDAY_NEXT_WEEK` reconhece a expressão
+  inteira e `stripWeekDays` a remove antes de remover o dia da semana.
+- `"de 8 em 8 horas"` / `"a cada N horas"` não era intervalo: virava um horário único, errado.
+  Agora `INTERVAL` reconhece o intervalo e o rascunho sai **ambíguo de propósito** —
+  `localTime` nulo, `MissingDraftField.TIME`, a expressão citada na nota. O `HybridParser`
+  escala para a IA quando ela está ligada; sem ela, a nota diz que o rascunho local ficou para
+  corrigir na mão.
+- minutos compostos por extenso perdiam a última unidade: `"nove e quarenta e cinco"` dava
+  09:40 e "Cinco" ia para o título (`MINUTE_TAIL` aceita a unidade, mas só quando o primeiro
+  termo é uma dezena).
+- `"daqui a duas horas e meia"` ignorava o "e meia"; `"às 12 da noite"` virava meio-dia.
+
+**Ciclo de vida** (`domain/.../recurrence/OccurrenceLifecycle.kt`)
+- `skipDate` cortava as tombstones **mais próximas de hoje** — justo as que o preview e o
+  `advance` materializam. Com o teto de datas cheio, a data excluída renascia. O corte agora
+  descarta as mais distantes.
+- Ocorrência de ontem com `nextReminderAt`/`snoozedUntil` vivo deixou de virar "não
+  realizada": o adiamento do horário de silêncio só toca às 08:00 do dia seguinte, e a virada
+  do dia matava o aviso antes de ele sair.
+- `editOccurrence` ancora o preview em **hoje** (antes gerava três datas vencidas a partir da
+  data editada, e o avanço seguinte marcava todas como não realizadas, deixando a agenda sem
+  as futuras até o app reabrir) e limpa o tombstone da data editada — remarcar para uma data
+  excluída não pode deixá-la bloqueada em toda materialização futura.
+
+**Lembretes**
+- `schedule()` não cancela mais a notificação já publicada, só o alarme: ela era removida da
+  barra em todo start, boot e virada do dia, antes de a usuária ver.
+- Disparo que estoura os 8 s do `goAsync` reagenda uma recuperação em 60 s
+  (`RECOVERY_DELAY_SECONDS`) em vez de morrer calado; `rescheduleAsync` (boot, troca de hora)
+  ganhou `catch`, senão a exceção subia pelo `appScope` e derrubava o processo.
+
+**Abertura do app**
+- `collectWidgetUpdates` trata a falha de leitura da agenda e **reassina** depois de 5 s:
+  banco corrompido, migração ruim ou disco cheio fechavam o app no `onCreate`, sempre, sem
+  mensagem.
+- DataStore: leitura com `catch` (o collect morria e a tela ficava em spinner eterno), handler
+  de corrupção no arquivo (sem ele a gravação ficava impossível para sempre) e o tema do
+  `MainActivity` dentro de `runCatching` (o `runBlocking` podia impedir o app de abrir).
+
+**Auto-update**
+- Antes de entregar o APK ao instalador, `ApkSignature` compara o SHA-256 do certificado do
+  arquivo com o do app instalado; sem como ler as certidões, **não instala**.
+- O APK já baixado é reaproveitado quando a origem é a mesma versão, e download que não fecha
+  com o `Content-Length` não fica no cache passando por bom.
+
+**Intents de sistema**
+- Os 9 pontos de `ui/**` que abriam tela de sistema com `startActivity` direto passam por
+  `DeviceIntents` (`HomeScreen` 6, `UpdateScreen` 2, `OnboardingScreen` 1): sem quem responda
+  ao intent o toque vira recado na tela — menos no onboarding, que ignora o retorno de
+  propósito, porque a tela troca no mesmo toque.
+
+**Release/CI**
+- O gate aceitava `https://evil.example#.supabase.co` (em glob o `*` do `case` casa `/`, `?` e
+  `#`) e não olhava o papel da chave. Agora a URL é regex ancorada ao host e o `role` do JWT é
+  decodificado: só `anon` entra — uma `service_role` num APK distribuído entrega o banco a quem
+  extrair a chave.
+- `ci.yml` compila o release com valores-sentinela a cada PR e confere os dois no dex: a
+  injeção da config quebra no PR, não na tag. `versionName 0.6.0` / `versionCode 15`.
+
+**Superfícies que a primeira passada não auditou**
+- Tela de mês (`MonthSummaryViewModel`): o `Flow` era criado no corpo do composable, então
+  cada recomposição cancelava e reassinava as duas queries do banco no thread principal. O
+  `stateIn` no ViewModel resolve — mesmo padrão do `HomeViewModel`.
+- Widget: a opção "Aparência" não valia para ele, que seguia o modo noturno do sistema. Agora
+  o tema gravado é lido junto da agenda e o widget usa as cores de `values/` (nunca as de
+  `values-night`), senão "Claro" com o celular no escuro não pega.
+- Ajustes: a mensagem de sucesso passou a esperar a gravação — é o item 1 da lição abaixo.
+- Tela de atualização: o download morria calado se ela saísse da tela (o escopo agora é do
+  processo, não da composição) e "Instalar agora" com o APK já limpo do cache pelo Android
+  falhava para sempre (o arquivo é conferido antes, e a tela volta para "Baixar e instalar"
+  com a explicação em vez de mandar ela a um instalador que só sabe dizer "não foi possível
+  analisar o pacote").
+- `domain/insight/MonthInsights`: "o que mais você fez" somava MISSED e PENDING; agora só o
+  que foi concluído — corrigido já no #14 (`0a46352`), não nesta onda.
+
+### A lição: três jeitos de um fix correto não fazer efeito
+
+O adendo anterior tirou uma lição de ferramenta ("teste com DAO falso não vê semântica do
+Room"). Esta segunda onda mostrou que o problema é maior que o banco: três fixes corretos,
+cada um com teste verde, não fizeram efeito no app. É isto que o próximo a mexer no repo
+precisa ler antes de abrir PR.
+
+1. **Dois fixes corretos, em branches separadas, se anulam quando juntos.** Uma branch fez o
+   `SettingsStore` engolir a exceção de gravação (`private suspend fun save`) para ela não
+   subir do escopo de composição; a outra fez a tela de ajustes só anunciar "atualizado"
+   depois que a gravação voltasse **sem** exceção. Isoladas, cada uma estava certa, verde e
+   coerente; juntas, a tela voltou a dizer "atualizado" sem ter salvo. Resolvido tirando o
+   `save` do `SettingsStore` e tratando em cada chamador (`SettingsScreen.save`,
+   `FalaAgendaRoot.onThemeMode`), com o cancelamento re-lançado — quem só girou o aparelho não
+   pode ver "não consegui salvar". **Branch verde não prova integração; o merge é que tem que
+   exercitar os dois lados da fronteira.**
+
+2. **Um fix correto remove o terminador implícito de outra regra.** A escada de lembretes
+   acabava porque a virada do dia encerrava a ocorrência; ao salvar o adiamento que cruza a
+   meia-noite, a ocorrência deixou de ser encerrada e a escada passou a tocar de hora em hora,
+   **para sempre** (`nextStep` saturava no passo horário e o intervalo horário nunca terminava).
+   Ela ganhou terminador próprio em `ReminderPolicy.nextRepetition` (plano sem `fireAt` quando
+   o passo cairia fora do dia local da ocorrência) e `MAX_STEP = 32` como rede. **Ao abrir uma
+   exceção numa regra, procure quem estava encerrando o laço por tabela.**
+
+3. **Contrato de escopo deixa o fix inerte.** `DeviceIntents.open` foi criado e testado, mas
+   os call sites estão em `ui/**` — fora do contrato daquela mudança. O corpo do commit
+   registra o resultado: "os chamadores em `ui/` ainda usam `startActivity` direto — a troca é
+   de uma linha em cada um e ficou fora do contrato desta mudança". O mesmo na escada: o commit
+   que a encerrou anota "`app/TaskRepository.kt:368` ainda precisa passar
+   `occurrenceDay = occurrence.localDate`", o argumento não tem default, e sem ele a árvore de
+   `6607b18` não compilava o `:app` — o ajuste era uma linha do trabalho de integração, fechada
+   em `a76bc2f`. **A mudança só termina quando o call site muda: helper sem chamador e parâmetro
+   sem argumento são código morto com teste verde.**
+
+### Regras do domínio que não se leem de um arquivo só
+
+- A escada de lembretes tem **dois** terminadores: o fim do dia local da ocorrência e o teto
+  de passos. Repetição nunca cruza a meia-noite; o adiamento do horário de silêncio é a única
+  travessia e é o último degrau do dia. Já o snooze é ação explícita da usuária: vale no
+  horário pedido, atravessa a meia-noite e não é podado pelo fim do dia.
+- O tombstone de data excluída guarda os últimos 90 dias, no máximo 120 datas, e corta **as
+  mais distantes de hoje** — as próximas são exatamente as que o preview rematerializa.
+
+**Não verificado nesta segunda onda:** não há device nesta máquina e esta passada não rodou
+build; o que sustenta os itens acima é leitura de código e os testes escritos junto de cada
+fix — não output de execução. O `:app` que não compilava na árvore de `6607b18` (item 3
+acima) está fechado: `a76bc2f` passa o `occurrenceDay` no call site, e o
+`:app:testDebugUnitTest` roda 173 testes, 0 falhas (`app/build/test-results/`).

@@ -10,9 +10,18 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import java.io.File
+import java.io.IOException
 
 object DeviceIntents {
     fun fileProviderAuthority(context: Context): String = "${context.packageName}.files"
+
+    /**
+     * Abre a tela pedida e diz se deu. Aparelho sem navegador, sem instalador ou sem a tela de
+     * ajustes que o fabricante mexeu responde com `ActivityNotFoundException` — que, solta,
+     * fecha o app na cara de quem tocou. Quem chama mostra o recado quando devolve `false`.
+     */
+    fun open(context: Context, intent: Intent): Boolean =
+        runCatching { context.startActivity(intent) }.isSuccess
 
     fun shareText(text: String, chooserTitle: String = "Enviar"): Intent {
         val send = Intent(Intent.ACTION_SEND).apply {
@@ -45,10 +54,38 @@ object DeviceIntents {
         }
     }
 
+    /**
+     * Copia o APK instalado para um arquivo que ela possa mandar para outra pessoa.
+     *
+     * A cópia é atômica (temporário + rename): interrompida no meio — o aplicativo morrendo,
+     * o disco enchendo, uma leitura sem espaço —, o APK que já estava lá continua inteiro
+     * em vez de virar um arquivo truncado que o próximo "Enviar o aplicativo" entrega
+     * corrompido para outra pessoa.
+     */
     fun copyInstalledApk(context: Context): File {
         val dest = File(AppUpdater.updatesDir(context), "Fala-Agenda.apk")
-        File(context.applicationInfo.sourceDir).copyTo(dest, overwrite = true)
+        writeAtomically(dest) { temp ->
+            File(context.applicationInfo.sourceDir).copyTo(temp, overwrite = true)
+        }
         return dest
+    }
+
+    /**
+     * [write] escreve no arquivo temporário; só o rename publica o resultado em [dest]. Quem
+     * falhar no meio (ou for cancelado) deixa [dest] como estava.
+     */
+    internal fun writeAtomically(dest: File, write: (File) -> Unit) {
+        val temp = File(dest.parentFile, "${dest.name}.parcial")
+        try {
+            write(temp)
+            // Mesmo diretório, mesmo sistema: o rename substitui o destino de uma vez, sem
+            // apagar antes. Se ele não for, é falha da cópia — o antigo fica de pé.
+            if (!temp.renameTo(dest)) throw IOException("Não consegui publicar ${dest.name}")
+        } finally {
+            // Sobrou temporário: é cópia pela metade, e não pode ficar no diretório
+            // passando por APK bom.
+            temp.delete()
+        }
     }
 
     fun isBatteryUnrestricted(context: Context): Boolean {

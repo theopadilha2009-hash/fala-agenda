@@ -50,10 +50,19 @@ class VoiceCaptureController(private val context: Context) {
         if (!session) return
         when (_ui.value.state) {
             VoiceState.PREPARING -> switchOrFail(VoiceRetry.CLIENT)
-            VoiceState.LISTENING -> failWith(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
-            VoiceState.UNDERSTANDING -> failWith(SpeechRecognizer.ERROR_NO_MATCH)
+            VoiceState.LISTENING -> giveUpOnTimeout(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+            VoiceState.UNDERSTANDING -> giveUpOnTimeout(SpeechRecognizer.ERROR_NO_MATCH)
             else -> Unit
         }
+    }
+
+    /**
+     * O prazo venceu. O que já veio reconhecido não se joga fora: perder a fala no meio do
+     * recado é pior que ouvir de novo. Sem parcial, aí sim é o erro de sempre.
+     */
+    private fun giveUpOnTimeout(error: Int) {
+        val heard = _ui.value.partial.trim()
+        if (heard.isEmpty()) failWith(error) else finishWith(heard)
     }
 
     fun start(host: Context = context) {

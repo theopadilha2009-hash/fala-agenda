@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui.capture
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -116,6 +117,12 @@ fun ConfirmDraftScreen(
     val previewRule = remember(kind, date, weekDays) {
         recurrenceFor(kind, date ?: LocalDate.now(), weekDays)
     }
+    // A gravação é desta tela e termina no escopo do ViewModel: sair no meio deixava o
+    // desfecho sem quem o anunciasse — a tela que o pediu já não existe e ela nunca fica
+    // sabendo se salvou (nem vê o erro, que é o que importa quando não salvou). Os botões
+    // já saem da mão dela neste estado; o gesto de voltar do sistema precisa da mesma
+    // guarda.
+    BackHandler(enabled = saving) { }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(

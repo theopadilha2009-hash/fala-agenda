@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui.capture
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -56,6 +57,13 @@ fun WriteTaskScreen(
     // (o "Daqui N min") tem o mesmo problema com o tempo do alarme e do banco, e o mesmo
     // tratamento: o botão sai da mão dela e a tela diz que está trabalhando.
     val busy = understanding || saving
+    // Sair no meio da gravação deixava o desfecho sem quem o anunciasse: a gravação termina
+    // no escopo do ViewModel, a tela que a pediu já não existe, e ela nunca fica sabendo se
+    // o aviso valeu — nem aparece o cartão do alarme inexato. O botão Cancelar já sai da
+    // mão dela neste estado; o gesto de voltar do sistema precisa da mesma guarda. A tela
+    // de escrever (o entendimento da fala) sai daqui com `saving` falso: o rascunho dela
+    // fica na sessão até alguém mostrá-lo, então voltar não perde nada.
+    BackHandler(enabled = saving) { }
     val submit = {
         val value = text.trim()
         if (value.isBlank()) {

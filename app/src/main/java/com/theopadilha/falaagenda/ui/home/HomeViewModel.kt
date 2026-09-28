@@ -64,6 +64,9 @@ enum class DraftSaveOrigin {
     QUICK_REMIND,
 }
 
+/** Nenhum pedido de gravação em voo nesta tela: o id de um pedido nunca é negativo. */
+internal const val NO_SAVE_REQUEST = -1L
+
 /**
  * Como terminou a gravação de um rascunho.
  *
@@ -83,6 +86,15 @@ sealed interface DraftSaveOutcome {
      */
     val seq: Long
 
+    /**
+     * O pedido que produziu este desfecho, com a identidade que [HomeViewModel.saveDraft]
+     * e companhia devolveram a quem pediu. A tela compara com o id que ela guardou ao
+     * pedir: o desfecho de um pedido nunca é dado como o de outro — nem de outra tela, nem
+     * de uma gravação anterior desta mesma tela, que é o que acontecia quando quem casava
+     * era só a origem mais um booleano da composição.
+     */
+    val requestId: Long
+
     val origin: DraftSaveOrigin
 
     /**
@@ -92,6 +104,7 @@ sealed interface DraftSaveOutcome {
      */
     data class Saved(
         override val seq: Long,
+        override val requestId: Long,
         override val origin: DraftSaveOrigin,
         val message: String,
         val usedInexactAlarm: Boolean? = null,
@@ -100,6 +113,7 @@ sealed interface DraftSaveOutcome {
     /** Não gravou: [message] é o que a tela mostra, com o rascunho ainda no lugar. */
     data class Failed(
         override val seq: Long,
+        override val requestId: Long,
         override val origin: DraftSaveOrigin,
         val message: String,
     ) : DraftSaveOutcome
@@ -127,7 +141,19 @@ data class StatusMessage(
     /** O que o botão "Desfazer" desfaz; nulo quando o recado não tem volta. */
     val undo: Undo? = null,
 ) {
-    enum class Undo { COMPLETE, DELETE }
+    /**
+     * O item que o desfazer devolve anda **dentro do recado**. Ele era guardado à parte
+     * (`lastCompleted`/`lastDeleted`) e o desfazer apontava para o último item tocado, não
+     * para o item do recado que a pessoa está vendo: com dois itens concluídos em sequência,
+     * o "Desfazer" do primeiro desfazia o segundo.
+     */
+    sealed interface Undo {
+        val item: AgendaItem
+
+        data class Complete(override val item: AgendaItem) : Undo
+
+        data class Delete(override val item: AgendaItem) : Undo
+    }
 }
 
 private const val TAG = "FalaAgendaHome"
@@ -171,6 +197,20 @@ class HomeViewModel(
     /** Ver [DraftSaveOutcome.seq]: é o que faz dois desfechos iguais serem dois eventos. */
     private var outcomeSeq = 0L
 
+    /** O contador dos pedidos de gravação. Ver [DraftSaveOutcome.requestId]. */
+    private var saveRequestSeq = 0L
+
+    /**
+     * Os pedidos de gravação de rascunho cujo desfecho ainda não saiu na tela de quem os
+     * pediu. É o que a tela lê para saber se a gravação *dela* está em voo — botões fora da
+     * mão dela e a saída bloqueada —, e é o que o `savePending` da composição não podia
+     * responder sozinho: o pedido dele fica guardado no Bundle, então girar não o perde (é
+     * o que se quer), mas a morte do processo o devolvia sem gravação nenhuma do outro lado
+     * e a tela ficava presa em "Salvando…", sem saída, para um aviso que não existia mais.
+     */
+    private val _pendingDraftSaves = MutableStateFlow<Set<Long>>(emptySet())
+    val pendingDraftSaves: StateFlow<Set<Long>> = _pendingDraftSaves
+
     /**
      * O recado da última ação, esperando a home. Ver [StatusMessage]: a escrita atravessa o
      * giro, então quem anuncia é quem volta, não a tela que pediu.
@@ -197,8 +237,13 @@ class HomeViewModel(
         _writeError.value = null
     }
 
-    /** A tela agiu sobre o desfecho: ele não volta numa próxima composição. */
+    /**
+     * A tela agiu sobre o desfecho: ele não volta numa próxima composição, e o pedido deixa
+     * de estar em voo (ver [pendingDraftSaves]) — é só depois de o desfecho sair na tela que
+     * os botões voltam para a mão dela.
+     */
     fun consumeDraftSaveOutcome() {
+        _draftSaveOutcome.value?.let { _pendingDraftSaves.value -= it.requestId }
         _draftSaveOutcome.value = null
     }
 
@@ -250,19 +295,39 @@ class HomeViewModel(
     /**
      * A gravação do rascunho não pertence à tela: o resultado sai por [draftSaveOutcome],
      * que sobrevive ao giro, e quem pediu a gravação o consome.
+     *
+     * Devolve a identidade do pedido, criada agora — e não na conclusão: é com ela que a
+     * tela reconhece o desfecho como sendo o do pedido *dela* (ver
+     * [DraftSaveOutcome.requestId]).
      */
-    fun saveDraft(draft: ParsedTaskDraft, origin: DraftSaveOrigin) = write(
-        action = "Não consegui salvar o recado.",
-        onError = { message -> publishFailed(origin, message) },
-        onSuccess = { result -> publishSaved(origin, announceOf(draft), result.usedInexactAlarm) },
-    ) { container.tasks.saveDraft(draft) }
-
-    private fun publishSaved(origin: DraftSaveOrigin, message: String, usedInexactAlarm: Boolean? = null) {
-        _draftSaveOutcome.value = DraftSaveOutcome.Saved(++outcomeSeq, origin, message, usedInexactAlarm)
+    fun saveDraft(draft: ParsedTaskDraft, origin: DraftSaveOrigin): Long {
+        val requestId = newDraftSaveRequest()
+        write(
+            action = "Não consegui salvar o recado.",
+            onError = { message -> publishFailed(requestId, origin, message) },
+            onSuccess = { result -> publishSaved(requestId, origin, announceOf(draft), result.usedInexactAlarm) },
+        ) { container.tasks.saveDraft(draft) }
+        return requestId
     }
 
-    private fun publishFailed(origin: DraftSaveOrigin, message: String) {
-        _draftSaveOutcome.value = DraftSaveOutcome.Failed(++outcomeSeq, origin, message)
+    /** Ver [pendingDraftSaves]: o pedido entra em voo aqui e só sai quando a tela o mostra. */
+    private fun newDraftSaveRequest(): Long {
+        val requestId = ++saveRequestSeq
+        _pendingDraftSaves.value += requestId
+        return requestId
+    }
+
+    private fun publishSaved(
+        requestId: Long,
+        origin: DraftSaveOrigin,
+        message: String,
+        usedInexactAlarm: Boolean? = null,
+    ) {
+        _draftSaveOutcome.value = DraftSaveOutcome.Saved(++outcomeSeq, requestId, origin, message, usedInexactAlarm)
+    }
+
+    private fun publishFailed(requestId: Long, origin: DraftSaveOrigin, message: String) {
+        _draftSaveOutcome.value = DraftSaveOutcome.Failed(++outcomeSeq, requestId, origin, message)
     }
 
     /** O que se anuncia ao salvar: o horário em que o aviso vai tocar. */
@@ -278,44 +343,19 @@ class HomeViewModel(
 
     fun complete(item: AgendaItem) = write(
         action = "Não consegui marcar como feito.",
-        onSuccess = {
-            lastCompleted = item
-            publishStatus("Feito.", StatusMessage.Undo.COMPLETE)
-        },
+        // O item vai dentro do recado: é ele que o desfazer devolve, e não "o último que
+        // foi tocado" — que já pode ser outro.
+        onSuccess = { publishStatus("Feito.", StatusMessage.Undo.Complete(item)) },
     ) { container.tasks.complete(item.occurrence.id) }
 
-    fun undoComplete() {
-        val item = lastCompleted ?: return
-        lastCompleted = null
-        write("Não consegui desfazer.") { container.tasks.uncomplete(item) }
-    }
-
-    /** O aviso saiu da tela sem desfazer: a conclusão deixou de estar ao alcance. */
-    fun forgetUndoComplete() {
-        lastCompleted = null
-    }
-
-    private var lastCompleted: AgendaItem? = null
-    private var lastDeleted: AgendaItem? = null
+    fun undoComplete(item: AgendaItem) = write("Não consegui desfazer.") { container.tasks.uncomplete(item) }
 
     fun delete(item: AgendaItem) = write(
         action = "Não consegui excluir.",
-        onSuccess = {
-            lastDeleted = item
-            publishStatus("Tarefa excluída.", StatusMessage.Undo.DELETE)
-        },
+        onSuccess = { publishStatus("Tarefa excluída.", StatusMessage.Undo.Delete(item)) },
     ) { container.tasks.deleteOccurrence(item.occurrence.id) }
 
-    fun undoDelete() {
-        val item = lastDeleted ?: return
-        lastDeleted = null
-        write("Não consegui desfazer.") { container.tasks.restore(item) }
-    }
-
-    /** O aviso saiu da tela sem desfazer: a exclusão deixou de estar ao alcance. */
-    fun forgetUndoDelete() {
-        lastDeleted = null
-    }
+    fun undoDelete(item: AgendaItem) = write("Não consegui desfazer.") { container.tasks.restore(item) }
 
     fun endSeries(seriesId: String) = write(
         action = "Não consegui encerrar a série.",
@@ -358,16 +398,23 @@ class HomeViewModel(
         recurrence: RecurrenceRule,
         amountCents: Long? = null,
         observation: String = "",
-    ) = write(
-        action = "Não consegui salvar a mudança.",
-        onError = { message -> publishFailed(DraftSaveOrigin.CONFIRM, message) },
-        // Salvar uma mudança não agenda alarme novo: o aviso de alarme inexato fica onde está.
-        onSuccess = { publishSaved(DraftSaveOrigin.CONFIRM, AgendaFormat.announce(date, time, LocalDate.now())) },
-    ) {
-        container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)
+    ): Long {
+        val requestId = newDraftSaveRequest()
+        write(
+            action = "Não consegui salvar a mudança.",
+            onError = { message -> publishFailed(requestId, DraftSaveOrigin.CONFIRM, message) },
+            // Salvar uma mudança não agenda alarme novo: o aviso de alarme inexato fica onde está.
+            onSuccess = {
+                publishSaved(requestId, DraftSaveOrigin.CONFIRM, AgendaFormat.announce(date, time, LocalDate.now()))
+            },
+        ) {
+            container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)
+        }
+        return requestId
     }
 
-    fun repeatTomorrow(item: AgendaItem) {
+    /** Repetir amanhã é uma gravação de rascunho: devolve a identidade do pedido dela. */
+    fun repeatTomorrow(item: AgendaItem): Long {
         val tomorrow = LocalDate.now().plusDays(1)
         val draft = ParsedTaskDraft(
             title = item.series.title,
@@ -383,7 +430,7 @@ class HomeViewModel(
             observation = item.series.observation,
         )
         // O anúncio sai do próprio rascunho: "amanhã às 8h" é a data e a hora dele.
-        saveDraft(draft, DraftSaveOrigin.CONFIRM)
+        return saveDraft(draft, DraftSaveOrigin.CONFIRM)
     }
 
     suspend fun parse(text: String): ParsedTaskDraft =

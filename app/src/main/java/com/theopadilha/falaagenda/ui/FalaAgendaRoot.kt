@@ -37,6 +37,7 @@ import com.theopadilha.falaagenda.ui.home.DraftSaveOrigin
 import com.theopadilha.falaagenda.ui.home.DraftSaveOutcome
 import com.theopadilha.falaagenda.ui.home.HomeScreen
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
+import com.theopadilha.falaagenda.ui.home.NO_SAVE_REQUEST
 import com.theopadilha.falaagenda.ui.month.MonthSummaryScreen
 import com.theopadilha.falaagenda.ui.onboarding.OnboardingScreen
 import com.theopadilha.falaagenda.ui.settings.SettingsScreen
@@ -204,20 +205,31 @@ fun FalaAgendaRoot(
             val agendaUi by homeVm.agendaUi.collectAsState()
             val editingItem = editingItemId?.let { id -> agendaUi.sections.find(id) }
             val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
-            // Esta tela pediu a gravação. O pedido atravessa o giro junto com o desfecho:
-            // a tela recriada age sobre o que ela mesma pediu, uma vez só.
-            var savePending by rememberSaveable { mutableStateOf(false) }
+            // Os pedidos de gravação que ainda não foram mostrados a ninguém (ver
+            // `pendingDraftSaves`): a gravação *desta* tela, e não o `busy` do ViewModel, que
+            // também fica verdadeiro para a escrita de outra tela.
+            val pendingSaves by homeVm.pendingDraftSaves.collectAsState()
+            // O id do pedido desta tela — dado pelo ViewModel na hora do pedido, e guardado
+            // aqui porque a tela recriada pelo giro precisa reconhecer o desfecho como sendo
+            // o *dela*: o booleano de antes voltava do Bundle valendo verdadeiro e a tela
+            // nova consumia o desfecho de uma gravação anterior. `NO_SAVE_REQUEST` é
+            // "nenhum pedido em voo".
+            var saveRequest by rememberSaveable { mutableStateOf(NO_SAVE_REQUEST) }
+            val saving = saveRequest in pendingSaves
             LaunchedEffect(current) {
                 if (current == null) nav.popBackStack() else confirmError = null
             }
             // A escrita pode terminar depois do giro, e aí o desfecho não pode ir para o
             // `onDone` de uma composição descartada (a tela ficava presa, sem navegar e
-            // sem aviso). Quem pediu a gravação consome o desfecho e é ele que navega.
+            // sem aviso). Quem pediu a gravação consome o desfecho e é ele que navega — e só
+            // o desfecho do pedido *dela*.
             LaunchedEffect(saveOutcome) {
                 val outcome = saveOutcome ?: return@LaunchedEffect
-                if (outcome.origin != DraftSaveOrigin.CONFIRM || !savePending) return@LaunchedEffect
+                if (outcome.origin != DraftSaveOrigin.CONFIRM || outcome.requestId != saveRequest) {
+                    return@LaunchedEffect
+                }
                 homeVm.consumeDraftSaveOutcome()
-                savePending = false
+                saveRequest = NO_SAVE_REQUEST
                 when (outcome) {
                     is DraftSaveOutcome.Failed -> confirmError = outcome.message
                     is DraftSaveOutcome.Saved -> {
@@ -234,7 +246,7 @@ fun FalaAgendaRoot(
                     // A gravação *desta* tela — e não o `busy` do ViewModel, que também
                     // fica verdadeiro para a escrita de outra tela: com ele, a tela presa
                     // aqui mostrava "Salvando…" por causa de uma gravação que não era dela.
-                    saving = savePending,
+                    saving = saving,
                     editing = editingItem != null,
                     occurrenceStatus = editingItem?.occurrence?.status,
                     isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
@@ -270,8 +282,7 @@ fun FalaAgendaRoot(
                     },
                     onRepeat = editingItem?.let { item ->
                         {
-                            savePending = true
-                            homeVm.repeatTomorrow(item)
+                            saveRequest = homeVm.repeatTomorrow(item)
                         }
                     },
                     onEndSeries = editingItem?.let { item ->
@@ -286,24 +297,28 @@ fun FalaAgendaRoot(
                         nav.popBackStack()
                     },
                     onSave = { confirmed ->
-                        val editId = editingItem?.occurrence?.id
-                        val date = confirmed.localDate
-                        val time = confirmed.localTime
-                        // Só registra o pedido: o desfecho chega pelo ViewModel, que
-                        // atravessa o giro.
-                        savePending = true
-                        if (editId != null && date != null && time != null) {
-                            homeVm.edit(
-                                editId,
-                                confirmed.title,
-                                date,
-                                time,
-                                confirmed.recurrence,
-                                confirmed.amountCents,
-                                confirmed.observation,
-                            )
-                        } else {
-                            homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)
+                        // Um pedido por vez, como o botão desabilitado já garante: dois
+                        // toques no mesmo quadro viram duas gravações (e `saveDraft` sempre
+                        // cria uma série nova).
+                        if (!saving) {
+                            val editId = editingItem?.occurrence?.id
+                            val date = confirmed.localDate
+                            val time = confirmed.localTime
+                            // Só registra o pedido, com a identidade que o ViewModel dá a
+                            // ele: o desfecho chega pelo ViewModel, que atravessa o giro.
+                            saveRequest = if (editId != null && date != null && time != null) {
+                                homeVm.edit(
+                                    editId,
+                                    confirmed.title,
+                                    date,
+                                    time,
+                                    confirmed.recurrence,
+                                    confirmed.amountCents,
+                                    confirmed.observation,
+                                )
+                            } else {
+                                homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)
+                            }
                         }
                     },
                     saveError = confirmError,
@@ -356,17 +371,24 @@ fun FalaAgendaRoot(
             val label = if (minutes == 60L) "1 hora" else "$minutes min"
             var quickError by rememberSaveable { mutableStateOf<String?>(null) }
             val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
-            // O pedido de gravação desta tela: sem ele, o desfecho de uma gravação antiga
-            // (desta ou de outra tela) mexeria na tela nova.
-            var savePending by rememberSaveable { mutableStateOf(false) }
+            // Os pedidos de gravação ainda não mostrados a ninguém: a gravação *desta* tela.
+            val pendingSaves by homeVm.pendingDraftSaves.collectAsState()
+            // O id do pedido desta tela: sem ele, o desfecho de uma gravação antiga (desta
+            // ou de outra tela) mexeria na tela nova — e a tela recriada pelo giro precisa
+            // reconhecer o pedido dela. `NO_SAVE_REQUEST` é "nenhum pedido em voo"; um
+            // pedido que o ViewModel não conhece (o processo morreu no meio) não a prende.
+            var saveRequest by rememberSaveable { mutableStateOf(NO_SAVE_REQUEST) }
+            val saving = saveRequest in pendingSaves
             // Só sai da tela depois que o banco confirmou, senão uma gravação que falhou
             // joga a pessoa de volta sem ela saber que o aviso não existe. O desfecho sai
             // do ViewModel: girar o aparelho no meio da gravação não deixa a tela presa.
             LaunchedEffect(saveOutcome) {
                 val outcome = saveOutcome ?: return@LaunchedEffect
-                if (outcome.origin != DraftSaveOrigin.QUICK_REMIND || !savePending) return@LaunchedEffect
+                if (outcome.origin != DraftSaveOrigin.QUICK_REMIND || outcome.requestId != saveRequest) {
+                    return@LaunchedEffect
+                }
                 homeVm.consumeDraftSaveOutcome()
-                savePending = false
+                saveRequest = NO_SAVE_REQUEST
                 when (outcome) {
                     is DraftSaveOutcome.Failed -> quickError = outcome.message
                     is DraftSaveOutcome.Saved -> {
@@ -384,7 +406,7 @@ fun FalaAgendaRoot(
                 // A gravação leva o tempo do alarme e do banco: sem "Salvando…" o segundo
                 // toque era engolido em silêncio — o "toque sem resposta" que esta tela
                 // corrige no "Entendendo o recado…".
-                saving = savePending,
+                saving = saving,
                 onCancel = { nav.popBackStack() },
                 externalError = quickError,
                 onTextChanged = { quickError = null },
@@ -393,11 +415,10 @@ fun FalaAgendaRoot(
                     // outras duas telas, e a gravação leva o tempo do alarme e do banco sem
                     // nenhum "Salvando…": sem esta guarda, dois toques seguidos criavam
                     // duas tarefas e dois alarmes.
-                    if (!savePending) {
-                        savePending = true
+                    if (!saving) {
                         // QuickRemind monta data e horário a partir do "daqui N minutos":
                         // os dois vêm sempre, e o título vazio já foi barrado na tela.
-                        homeVm.saveDraft(
+                        saveRequest = homeVm.saveDraft(
                             draft = QuickRemind.draft(title, minutes, ZonedDateTime.now()),
                             origin = DraftSaveOrigin.QUICK_REMIND,
                         )

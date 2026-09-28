@@ -122,6 +122,10 @@ fun HomeScreen(
     val availableUpdate by viewModel.availableUpdate.collectAsState()
     val writeError by viewModel.writeError.collectAsState()
     val saveOutcome by viewModel.draftSaveOutcome.collectAsState()
+    // Os pedidos de gravação cujo desfecho ainda não foi mostrado a ninguém: é a gravação
+    // *desta* caixa, e não o `busy` do ViewModel, que também fica verdadeiro para a escrita
+    // de outra tela.
+    val pendingSaves by viewModel.pendingDraftSaves.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -132,10 +136,12 @@ fun HomeScreen(
     // O erro e o rascunho da caixa somem juntos: os dois atravessam o giro (ver o
     // `quickDraft` abaixo).
     var quickSaveError by rememberSaveable { mutableStateOf<String?>(null) }
-    // A caixa pediu a gravação. Guardado aqui para esta tela só agir sobre o desfecho da
-    // gravação dela — e para o desfecho de uma gravação já consumida não mexer na caixa
-    // de um recado novo.
-    var quickSavePending by rememberSaveable { mutableStateOf(false) }
+    // A caixa pediu a gravação, e o id do pedido é o que a tela recriada pelo giro
+    // reconhece como dela: o booleano de antes voltava do Bundle valendo verdadeiro e a
+    // caixa consumia o desfecho de uma gravação anterior como se fosse o dela.
+    // `NO_SAVE_REQUEST` é "nenhum pedido em voo".
+    var quickSaveRequest by rememberSaveable { mutableStateOf(NO_SAVE_REQUEST) }
+    val quickSaving = quickSaveRequest in pendingSaves
     // Binder síncrono: se ficasse na recomposição, rodaria a cada parcial da fala.
     var batteryOk by remember { mutableStateOf(DeviceIntents.isBatteryUnrestricted(context)) }
     var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
@@ -319,19 +325,21 @@ fun HomeScreen(
     // era concluída, excluída ou adiada e o aviso não aparecia.
     LaunchedEffect(statusMessage) {
         val message = statusMessage ?: return@LaunchedEffect
-        when (message.undo) {
+        val undo = message.undo
+        when (undo) {
             null -> snackbar.say(message.text)
-            // O desfazer anda junto do aviso, e o aviso só é dado por consumido quando ele
-            // sai da tela. Sem isso, o giro no meio do aviso apagava a frase e deixava o
-            // desfazer armado — o próximo aviso qualquer aparecia com um "Desfazer" que
-            // ressuscitava uma ação já aceita.
-            StatusMessage.Undo.COMPLETE -> {
+            // O desfazer anda junto do aviso — e desfaz o item *deste* recado, que viaja
+            // dentro dele. O aviso só é dado por consumido quando ele sai da tela: sem
+            // isso, o giro no meio do aviso apagava a frase e deixava o desfazer armado —
+            // o próximo aviso qualquer aparecia com um "Desfazer" que ressuscitava uma ação
+            // já aceita.
+            is StatusMessage.Undo.Complete -> {
                 val result = snackbar.say(message.text, actionLabel = "Desfazer", duration = SnackbarDuration.Long)
-                if (result == SnackbarResult.ActionPerformed) viewModel.undoComplete() else viewModel.forgetUndoComplete()
+                if (result == SnackbarResult.ActionPerformed) viewModel.undoComplete(undo.item)
             }
-            StatusMessage.Undo.DELETE -> {
+            is StatusMessage.Undo.Delete -> {
                 val result = snackbar.say(message.text, actionLabel = "Desfazer", duration = SnackbarDuration.Long)
-                if (result == SnackbarResult.ActionPerformed) viewModel.undoDelete() else viewModel.forgetUndoDelete()
+                if (result == SnackbarResult.ActionPerformed) viewModel.undoDelete(undo.item)
             }
         }
         // Consumido só depois de o aviso sair inteiro: girar no meio não apaga o recado —
@@ -354,14 +362,16 @@ fun HomeScreen(
     // duplicados).
     LaunchedEffect(saveOutcome) {
         val outcome = saveOutcome ?: return@LaunchedEffect
-        if (outcome.origin != DraftSaveOrigin.HOME_QUICK || !quickSavePending) return@LaunchedEffect
+        if (outcome.origin != DraftSaveOrigin.HOME_QUICK || outcome.requestId != quickSaveRequest) {
+            return@LaunchedEffect
+        }
         when (outcome) {
             // A caixa fica aberta com o recado: o aviso aparece por cima dela (snackbar
             // atrás de um diálogo o idoso não veria).
             is DraftSaveOutcome.Failed -> {
                 quickSaveError = outcome.message
                 viewModel.consumeDraftSaveOutcome()
-                quickSavePending = false
+                quickSaveRequest = NO_SAVE_REQUEST
             }
             is DraftSaveOutcome.Saved -> {
                 quickDraft = null
@@ -372,7 +382,7 @@ fun HomeScreen(
                 // ainda encontra o desfecho e o mostra de novo, em vez de fechar a caixa
                 // calada.
                 viewModel.consumeDraftSaveOutcome()
-                quickSavePending = false
+                quickSaveRequest = NO_SAVE_REQUEST
             }
         }
     }
@@ -714,11 +724,13 @@ fun HomeScreen(
             // A gravação *desta* caixa: o `busy` do ViewModel é de qualquer escrita, e com
             // ele a caixa dizia "Salvando…" (e travava a saída) por causa de uma gravação
             // de outra tela.
-            saving = quickSavePending,
+            saving = quickSaving,
             onSave = { confirmed ->
-                // Quem consome o desfecho é o efeito lá de cima, que sobrevive ao giro.
-                quickSavePending = true
-                viewModel.saveDraft(confirmed, DraftSaveOrigin.HOME_QUICK)
+                // Quem consome o desfecho é o efeito lá de cima, que sobrevive ao giro — e
+                // pelo id que este pedido devolve.
+                if (!quickSaving) {
+                    quickSaveRequest = viewModel.saveDraft(confirmed, DraftSaveOrigin.HOME_QUICK)
+                }
             },
             onEdit = { current ->
                 quickDraft = null

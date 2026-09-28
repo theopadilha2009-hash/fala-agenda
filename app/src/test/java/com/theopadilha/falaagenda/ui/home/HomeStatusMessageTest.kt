@@ -7,6 +7,7 @@ import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.data.repo.SaveResult
 import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -85,7 +86,11 @@ class HomeStatusMessageTest {
         val recado = viewModel.statusMessage.value
         assertThat(recado).isNotNull()
         assertThat(recado!!.text).isEqualTo("Feito.")
-        assertThat(recado.undo).isEqualTo(StatusMessage.Undo.COMPLETE)
+        val undo = recado.undo
+        assertThat(undo).isInstanceOf(StatusMessage.Undo.Complete::class.java)
+        // E o item que o desfazer devolve é o deste recado, não "o último tocado".
+        assertThat((undo as StatusMessage.Undo.Complete).item.occurrence.id)
+            .isEqualTo(salvo.occurrence.id)
     }
 
     /** O recado consumido não volta numa recomposição qualquer. */
@@ -138,23 +143,60 @@ class HomeStatusMessageTest {
 
         val recado = viewModel.statusMessage.value
         assertThat(recado!!.text).isEqualTo("Tarefa excluída.")
-        assertThat(recado.undo).isEqualTo(StatusMessage.Undo.DELETE)
+        val undo = recado.undo
+        assertThat(undo).isInstanceOf(StatusMessage.Undo.Delete::class.java)
+        assertThat((undo as StatusMessage.Undo.Delete).item.occurrence.id)
+            .isEqualTo(salvo.occurrence.id)
     }
 
-    /** O aviso saiu da tela sem desfazer: aquela exclusão deixou de estar ao alcance. */
+    /**
+     * O aviso saiu da tela sem desfazer: aquela exclusão deixou de estar ao alcance. O item
+     * viaja dentro do recado, então ele sai junto — não há mais, em lugar nenhum, um item
+     * esperando por um desfazer que ninguém pediu.
+     */
     @Test
     fun aExclusaoEsquecidaNaoVoltaNumDesfazerQualquer() {
         val salvo = runBlocking { container.tasks.saveDraft(recado()) }
         viewModel.delete(itemDe(salvo))
         esperaAGravacaoTerminar()
-        viewModel.forgetUndoDelete()
+        assertThat(viewModel.statusMessage.value).isNotNull()
 
-        viewModel.undoDelete()
+        // A home mostrou o aviso inteiro e o deu por consumido.
+        viewModel.consumeStatusMessage()
         esperaAGravacaoTerminar()
 
+        assertThat(viewModel.statusMessage.value).isNull()
         assertThat(viewModel.writeError.value).isNull()
         assertThat(runBlocking { container.tasks.snapshotAgenda().find(salvo.occurrence.id) }).isNull()
     }
+
+    /**
+     * O desfazer é do recado que ela está vendo, não do último item tocado: com dois itens
+     * concluídos em sequência, o "Desfazer" do primeiro desfazia o segundo — o item vinha
+     * de um slot (`lastCompleted`), e o slot já tinha sido trocado por baixo do aviso.
+     */
+    @Test
+    fun oDesfazerUsaOItemDoRecado() {
+        val primeiro = runBlocking { container.tasks.saveDraft(recado("tomar remédio")) }
+        val segundo = runBlocking { container.tasks.saveDraft(recado("tomar água")) }
+        viewModel.complete(itemDe(primeiro))
+        esperaAGravacaoTerminar()
+        val recado = viewModel.statusMessage.value!!
+        viewModel.complete(itemDe(segundo))
+        esperaAGravacaoTerminar()
+
+        // A home tinha o recado do primeiro em mãos quando ela tocou "Desfazer": o item
+        // desfeito é o que veio *dentro* dele.
+        viewModel.undoComplete((recado.undo as StatusMessage.Undo.Complete).item)
+        esperaAGravacaoTerminar()
+
+        assertThat(statusOf(primeiro)).isEqualTo(OccurrenceStatus.PENDING)
+        assertThat(statusOf(segundo)).isEqualTo(OccurrenceStatus.COMPLETED)
+        assertThat(recado.text).isEqualTo("Feito.")
+    }
+
+    private fun statusOf(salvo: SaveResult): OccurrenceStatus? =
+        runBlocking { container.tasks.snapshotAgenda().find(salvo.occurrence.id)?.occurrence?.status }
 
     /**
      * Adiar: a frase diz para quando o aviso foi empurrado e é montada no ViewModel, que é

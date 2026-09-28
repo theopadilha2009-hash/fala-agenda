@@ -110,8 +110,6 @@ fun HomeScreen(
     onQuick: (Long) -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
-    openOccurrenceId: String? = null,
-    onOpenOccurrenceConsumed: () -> Unit = {},
 ) {
     val agendaUi by viewModel.agendaUi.collectAsState()
     val agenda = agendaUi.sections
@@ -184,8 +182,6 @@ fun HomeScreen(
     // seletor: girar no meio cancelava a cópia e o seletor nunca abria, calado. O pedido
     // fica guardado até o seletor abrir — a tela recriada ainda o encontra.
     var shareApp by rememberSaveable { mutableStateOf(false) }
-    // O "não está mais na agenda" do aviso tocado: guardado até sair na tela.
-    var missingNotice by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(shareApp) {
         if (!shareApp) return@LaunchedEffect
         val apk = withContext(Dispatchers.IO) {
@@ -385,35 +381,6 @@ fun HomeScreen(
                 quickSaveRequest = NO_SAVE_REQUEST
             }
         }
-    }
-
-    LaunchedEffect(openOccurrenceId, agendaUi) {
-        val id = openOccurrenceId ?: return@LaunchedEffect
-        val item = agendaUi.sections.find(id)
-        if (item != null) {
-            onEditItem(item)
-            onOpenOccurrenceConsumed()
-            return@LaunchedEffect
-        }
-        // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou
-        // a agenda ainda não chegou do banco. Só o segundo caso merece espera — e o
-        // "carregou" sai do mesmo valor que a busca de cima, então ele não pode ser de
-        // uma lista que não passou por aqui.
-        if (agendaUi.loaded) {
-            // O pedido é dado por consumido aqui, mas o aviso fica guardado até sair
-            // inteiro: este efeito depende da agenda, que muda sozinha (o alarme grava, o
-            // dia vira) — deixar o pedido de pé faria a mesma frase voltar do começo a
-            // cada mudança. Girar com o aviso na tela não o apaga: a tela recriada ainda
-            // o encontra esperando.
-            onOpenOccurrenceConsumed()
-            missingNotice = true
-        }
-    }
-
-    LaunchedEffect(missingNotice) {
-        if (!missingNotice) return@LaunchedEffect
-        snackbar.showSnackbar("Esta tarefa não está mais na agenda.")
-        missingNotice = false
     }
 
     ModalNavigationDrawer(
@@ -829,7 +796,10 @@ private fun MicDock(
             contentDescription = action,
             onClick = onMic,
         )
-        if (state == VoiceState.IDLE || state == VoiceState.ERROR) {
+        // Entendendo o recado a saída continua à mão: com a IA o parse leva até 20 s, e
+        // sem estes botões ela ficava sem como escrever a tarefa nem usar os atalhos
+        // enquanto esperava — com o microfone fora da mão dela, era ficar sem saída.
+        if (state == VoiceState.IDLE || state == VoiceState.UNDERSTANDING || state == VoiceState.ERROR) {
             // No erro a saída de escrever é obrigatória: se o microfone não vai, é por aqui que ele cria a tarefa.
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),

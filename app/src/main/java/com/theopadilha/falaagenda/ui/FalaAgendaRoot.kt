@@ -22,6 +22,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
+import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.MissingDraftField
@@ -90,9 +91,10 @@ fun FalaAgendaRoot(
     var writeError by rememberSaveable { mutableStateOf<String?>(null) }
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
-    // O alarme pede uma ocorrência por id; a home só avisa que atendeu quando acha o
-    // item. Guardamos o pedido aqui e o damos por consumido na hora, senão um id que
-    // não existe (tarefa excluída) fica pendurado para sempre no intent.
+    val agendaUi by homeVm.agendaUi.collectAsState()
+    // O alarme pede uma ocorrência por id; quem a atende é o efeito abaixo, que a procura
+    // na agenda. O pedido é dado por consumido na hora: um id que não existe (tarefa
+    // excluída) não pode ficar pendurado para sempre no intent.
     LaunchedEffect(openOccurrenceId) {
         val id = openOccurrenceId ?: return@LaunchedEffect
         pendingOccurrenceId = id
@@ -133,6 +135,49 @@ fun FalaAgendaRoot(
             CircularProgressIndicator()
         }
         return
+    }
+
+    // Abrir uma tarefa da agenda é o mesmo caminho para o toque no cartão e para o toque
+    // no aviso: a tela de confirmação, com o rascunho dela.
+    val openForEdit: (AgendaItem) -> Unit = { item ->
+        editingItemId = item.occurrence.id
+        draft = ParsedTaskDraft(
+            title = item.series.title,
+            localDate = item.occurrence.localDate,
+            localTime = item.series.localTime,
+            recurrence = item.series.recurrence,
+            confidence = 1.0,
+            missingFields = emptySet(),
+            ambiguous = false,
+            transcript = "",
+            amountCents = item.series.amountCents,
+            observation = item.series.observation,
+        )
+        nav.navigate("confirm") {
+            launchSingleTop = true
+        }
+    }
+    // O pedido do aviso é atendido aqui, e não dentro da home: o `NavHost` só compõe o
+    // destino atual, e com ela na confirmação, escrevendo uma tarefa, no "Daqui N min",
+    // no resumo do mês ou nos Ajustes o toque no aviso não fazia nada — o pedido ficava
+    // esperando e só valia quando ela voltava para a home, fora de contexto.
+    LaunchedEffect(pendingOccurrenceId, agendaUi) {
+        val id = pendingOccurrenceId ?: return@LaunchedEffect
+        val item = agendaUi.sections.find(id)
+        if (item != null) {
+            pendingOccurrenceId = null
+            openForEdit(item)
+            return@LaunchedEffect
+        }
+        // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou a
+        // agenda ainda não chegou do banco. Só o segundo caso merece espera — e o
+        // "carregou" sai do mesmo valor que a busca de cima, então ele não pode ser de uma
+        // lista que não passou por aqui. O recado sai pela home, que é onde ele aparece, e
+        // fica guardado até ela mostrá-lo.
+        if (agendaUi.loaded) {
+            pendingOccurrenceId = null
+            homeVm.publishStatus("Esta tarefa não está mais na agenda.")
+        }
     }
 
     val start = if (onboardingDone) "home" else "onboarding"
@@ -176,34 +221,21 @@ fun FalaAgendaRoot(
                         launchSingleTop = true
                     }
                 },
-                onEditItem = { item ->
-                    editingItemId = item.occurrence.id
-                    draft = ParsedTaskDraft(
-                        title = item.series.title,
-                        localDate = item.occurrence.localDate,
-                        localTime = item.series.localTime,
-                        recurrence = item.series.recurrence,
-                        confidence = 1.0,
-                        missingFields = emptySet(),
-                        ambiguous = false,
-                        transcript = "",
-                        amountCents = item.series.amountCents,
-                        observation = item.series.observation,
-                    )
-                    nav.navigate("confirm") {
-                        launchSingleTop = true
-                    }
-                },
-                openOccurrenceId = pendingOccurrenceId,
-                onOpenOccurrenceConsumed = { pendingOccurrenceId = null },
+                onEditItem = openForEdit,
             )
         }
         composable("confirm") {
             val current = draft
-            // Reencontrada na agenda a cada recomposição: sobrevive à recriação da
-            // Activity sem guardar o item inteiro no Bundle e sem ficar com cópia velha.
-            val agendaUi by homeVm.agendaUi.collectAsState()
+            // Reencontrada na agenda a cada recomposição (o valor vem do escopo de cima):
+            // sobrevive à recriação da Activity sem guardar o item inteiro no Bundle e sem
+            // ficar com cópia velha.
             val editingItem = editingItemId?.let { id -> agendaUi.sections.find(id) }
+            // A agenda ainda não respondeu: sem ela não dá para saber se este rascunho é a
+            // edição de uma tarefa ou uma tarefa nova. Decidir agora era o que transformava
+            // "Editar tarefa" em "Confira antes de salvar" e mandava a gravação para o
+            // caminho de criar — uma segunda série com o mesmo título e o mesmo horário, e
+            // um segundo alarme. A tela espera o banco em vez de decidir.
+            val awaitingEditingItem = editingItemId != null && !agendaUi.loaded
             val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
             // Os pedidos de gravação que ainda não foram mostrados a ninguém (ver
             // `pendingDraftSaves`): a gravação *desta* tela, e não o `busy` do ViewModel, que
@@ -240,7 +272,17 @@ fun FalaAgendaRoot(
                     }
                 }
             }
-            if (current != null) {
+            if (current != null && awaitingEditingItem) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            if (current != null && !awaitingEditingItem) {
                 ConfirmDraftScreen(
                     initial = current,
                     // A gravação *desta* tela — e não o `busy` do ViewModel, que também

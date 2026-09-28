@@ -33,7 +33,12 @@ fun QuickConfirmDialog(
     val date = draft.localDate
     val time = draft.localTime
     AlertDialog(
-        onDismissRequest = onCancel,
+        // Sair da caixa no meio da gravação deixava a gravação órfã de confirmação: ela
+        // toca "Salvar", some da caixa por "Mudar" e a tela seguinte salva o mesmo recado
+        // de novo, porque `saveDraft` sempre cria uma série nova — duas tarefas, dois
+        // alarmes no mesmo horário. Enquanto a gravação dela está em voo, a saída não
+        // existe; o desfecho chega e a caixa fecha ou mostra o erro.
+        onDismissRequest = { if (!saving) onCancel() },
         title = {
             Text(
                 "Pode salvar?",
@@ -65,11 +70,15 @@ fun QuickConfirmDialog(
                         onSave(draft)
                     },
                 )
-                SecondaryButton("Mudar") { onEdit(draft) }
+                SecondaryButton("Mudar", enabled = !saving) { onEdit(draft) }
             }
         },
         confirmButton = {
-            TextButton(onClick = onCancel, modifier = Modifier.height(56.dp)) {
+            TextButton(
+                onClick = onCancel,
+                enabled = !saving,
+                modifier = Modifier.height(56.dp),
+            ) {
                 Text("Cancelar")
             }
         },

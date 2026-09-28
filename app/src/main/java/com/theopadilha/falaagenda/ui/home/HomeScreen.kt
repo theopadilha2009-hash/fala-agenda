@@ -110,8 +110,6 @@ fun HomeScreen(
     onQuick: (Long) -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
-    statusMessage: String? = null,
-    onStatusConsumed: () -> Unit = {},
     openOccurrenceId: String? = null,
     onOpenOccurrenceConsumed: () -> Unit = {},
 ) {
@@ -124,7 +122,7 @@ fun HomeScreen(
     val availableUpdate by viewModel.availableUpdate.collectAsState()
     val writeError by viewModel.writeError.collectAsState()
     val saveOutcome by viewModel.draftSaveOutcome.collectAsState()
-    val undoableDelete by viewModel.undoableDelete.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
@@ -193,20 +191,7 @@ fun HomeScreen(
         )
         shareApp = false
     }
-    val completeWithUndo: (AgendaItem) -> Unit = { item ->
-        viewModel.complete(item) {
-            scope.launch {
-                val result = snackbar.say(
-                    message = "Feito.",
-                    actionLabel = "Desfazer",
-                    duration = SnackbarDuration.Long,
-                )
-                if (result == SnackbarResult.ActionPerformed) {
-                    viewModel.undoComplete()
-                }
-            }
-        }
-    }
+    val completeWithUndo: (AgendaItem) -> Unit = { item -> viewModel.complete(item) }
     // A caixa "Pode salvar?" guarda o rascunho num estado que a rotação recria: o efeito
     // abaixo já tirou o recado da sessão para abrir a caixa (consumeDraft), então um
     // `remember` aqui apagava a fala reconhecida e parseada no giro, sem erro nenhum.
@@ -329,28 +314,29 @@ fun HomeScreen(
         }
     }
 
+    // O recado da última ação mora no ViewModel (ver `StatusMessage`): a escrita atravessa
+    // o giro, e o `onDone` de antes escrevia no estado da composição descartada — a tarefa
+    // era concluída, excluída ou adiada e o aviso não aparecia.
     LaunchedEffect(statusMessage) {
         val message = statusMessage ?: return@LaunchedEffect
-        if (undoableDelete != null) {
-            // Excluir é o único aviso que precisa de volta na mesma frase: o desfazer
-            // anda junto do aviso, e o aviso só é dado por consumido quando ele sai da
-            // tela. Sem isso, o giro no meio do aviso apagava a frase e deixava o
+        when (message.undo) {
+            null -> snackbar.say(message.text)
+            // O desfazer anda junto do aviso, e o aviso só é dado por consumido quando ele
+            // sai da tela. Sem isso, o giro no meio do aviso apagava a frase e deixava o
             // desfazer armado — o próximo aviso qualquer aparecia com um "Desfazer" que
-            // ressuscitava uma exclusão já aceita.
-            val result = snackbar.say(
-                message = message,
-                actionLabel = "Desfazer",
-                duration = SnackbarDuration.Long,
-            )
-            if (result == SnackbarResult.ActionPerformed) {
-                viewModel.undoDelete()
-            } else {
-                viewModel.forgetUndoDelete()
+            // ressuscitava uma ação já aceita.
+            StatusMessage.Undo.COMPLETE -> {
+                val result = snackbar.say(message.text, actionLabel = "Desfazer", duration = SnackbarDuration.Long)
+                if (result == SnackbarResult.ActionPerformed) viewModel.undoComplete() else viewModel.forgetUndoComplete()
             }
-        } else {
-            snackbar.say(message)
+            StatusMessage.Undo.DELETE -> {
+                val result = snackbar.say(message.text, actionLabel = "Desfazer", duration = SnackbarDuration.Long)
+                if (result == SnackbarResult.ActionPerformed) viewModel.undoDelete() else viewModel.forgetUndoDelete()
+            }
         }
-        onStatusConsumed()
+        // Consumido só depois de o aviso sair inteiro: girar no meio não apaga o recado —
+        // a tela nova ainda o encontra esperando e o mostra de novo.
+        viewModel.consumeStatusMessage()
     }
 
     // Mesmo desenho dos outros avisos: a falha de gravação fica no ViewModel até a tela
@@ -725,7 +711,10 @@ fun HomeScreen(
     quickDraft?.let { draft ->
         QuickConfirmDialog(
             draft = draft,
-            saving = busy,
+            // A gravação *desta* caixa: o `busy` do ViewModel é de qualquer escrita, e com
+            // ele a caixa dizia "Salvando…" (e travava a saída) por causa de uma gravação
+            // de outra tela.
+            saving = quickSavePending,
             onSave = { confirmed ->
                 // Quem consome o desfecho é o efeito lá de cima, que sobrevive ao giro.
                 quickSavePending = true

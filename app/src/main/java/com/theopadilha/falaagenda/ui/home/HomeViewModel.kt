@@ -105,6 +105,31 @@ sealed interface DraftSaveOutcome {
     ) : DraftSaveOutcome
 }
 
+/**
+ * O recado da última ação — "Feito.", "Tarefa excluída.", "Vai avisar amanhã às 8h." —,
+ * esperando a home mostrá-lo.
+ *
+ * Mora aqui, e não no `onDone` da composição que pediu a ação, pelo mesmo motivo do
+ * [DraftSaveOutcome]: o `write` roda no escopo do ViewModel e atravessa o giro do aparelho,
+ * enquanto o `onDone` escrevia num `MutableState` já descartado. A tarefa era concluída,
+ * excluída ou adiada e o aviso caía num estado morto — ela fez a coisa e não ficou sabendo
+ * se valeu. A falha tinha o mesmo destino, calada.
+ */
+data class StatusMessage(
+    /**
+     * Identidade do evento: concluir duas tarefas seguidas dá a mesma frase duas vezes, e o
+     * `StateFlow` não emite valor igual ao atual. Sem isto o segundo "Feito." não chegava a
+     * ninguém e a tela ficava com o desfazer armado do primeiro — da tarefa errada.
+     * Ninguém decide nada por ele.
+     */
+    val seq: Long,
+    val text: String,
+    /** O que o botão "Desfazer" desfaz; nulo quando o recado não tem volta. */
+    val undo: Undo? = null,
+) {
+    enum class Undo { COMPLETE, DELETE }
+}
+
 private const val TAG = "FalaAgendaHome"
 
 class HomeViewModel(
@@ -146,6 +171,15 @@ class HomeViewModel(
     /** Ver [DraftSaveOutcome.seq]: é o que faz dois desfechos iguais serem dois eventos. */
     private var outcomeSeq = 0L
 
+    /**
+     * O recado da última ação, esperando a home. Ver [StatusMessage]: a escrita atravessa o
+     * giro, então quem anuncia é quem volta, não a tela que pediu.
+     */
+    private val _statusMessage = MutableStateFlow<StatusMessage?>(null)
+    val statusMessage: StateFlow<StatusMessage?> = _statusMessage
+
+    private var statusSeq = 0L
+
     init {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -166,6 +200,19 @@ class HomeViewModel(
     /** A tela agiu sobre o desfecho: ele não volta numa próxima composição. */
     fun consumeDraftSaveOutcome() {
         _draftSaveOutcome.value = null
+    }
+
+    /**
+     * Publica o recado de uma ação que terminou. Quem o mostra é a home — e só depois de
+     * ele sair inteiro na tela, senão o giro o apagaria para sempre.
+     */
+    fun publishStatus(text: String, undo: StatusMessage.Undo? = null) {
+        _statusMessage.value = StatusMessage(++statusSeq, text, undo)
+    }
+
+    /** O recado saiu da tela inteiro: ele não volta numa próxima composição. */
+    fun consumeStatusMessage() {
+        _statusMessage.value = null
     }
 
     /**
@@ -229,11 +276,11 @@ class HomeViewModel(
         }
     }
 
-    fun complete(item: AgendaItem, onDone: () -> Unit = {}) = write(
+    fun complete(item: AgendaItem) = write(
         action = "Não consegui marcar como feito.",
         onSuccess = {
             lastCompleted = item
-            onDone()
+            publishStatus("Feito.", StatusMessage.Undo.COMPLETE)
         },
     ) { container.tasks.complete(item.occurrence.id) }
 
@@ -243,60 +290,63 @@ class HomeViewModel(
         write("Não consegui desfazer.") { container.tasks.uncomplete(item) }
     }
 
+    /** O aviso saiu da tela sem desfazer: a conclusão deixou de estar ao alcance. */
+    fun forgetUndoComplete() {
+        lastCompleted = null
+    }
+
     private var lastCompleted: AgendaItem? = null
     private var lastDeleted: AgendaItem? = null
 
-    /**
-     * Exclusão que ainda dá para desfazer. Enquanto isto não for nulo, a home mostra o
-     * aviso de "Tarefa excluída" com o botão de desfazer.
-     */
-    private val _undoableDelete = MutableStateFlow<AgendaItem?>(null)
-    val undoableDelete: StateFlow<AgendaItem?> = _undoableDelete
-
-    fun delete(item: AgendaItem, onDeleted: () -> Unit = {}) = write(
+    fun delete(item: AgendaItem) = write(
         action = "Não consegui excluir.",
         onSuccess = {
             lastDeleted = item
-            _undoableDelete.value = item
-            onDeleted()
+            publishStatus("Tarefa excluída.", StatusMessage.Undo.DELETE)
         },
     ) { container.tasks.deleteOccurrence(item.occurrence.id) }
 
     fun undoDelete() {
         val item = lastDeleted ?: return
         lastDeleted = null
-        _undoableDelete.value = null
         write("Não consegui desfazer.") { container.tasks.restore(item) }
     }
 
     /** O aviso saiu da tela sem desfazer: a exclusão deixou de estar ao alcance. */
     fun forgetUndoDelete() {
         lastDeleted = null
-        _undoableDelete.value = null
     }
 
-    fun endSeries(seriesId: String, onDone: () -> Unit = {}) = write(
+    fun endSeries(seriesId: String) = write(
         action = "Não consegui encerrar a série.",
-        onSuccess = { onDone() },
+        onSuccess = { publishStatus("Série encerrada.") },
     ) { container.tasks.endSeries(seriesId) }
 
-    fun snooze(id: String, minutes: Long = 30, onDone: (String) -> Unit = {}) = write(
+    fun snooze(id: String, minutes: Long = 30) = write(
         action = "Não consegui adiar.",
         onSuccess = {
             val at = java.time.ZonedDateTime.now().plusMinutes(minutes)
-            onDone(AgendaFormat.announce(at.toLocalDate(), at.toLocalTime().withSecond(0).withNano(0), LocalDate.now()))
+            publishStatus(
+                AgendaFormat.announce(
+                    at.toLocalDate(),
+                    at.toLocalTime().withSecond(0).withNano(0),
+                    LocalDate.now(),
+                ),
+            )
         },
     ) { container.tasks.snooze(id, minutes) }
 
-    fun retryMissed(id: String, onDone: (String) -> Unit = {}) = write(
+    fun retryMissed(id: String) = write(
         action = "Não consegui remarcar.",
         onSuccess = { result ->
-            if (result == null) {
-                onDone("Não deu para remarcar esta tarefa.")
-            } else {
-                val whenLabel = AgendaFormat.dateLabel(result.date, LocalDate.now()).lowercase()
-                onDone("Vai avisar $whenLabel às ${AgendaFormat.time(result.time)}.")
-            }
+            publishStatus(
+                if (result == null) {
+                    "Não deu para remarcar esta tarefa."
+                } else {
+                    val whenLabel = AgendaFormat.dateLabel(result.date, LocalDate.now()).lowercase()
+                    "Vai avisar $whenLabel às ${AgendaFormat.time(result.time)}."
+                },
+            )
         },
     ) { container.tasks.retryMissed(id) }
 

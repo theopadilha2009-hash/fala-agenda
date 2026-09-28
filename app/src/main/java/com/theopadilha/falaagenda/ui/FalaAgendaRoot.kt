@@ -78,18 +78,17 @@ fun FalaAgendaRoot(
     // A tarefa editada é guardada pelo id e reencontrada na agenda: o item inteiro não
     // cabe no Bundle e, relido da agenda, volta sempre com o estado do banco.
     var editingItemId by rememberSaveable { mutableStateOf<String?>(null) }
-    // O pedido do alarme e o recado da última ação atravessam o giro: a home só os dá por
-    // consumidos depois de mostrar o que eles pedem, e um `remember` aqui os apagava no
-    // meio do aviso — o toque no alarme ficava sem resposta e a exclusão, sem desfazer.
+    // O pedido do alarme atravessa o giro: a home só o dá por consumido depois de mostrar
+    // o que ele pede, e um `remember` aqui o apagava no meio do aviso — o toque no alarme
+    // ficava sem resposta. O recado da última ação não precisa disto: ele mora no
+    // `HomeViewModel` (ver `StatusMessage`), que a rotação não alcança.
     var pendingOccurrenceId by rememberSaveable { mutableStateOf<String?>(null) }
-    var statusMessage by rememberSaveable { mutableStateOf<String?>(null) }
     // Erro de gravação mostrado na própria tela de confirmação, que não pode sumir
     // como se tivesse salvado.
     var confirmError by rememberSaveable { mutableStateOf<String?>(null) }
     var writeError by rememberSaveable { mutableStateOf<String?>(null) }
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
-    val busy by homeVm.busy.collectAsState()
     // O alarme pede uma ocorrência por id; a home só avisa que atendeu quando acha o
     // item. Guardamos o pedido aqui e o damos por consumido na hora, senão um id que
     // não existe (tarefa excluída) fica pendurado para sempre no intent.
@@ -117,7 +116,7 @@ fun FalaAgendaRoot(
                 throw cancellation
             } catch (error: Exception) {
                 Log.w(TAG, "Não consegui salvar a aparência.", error)
-                statusMessage = "Não consegui salvar a aparência. Tente de novo."
+                homeVm.publishStatus("Não consegui salvar a aparência. Tente de novo.")
             }
         }
         pendingTheme = null
@@ -194,8 +193,6 @@ fun FalaAgendaRoot(
                         launchSingleTop = true
                     }
                 },
-                statusMessage = statusMessage,
-                onStatusConsumed = { statusMessage = null },
                 openOccurrenceId = pendingOccurrenceId,
                 onOpenOccurrenceConsumed = { pendingOccurrenceId = null },
             )
@@ -226,7 +223,7 @@ fun FalaAgendaRoot(
                     is DraftSaveOutcome.Saved -> {
                         editingItemId = null
                         outcome.usedInexactAlarm?.let(homeVm::setInexactWarning)
-                        statusMessage = outcome.message
+                        homeVm.publishStatus(outcome.message)
                         nav.popBackStack()
                     }
                 }
@@ -234,7 +231,10 @@ fun FalaAgendaRoot(
             if (current != null) {
                 ConfirmDraftScreen(
                     initial = current,
-                    saving = busy,
+                    // A gravação *desta* tela — e não o `busy` do ViewModel, que também
+                    // fica verdadeiro para a escrita de outra tela: com ele, a tela presa
+                    // aqui mostrava "Salvando…" por causa de uma gravação que não era dela.
+                    saving = savePending,
                     editing = editingItem != null,
                     occurrenceStatus = editingItem?.occurrence?.status,
                     isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
@@ -242,32 +242,28 @@ fun FalaAgendaRoot(
                         {
                             // O recado só aparece depois que a gravação passou: falhou,
                             // o home mostra o erro em vez de um "Feito." que não houve.
-                            homeVm.complete(item, onDone = { statusMessage = "Feito." })
+                            homeVm.complete(item)
                             editingItemId = null
                             nav.popBackStack()
                         }
                     },
                     onSnooze = editingItem?.let { item ->
                         { minutes ->
-                            homeVm.snooze(item.occurrence.id, minutes) { message ->
-                                statusMessage = message
-                            }
+                            homeVm.snooze(item.occurrence.id, minutes)
                             editingItemId = null
                             nav.popBackStack()
                         }
                     },
                     onDelete = editingItem?.let { item ->
                         {
-                            homeVm.delete(item, onDeleted = { statusMessage = "Tarefa excluída." })
+                            homeVm.delete(item)
                             editingItemId = null
                             nav.popBackStack()
                         }
                     },
                     onRetry = editingItem?.let { item ->
                         {
-                            homeVm.retryMissed(item.occurrence.id) { message ->
-                                statusMessage = message
-                            }
+                            homeVm.retryMissed(item.occurrence.id)
                             editingItemId = null
                             nav.popBackStack()
                         }
@@ -280,7 +276,7 @@ fun FalaAgendaRoot(
                     },
                     onEndSeries = editingItem?.let { item ->
                         {
-                            homeVm.endSeries(item.series.id, onDone = { statusMessage = "Série encerrada." })
+                            homeVm.endSeries(item.series.id)
                             editingItemId = null
                             nav.popBackStack()
                         }
@@ -375,7 +371,7 @@ fun FalaAgendaRoot(
                     is DraftSaveOutcome.Failed -> quickError = outcome.message
                     is DraftSaveOutcome.Saved -> {
                         outcome.usedInexactAlarm?.let(homeVm::setInexactWarning)
-                        statusMessage = outcome.message
+                        homeVm.publishStatus(outcome.message)
                         nav.popBackStack()
                     }
                 }
@@ -385,6 +381,10 @@ fun FalaAgendaRoot(
                 help = "Escreva o que precisa ser feito. O aviso toca daqui $label.",
                 placeholder = "Ex.: tomar água",
                 confirmLabel = "Salvar",
+                // A gravação leva o tempo do alarme e do banco: sem "Salvando…" o segundo
+                // toque era engolido em silêncio — o "toque sem resposta" que esta tela
+                // corrige no "Entendendo o recado…".
+                saving = savePending,
                 onCancel = { nav.popBackStack() },
                 externalError = quickError,
                 onTextChanged = { quickError = null },

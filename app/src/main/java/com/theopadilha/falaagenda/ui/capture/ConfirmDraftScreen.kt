@@ -335,34 +335,39 @@ fun ConfirmDraftScreen(
                     )
                 },
             )
-            SecondaryButton("Cancelar", onClick = onCancel)
+            SecondaryButton("Cancelar", enabled = !saving, onClick = onCancel)
             if (editing) {
+                // Com uma gravação desta tela em voo, nenhuma outra ação sai daqui: duas
+                // escritas concorrentes sobre a mesma ocorrência (salvar e excluir, adiar
+                // duas vezes) se atropelam no banco, e a tela sai no mesmo toque de
+                // qualquer uma delas — sem tempo de ver a anterior ter falhado.
                 Text("Esta tarefa", style = MaterialTheme.typography.titleMedium)
                 if (
                     (occurrenceStatus == OccurrenceStatus.PENDING || occurrenceStatus == OccurrenceStatus.MISSED) &&
                     onComplete != null
                 ) {
-                    PrimaryButton("Concluir") { onComplete() }
+                    PrimaryButton("Concluir", enabled = !saving) { onComplete() }
                 }
                 if (occurrenceStatus == OccurrenceStatus.PENDING && onSnooze != null) {
                     Text("Adiar", style = MaterialTheme.typography.bodyLarge)
                     ChipRow(
                         options = listOf("10 min" to 10L, "30 min" to 30L, "1 hora" to 60L),
                         selected = null,
+                        enabled = !saving,
                         onPick = onSnooze,
                     )
                 }
                 if (occurrenceStatus == OccurrenceStatus.MISSED && !isRecurring && onRetry != null) {
-                    PrimaryButton("Fazer hoje") { onRetry() }
+                    PrimaryButton("Fazer hoje", enabled = !saving) { onRetry() }
                 }
                 if (occurrenceStatus == OccurrenceStatus.COMPLETED && !isRecurring && onRepeat != null) {
-                    PrimaryButton("Amanhã de novo") { onRepeat() }
+                    PrimaryButton("Amanhã de novo", enabled = !saving) { onRepeat() }
                 }
                 if (onDelete != null) {
-                    SecondaryButton("Excluir") { onDelete() }
+                    SecondaryButton("Excluir", enabled = !saving) { onDelete() }
                 }
                 if (isRecurring && onEndSeries != null) {
-                    SecondaryButton("Encerrar série") { onEndSeries() }
+                    SecondaryButton("Encerrar série", enabled = !saving) { onEndSeries() }
                 }
             }
             Text(
@@ -446,6 +451,7 @@ internal fun recurrenceFor(
 private fun <T> ChipRow(
     options: List<Pair<String, T>>,
     selected: T?,
+    enabled: Boolean = true,
     onPick: (T) -> Unit,
 ) {
     FlowRow(
@@ -456,6 +462,7 @@ private fun <T> ChipRow(
         options.forEach { (label, value) ->
             FilterChip(
                 selected = selected == value,
+                enabled = enabled,
                 onClick = { onPick(value) },
                 modifier = Modifier.heightIn(min = 48.dp),
                 label = { Text(label, style = MaterialTheme.typography.labelLarge) },

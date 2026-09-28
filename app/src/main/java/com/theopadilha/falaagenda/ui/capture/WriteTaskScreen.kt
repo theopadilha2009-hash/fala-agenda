@@ -41,6 +41,7 @@ fun WriteTaskScreen(
     onConfirm: (String) -> Unit,
     onCancel: () -> Unit,
     understanding: Boolean = false,
+    saving: Boolean = false,
     externalError: String? = null,
     onTextChanged: () -> Unit = {},
 ) {
@@ -51,12 +52,15 @@ fun WriteTaskScreen(
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     // Com IA o parse leva até ~20 s: sem isto o toque não tem resposta nenhuma, e o
-    // recado já entregue seria entregue de novo. Um por vez, como na home.
+    // recado já entregue seria entregue de novo. Um por vez, como na home. A gravação
+    // (o "Daqui N min") tem o mesmo problema com o tempo do alarme e do banco, e o mesmo
+    // tratamento: o botão sai da mão dela e a tela diz que está trabalhando.
+    val busy = understanding || saving
     val submit = {
         val value = text.trim()
         if (value.isBlank()) {
             error = "Escreva o recado neste campo."
-        } else if (!understanding) {
+        } else if (!busy) {
             onConfirm(value)
         }
     }
@@ -97,13 +101,18 @@ fun WriteTaskScreen(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { submit() }),
             )
-            if (understanding) {
+            if (busy) {
                 // Ela apertou e o app está pensando: dizer isso é a diferença entre
                 // esperar e achar que o toque não pegou.
-                Text("Entendendo o recado…", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    if (understanding) "Entendendo o recado…" else "Salvando…",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
             }
-            PrimaryButton(confirmLabel, enabled = !understanding, onClick = submit)
-            SecondaryButton("Cancelar", onClick = onCancel)
+            PrimaryButton(confirmLabel, enabled = !busy, onClick = submit)
+            // Sair no meio da gravação deixaria o aviso salvo sem ninguém para anunciá-lo:
+            // o desfecho chega quando a tela já não existe e ela nunca sabe se valeu.
+            SecondaryButton("Cancelar", enabled = !saving, onClick = onCancel)
         }
     }
 }

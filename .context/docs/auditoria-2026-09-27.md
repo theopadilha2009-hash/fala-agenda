@@ -387,3 +387,184 @@ build; o que sustenta os itens acima é leitura de código e os testes escritos 
 fix — não output de execução. O `:app` que não compilava na árvore de `6607b18` (item 3
 acima) está fechado: `a76bc2f` passa o `occurrenceDay` no call site, e o
 `:app:testDebugUnitTest` roda 173 testes, 0 falhas (`app/build/test-results/`).
+*(O 173 é o retrato da árvore de `a76bc2f`. O número final está no adendo 3.)*
+
+---
+
+## Adendo 3 — o desfecho: o #15, as quatro rodadas de review e o que ficou sem prova
+
+Data: 2026-09-28 · `main` antes: `0a46352` (#14) · merge: `d836d8d`
+
+Os adendos acima contam a auditoria até a metade. Depois do último parágrafo, a branch
+`fix/auditoria-2` atravessou **quatro rodadas de review independente, com correção em cada
+uma**, e foi mergeada. É isto que faltava ao doc — e é o que o próximo a mexer no app precisa
+ler antes dos adendos 1 e 2.
+
+### O que foi mergeado
+
+- PR **#15**, `fix/auditoria-2` → `main`, squash em **`d836d8d`** (2026-09-28 00:19): 69
+  arquivos, 7 150 inserções, 658 remoções (`git show --stat d836d8d`). A branch tinha **42
+  commits** (`git rev-list --count 0a46352..cd78073`), 13 dos quais merges das frentes em
+  worktree — as 13 frentes do adendo 2. A rodada 2 leu a árvore quando ela tinha 36 commits
+  (`git rev-list --count 0a46352..d2c02b4`); os consertos dela aterrissaram depois.
+
+Ordem em que os consertos chegaram (a ordem em que o review os pediu é outra — ver a tabela
+abaixo): `a76bc2f` (costura das frentes) · `b654ba8` (aviso adiado pela noite) · `cf9a2c4`
+(assinatura do APK / lint) · `eeb126d` (pendente atrasada em Hoje) · `f22a036` (mutações
+serializadas, entrega pendente, transações) · `69dc79e` (home: `agendaLoaded`, fala, código
+morto, rótulo) · `0bbdab3` (teste do teto de tombstones) · `d2c02b4` (este doc) ·
+`178fcd3` + `9290832` (varredura de rotação: sete pontos em que girar perdia a ação dela ou a
+deixava sem resposta) · `2637153` (entrega pendente) · `5d38e0f` (desfecho em voo no giro) ·
+`df2d0b7` (confirmação: duplicação e ação sem resposta) · `cd78073` (desfecho órfão e o id do
+pedido).
+
+### Os números finais
+
+| Alvo | Resultado |
+|---|---|
+| `:domain:test` | **110** testes |
+| `:app:testDebugUnitTest` | **230** testes |
+| `:app:lintDebug` | **0 erros**, 82 avisos (os de sempre) |
+| `:app:compileDebugAndroidTestKotlin` | compila — e só (ver pendências) |
+
+**Como os números foram obtidos** (esta passada não rodou build): contagem de anotações na
+árvore — `git grep -c "@Test" -- 'app/src/test'` somando a última coluna dá 230, e
+`domain/src/test` dá 110 — **conferida contra os XMLs da última execução da branch**
+(`app/build/test-results/testDebugUnitTest/*.xml` e `domain/build/test-results/**`, soma de
+`tests=` = 230 e 110). Fonte e XML batem; lint pelos `app/build/reports/lint-results-debug.txt`
+(`0 errors, 82 warnings`).
+
+### As quatro rodadas
+
+| # | Sobre o quê | O que achou | Onde fechou |
+|---|---|---|---|
+| 1ª | o diff das 13 frentes | 6 findings: corrida na agenda, o `agendaLoaded` que mentia, transações e 3 de qualidade (código morto, teste tautológico, lint `NewApi`) | `f22a036`, `69dc79e`, `0bbdab3`, `cf9a2c4` |
+| 2ª | o diff inteiro (36 commits) | **P1** girar durante o "Salvando…"; **P2** o lembrete nunca entregue virando MISSED na virada do dia | `5d38e0f`, `2637153` |
+| 3ª | os dois commits que responderam a P1/P2 | a resposta ao P1 estava pela metade; as cinco confirmações de ação continuavam morrendo no giro | `df2d0b7` |
+| 4ª | o commit final | o back do sistema na tela "Daqui N min" saía sem consumir o desfecho | `cd78073` |
+
+**1ª — o diff das 13 frentes.** As frentes rodaram em worktrees paralelos e o review foi
+sobre o que elas produziram juntas:
+- **Corrida na agenda** (`f22a036`): todo start dispara `rescheduleAll` num escopo sem lock e
+  o receiver do alarme pode chamar `onAlarmFired` em paralelo; a varredura lia o banco antes e
+  gravava depois do disparo (ou do "Excluir" dela) e desfazia o que o outro caminho acabara de
+  decidir. Virou um `Mutex` no repositório — **só nas mutações; a agenda que a tela lê não
+  espera**.
+- **Transações** (`f22a036`): as escritas que tocam série e ocorrência passam por
+  `OccurrenceDao.applyBatch` — uma transação do Room (`performInTransactionSuspending`).
+  Morrer no meio não deixa mais a data excluída sem tombstone nem a série sem a ocorrência.
+- **O `agendaLoaded` que mentia** (`69dc79e`): o "carregado" da agenda vinha de um `stateIn`
+  diferente do que a busca por id usava — dois `observeAgenda()`. O toque no aviso do remédio
+  respondia "Esta tarefa não está mais na agenda" com a lista ainda na inicial vazia e
+  **descartava o id**. Agora os dois saem do mesmo valor (`AgendaUi`).
+- **Qualidade ×3**: `quickRemind` sem chamador e a guarda inalcançável da rota
+  `quick/{minutes}` (`69dc79e`); o teste do teto de tombstones que montava 200 datas para trás,
+  o filtro de 90 dias reduzia para 91 antes do `take(120)` e o `isAtMost(120)` passava com
+  qualquer implementação (`0bbdab3`); o `NewApi` que **quebrava o build** do lint porque
+  `PackageInfo.signingInfo` era lido sem guarda — e nas APIs 26/27 o campo nem está na classe
+  do sistema, onde lê-lo não devolve `null`, derruba a chamada (`cf9a2c4`).
+
+**2ª — o diff inteiro.**
+- **P1 » `5d38e0f`.** O desfecho de uma gravação em voo era escrito no estado da composição
+  que a rotação já tinha descartado: a caixa "Pode salvar?" continuava cheia e sem confirmação
+  nenhuma, e o toque seguinte salvava o mesmo recado de novo — `TaskRepository.saveDraft`
+  **sempre cria uma série nova** — virando **duas tarefas e dois alarmes no mesmo horário**. A
+  falha tinha o mesmo destino, calada. O desfecho passa a morar no `HomeViewModel`
+  (`draftSaveOutcome`), com a origem de quem pediu e um número de evento: dois desfechos iguais
+  em sequência dão a mesma frase, e o `StateFlow` não emite valor igual ao atual.
+- **P2 » `2637153`.** O lembrete das 22:00 que o Doze segurou chega sem `lastReminderAt` (a
+  escada nem começou). O `entregaPendente` exigia um aviso **já entregue** e devolvia false, e
+  a primeira varredura depois da meia-noite marcava a ocorrência como não realizada e cancelava
+  o alarme: o único aviso do dia morria sem tocar. Com um aviso já entregue o mesmo restart
+  mantinha tudo pendente — a assimetria contradizia o KDoc do próprio método.
+
+**3ª — sobre os dois commits que responderam a P1/P2.**
+- **A resposta ao P1 estava pela metade.** O botão **"Mudar"** da caixa "Pode salvar?" era o
+  único ainda clicável durante a gravação (o "Salvar" já não era, o "Cancelar" também não
+  depois): ela tocava Salvar, tocava Mudar, e a tela de confirmação abria com o mesmo recado —
+  terminada a gravação, o "Salvar" de lá rearmava e criava a segunda série. **"Salvar → Mudar →
+  Salvar" duplicava sem rotação nenhuma**, que é o que o P1 dizia ser preciso girar o aparelho
+  para provocar. Fechar a caixa (voltar, tocar fora, "Cancelar") tinha o mesmo efeito.
+- **As cinco confirmações de ação continuavam morrendo no giro.** O recado da última ação
+  ("Feito.", "Tarefa excluída.", "Vai avisar amanhã às 8h.", "Série encerrada.", o do
+  "remarcar") era escrito no `onDone` de quem pediu — um `MutableState` já descartado. A
+  tarefa era concluída, excluída ou adiada **sem aviso nenhum**. Agora mora no `HomeViewModel`
+  (`statusMessage`, com `seq` e consumo explícito), publicado pelo `write`, que roda no escopo
+  do ViewModel e atravessa o giro. O `seq` é o que faz dois "Feito." seguidos serem dois
+  eventos — sem ele o segundo não chegava e a tela ficava com o **desfazer armado do
+  primeiro, da tarefa errada**. O desfazer passou a viajar no próprio recado (`undo`), e o
+  `undoableDelete` sumiu.
+- Na mesma rodada: concluir, adiar, "Fazer hoje", "Amanhã de novo", excluir, encerrar série e
+  cancelar saem do alcance durante a gravação — duas escritas concorrentes sobre a mesma
+  ocorrência se atropelam no banco —, e o "Daqui N min" ganhou "Salvando…" com o botão fora da
+  mão dela (o segundo toque era engolido em silêncio).
+
+**4ª — sobre o commit final.**
+- **O back do sistema** na tela "Daqui N min" (`WriteTaskScreen`, o mesmo composable da tela de
+  escrita) popava durante o "Salvando…" — só o botão "Cancelar" estava desabilitado. O desfecho
+  chegava depois, **sem quem o anunciasse**: ela não ficava sabendo nem do aviso salvo, nem do
+  erro.
+- Pior: o desfecho de uma gravação **anterior**, ainda no slot, era consumido pela tela
+  recriada pelo giro, que anunciava a **frase antiga** e saía — deixando a **falha da gravação
+  nova sem aviso**. Confirmação de sucesso para um recado que não existia.
+
+### A lição: cada correção fechou o caso apontado e deixou aberto um caminho adjacente
+
+As quatro rodadas dizem a mesma coisa por quatro ângulos, e é o que interessa a quem ler
+depois: **o fix certo fecha o caminho que o review apontou e deixa aberto o caminho
+adjacente** — a saída por outro botão (o "Mudar" que ninguém tinha gateado), pela rotação
+(o `onDone` da composição descartada), pelo gesto do sistema (o back do `WriteTaskScreen`).
+Bloquear caso a caso é uma corrida que se perde.
+
+A última rodada resolveu **por construção**, e é o desenho que ficou:
+
+1. O desfecho carrega o **id do pedido** (`DraftSaveOutcome.requestId`), criado **no pedido** e
+   não na conclusão (`HomeViewModel.newDraftSaveRequest`, `saveRequestSeq`), e a tela só
+   consome o desfecho cujo `requestId` é o que ela mesma guardou — nem de outra tela, nem de
+   uma gravação anterior dela (`FalaAgendaRoot` compara origem **e** id em cada rota).
+2. O que está em voo é do **ViewModel** (`pendingDraftSaves`, um `Set`), não do Bundle: a morte
+   do processo não deixa a tela presa em "Salvando…" para uma gravação que não existe mais, e a
+   tela sabe se a gravação **dela** está em voo sem confundir com o `busy` de outra.
+3. Onde o desfecho não pode ser consumido, a saída não existe: `BackHandler(enabled = saving)`
+   na escrita (`WriteTaskScreen.kt:66`) e na confirmação (`ConfirmDraftScreen.kt:125`), mais
+   `onDismissRequest`/`enabled` no "Pode salvar?" (`QuickConfirmDialog.kt:41,73`).
+
+### O que ficou sem prova
+
+**Nada foi rodado em aparelho ou emulador — não há device nesta máquina.** O comportamento de
+composição (botão desabilitado, "Salvando…", o `BackHandler` bloqueando o gesto, a ordem do
+snackbar) está garantido por **leitura de código e compilação**, não por execução. Os testes
+cobrem o que é do ViewModel e do repositório (Robolectric nos casos que precisam de banco); o
+que é composição, não.
+
+Riscos residuais que os próprios reviews declararam **sem caminho natural de reprodução**:
+
+- o `draftSaveOutcome` é um **slot único**: duas gravações de origens diferentes sobrepostas
+  (ex.: salvar na confirmação enquanto o "Daqui N min" também grava) fazem o segundo desfecho
+  sobrescrever o primeiro — quem pediu o perdedor não é avisado;
+- `handleDraft` (`HomeScreen.kt:208`) **sobrescreve a caixa aberta**: um recado novo chegando
+  com o "Pode salvar?" na tela troca o rascunho da caixa pelo do recado novo;
+- `undo`/`restore` usam o `AgendaItem` **congelado no momento da exclusão** (ele viaja dentro
+  do recado) — se a ocorrência mudar por outro caminho antes do "Desfazer", o desfazer age com
+  o retrato velho.
+
+### O que fica para decidir (produto — sem recomendação)
+
+- Os secrets `SUPABASE_URL` / `SUPABASE_ANON_KEY` **precisam existir** com a chave `role: anon`,
+  ou o próximo release **falha por desenho** (`.github/workflows/release.yml` recusa vazio e
+  recusa JWT que não seja `anon`; uma `service_role` num APK distribuído entrega o banco).
+- `JANELA_ENTREGA_PENDENTE = 6 h` (`TaskRepository.kt:589`) é **decisão de produto**: um
+  lembrete mais de 6 h atrasado expira — celular desligado a noite toda não toca a dose das
+  22:00 de manhã.
+- O cabeçalho do compartilhamento ainda diz **"Hoje no Fala Agenda:"** mesmo quando a única
+  linha é de ontem (`AgendaFormat.todayShare`). A linha ganhou a marca do dia ("ontem"), o
+  cabeçalho não mudou.
+- O widget **perde o canto arredondado** quando um tema explícito aplica cor:
+  `setInt(widget_root, "setBackgroundColor", …)` sobrepõe o `@drawable/widget_background` (que
+  é quem tem os `corners` de 20dp), e o fundo vira retângulo reto.
+- `SecureTokenStore` (`data/prefs/SettingsStore.kt:94`) ainda **cai para SharedPreferences em
+  texto claro** (`fala_agenda_secure_fallback`) quando o Keystore não está disponível.
+- O `ci.yml` **só compila** o teste instrumentado (`:app:compileDebugAndroidTestKotlin`, linha
+  51): não roda emulador, então o que depende de device não tem gate.
+- `.context/memoria/` **não existe** neste repo — a memória do projeto não está publicada onde
+  o time (e o Codex/Grok) a vejam.

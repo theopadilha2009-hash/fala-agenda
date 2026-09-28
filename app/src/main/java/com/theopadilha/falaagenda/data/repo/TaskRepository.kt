@@ -66,11 +66,21 @@ class TaskRepository(
     suspend fun snapshotAgenda(): AgendaSections =
         sectionsOf(seriesDao.getAll(), occurrenceDao.getAll())
 
+    /**
+     * A série entra no cálculo de disparo com o fuso do relógio AGORA, nunca com o que ficou
+     * gravado no dia do cadastro. Aqui é uma pessoa, um celular, um app: o horário que ela lê
+     * na tela é o horário local dela hoje, e o aviso tem que tocar nele. Com o fuso velho,
+     * trocar o fuso do celular deixava todo aviso já criado tocando 08:00 do lugar antigo —
+     * deslocado, calado e para sempre. A próxima escrita da série grava o fuso atual e cura a
+     * linha; `agenda` e varredura leem pelo mesmo caminho, então o "hoje" das duas é o mesmo.
+     */
+    private fun SeriesEntity.toTaskSeries(): TaskSeries = toDomain().copy(zoneId = clock.zoneId())
+
     private fun sectionsOf(
         seriesRows: List<SeriesEntity>,
         occurrenceRows: List<OccurrenceEntity>,
     ): AgendaSections {
-        val series = seriesRows.associate { it.id to it.toDomain() }
+        val series = seriesRows.associate { it.id to it.toTaskSeries() }
         val items = occurrenceRows.mapNotNull { row ->
             val s = series[row.seriesId] ?: return@mapNotNull null
             AgendaItem(row.toDomain(), s)
@@ -146,7 +156,7 @@ class TaskRepository(
     suspend fun complete(occurrenceId: String) = writer.withLock {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return@withLock
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock
         val occurrence = row.toDomain()
         if (occurrence.status != OccurrenceStatus.PENDING &&
             occurrence.status != OccurrenceStatus.MISSED
@@ -211,7 +221,7 @@ class TaskRepository(
     suspend fun deleteOccurrence(occurrenceId: String) = writer.withLock {
         val row = occurrenceDao.get(occurrenceId) ?: return@withLock
         scheduler.cancel(occurrenceId)
-        val series = seriesDao.get(row.seriesId)?.toDomain()
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries()
         val leftover = occurrenceDao.forSeries(row.seriesId).filterNot { it.id == occurrenceId }
         // "Excluir" é só aquela data. Numa série recorrente apagar a série aqui era o
         // mesmo que "Encerrar série", que a tela oferece como ação separada.
@@ -225,8 +235,12 @@ class TaskRepository(
             )
             return@withLock
         }
-        // Sem o tombstone a rotina de avanço rematerializa a data apagada no próximo start.
-        if (series == null || !series.recurrence.isRecurring) {
+        // Sem o tombstone a rotina de avanço rematerializa a data apagada no próximo start —
+        // e isso vale também para a tarefa única: `RecurrenceEngine.firstOnOrAfter` a
+        // rematerializa em `startLocalDate` enquanto ele não estiver no passado, que é
+        // justamente onde ela fica depois de uma edição. Apagar a série junto levaria no
+        // CASCADE a linha COMPLETED que sobrou, o registro do que ela fez.
+        if (series == null) {
             occurrenceDao.applyBatch(
                 seriesDao = seriesDao,
                 upserts = emptyList(),
@@ -240,7 +254,7 @@ class TaskRepository(
         val skipped = OccurrenceLifecycle.skipDate(
             series.skippedDates,
             row.toDomain().localDate,
-            OccurrenceLifecycle.todayIn(series.zoneId, now),
+            OccurrenceLifecycle.todayIn(clock.zoneId(), now),
         )
         // Apagar a data e gravar o tombstone na mesma transação: o processo morto no meio
         // deixava a data apagada sem tombstone, e a varredura do próximo start a trazia de
@@ -295,7 +309,7 @@ class TaskRepository(
 
     suspend fun endSeries(seriesId: String) = writer.withLock {
         val now = clock.instant()
-        val series = seriesDao.get(seriesId)?.toDomain() ?: return@withLock
+        val series = seriesDao.get(seriesId)?.toTaskSeries() ?: return@withLock
         val ended = series.copy(endedAt = now, updatedAt = now)
         val pending = occurrenceDao.forSeries(seriesId)
             .map { it.toDomain() }
@@ -323,7 +337,7 @@ class TaskRepository(
     ) = writer.withLock {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return@withLock
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock
         val original = row.toDomain()
         val sameWhen = original.localDate == date && series.localTime == time
         val finished = original.status == OccurrenceStatus.COMPLETED ||
@@ -386,13 +400,13 @@ class TaskRepository(
         // O preview é sobre o que vem depois: ancorado na data editada, editar uma data
         // passada criava três datas vencidas, o próximo avanço marcava todas como não
         // realizadas e a agenda ficava sem as futuras até o app reabrir.
-        spawnUpcomingPreview(updatedSeries, OccurrenceLifecycle.todayIn(updatedSeries.zoneId, now))
+        spawnUpcomingPreview(updatedSeries, OccurrenceLifecycle.todayIn(clock.zoneId(), now))
     }
 
     suspend fun retryMissed(occurrenceId: String): RetryResult? = writer.withLock {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return@withLock null
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock null
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock null
         val occurrence = row.toDomain()
         if (occurrence.status != OccurrenceStatus.MISSED) return@withLock null
         if (series.recurrence.isRecurring) return@withLock null
@@ -418,7 +432,7 @@ class TaskRepository(
     suspend fun snooze(occurrenceId: String, minutes: Long = 30) = writer.withLock {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return@withLock
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock
         val occurrence = row.toDomain()
         if (occurrence.status != OccurrenceStatus.PENDING) return@withLock
         val quiet = scheduler.quietHours()
@@ -435,7 +449,7 @@ class TaskRepository(
     suspend fun onAlarmFired(occurrenceId: String): AlarmFireResult = writer.withLock {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return@withLock AlarmFireResult(false)
-        val series = seriesDao.get(row.seriesId)?.toDomain() ?: return@withLock AlarmFireResult(false)
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock AlarmFireResult(false)
         val occurrence = row.toDomain()
         // O disparo é resolvido antes da varredura de ciclo de vida: a varredura marcaria
         // como não realizada a ocorrência de ontem cujo aviso está tocando neste instante
@@ -495,14 +509,14 @@ class TaskRepository(
 
     suspend fun rescheduleAll() = writer.withLock {
         val now = clock.instant()
-        val seriesList = seriesDao.getAll().map { it.toDomain() }
+        val seriesList = seriesDao.getAll().map { it.toTaskSeries() }
         seriesList.forEach { series ->
             applyLifecycle(series, now)
         }
         occurrenceDao.getAll().map { it.toDomain() }
             .filter { it.status == OccurrenceStatus.PENDING }
             .forEach { occ ->
-                val series = seriesDao.get(occ.seriesId)?.toDomain() ?: return@forEach
+                val series = seriesDao.get(occ.seriesId)?.toTaskSeries() ?: return@forEach
                 val scheduled = scheduler.schedule(
                     occ,
                     series,
@@ -513,7 +527,10 @@ class TaskRepository(
     }
 
     private suspend fun applyLifecycle(series: TaskSeries, now: Instant) {
-        val today = OccurrenceLifecycle.todayIn(series.zoneId, now)
+        // O "hoje" aqui é o mesmo que parte as seções da agenda (`clock.today()`): com dois
+        // fusos em jogo a tela listava em "Hoje" uma ocorrência que o ciclo de vida já tinha
+        // dado como não realizada.
+        val today = OccurrenceLifecycle.todayIn(clock.zoneId(), now)
         val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
         val change = OccurrenceLifecycle.advance(series, existing, now, today)
         // A varredura decide "não realizada" olhando só o relógio. Um lembrete marcado para

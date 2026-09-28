@@ -1,18 +1,25 @@
 package com.theopadilha.falaagenda.speech
 
 /**
- * Escolhe o motor de fala. ERROR_CLIENT (5) no SpeechRecognizer in-app é o
- * caso clássico de contexto Application / OEM; cai para on-device e, se
- * ainda falhar, para a tela de reconhecimento do próprio celular.
+ * Escolhe o motor de fala. O offline (modelo instalado no aparelho) vem primeiro
+ * porque não depende de rede nem do serviço do fabricante; se ele falhar, o app
+ * volta para o caminho de sempre. ERROR_CLIENT (5) no SpeechRecognizer in-app é o
+ * caso clássico de contexto Application / OEM; cai para on-device e, se ainda
+ * falhar, para a tela de reconhecimento do próprio celular.
  */
 object VoiceEngine {
-    enum class Capture { IN_APP_DEFAULT, IN_APP_ON_DEVICE, SYSTEM_UI }
+    enum class Capture { OFFLINE_VOSK, IN_APP_DEFAULT, IN_APP_ON_DEVICE, SYSTEM_UI }
 
     const val NETWORK_TIMEOUT = 1
     const val NETWORK = 2
     const val INSUFFICIENT_PERMISSIONS = 9
 
-    fun initial(recognitionAvailable: Boolean, onDeviceAvailable: Boolean): Capture = when {
+    fun initial(
+        recognitionAvailable: Boolean,
+        onDeviceAvailable: Boolean,
+        offlineAvailable: Boolean = false,
+    ): Capture = when {
+        offlineAvailable -> Capture.OFFLINE_VOSK
         recognitionAvailable -> Capture.IN_APP_DEFAULT
         onDeviceAvailable -> Capture.IN_APP_ON_DEVICE
         else -> Capture.SYSTEM_UI
@@ -23,8 +30,18 @@ object VoiceEngine {
         heardReady: Boolean,
         current: Capture,
         onDeviceAvailable: Boolean,
+        recognitionAvailable: Boolean = true,
     ): Capture? {
         if (error == INSUFFICIENT_PERMISSIONS) return null
+        // O que é nosso não pode ser pior que o do sistema: saiu do offline, volta para
+        // o motor de sempre em vez de pular direto para a tela do celular.
+        if (current == Capture.OFFLINE_VOSK) {
+            return when {
+                recognitionAvailable -> Capture.IN_APP_DEFAULT
+                onDeviceAvailable -> Capture.IN_APP_ON_DEVICE
+                else -> Capture.SYSTEM_UI
+            }
+        }
         if (current == Capture.IN_APP_DEFAULT &&
             error == VoiceRetry.CLIENT &&
             onDeviceAvailable

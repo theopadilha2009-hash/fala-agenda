@@ -5,11 +5,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,9 +23,17 @@ data class VoiceUiState(
     val needSystem: Boolean = false,
 )
 
-class VoiceCaptureController(private val context: Context) {
+/**
+ * Toda a política de escuta mora aqui — prazos, retentativa, troca de motor.
+ * Quem transcreve é o [SpeechSource], e o controller não sabe qual é: o do
+ * aparelho ou o offline (quando o modelo está instalado).
+ */
+class VoiceCaptureController(
+    private val context: Context,
+    private val offline: OfflineSpeech? = null,
+) {
     private val handler = Handler(Looper.getMainLooper())
-    private var recognizer: SpeechRecognizer? = null
+    private var source: SpeechSource? = null
     private val _ui = MutableStateFlow(VoiceUiState())
     val ui: StateFlow<VoiceUiState> = _ui
 
@@ -72,6 +78,7 @@ class VoiceCaptureController(private val context: Context) {
         backend = VoiceEngine.initial(
             recognitionAvailable = SpeechRecognizer.isRecognitionAvailable(speechHost),
             onDeviceAvailable = onDeviceAvailable(speechHost),
+            offlineAvailable = offline != null,
         )
         session = true
         retries = 0
@@ -114,63 +121,43 @@ class VoiceCaptureController(private val context: Context) {
 
     private fun beginListening() {
         if (!session) return
-        destroyRecognizer()
+        destroySource()
         val speechHost = unwrapActivity(hostContext)
-        val sr = runCatching { createRecognizer(speechHost) }.getOrNull()
-        if (sr == null) {
+        val created = runCatching { newSource(speechHost) }.getOrNull()
+        if (created == null) {
             switchOrFail(VoiceRetry.CLIENT)
             return
         }
-        recognizer = sr
-        sr.setRecognitionListener(listener)
+        source = created
         armWatchdog(PREPARING_TIMEOUT_MS)
-        runCatching { sr.startListening(listenIntent()) }
-            .onFailure { switchOrFail(VoiceRetry.CLIENT) }
+        created.start(listener)
     }
 
-    private fun createRecognizer(host: Context): SpeechRecognizer {
-        if (backend == VoiceEngine.Capture.IN_APP_ON_DEVICE) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                SpeechRecognizer.isOnDeviceRecognitionAvailable(host)
-            ) {
-                return SpeechRecognizer.createOnDeviceSpeechRecognizer(host)
-            }
-            error("on-device unavailable")
-        }
-        return SpeechRecognizer.createSpeechRecognizer(host)
+    private fun newSource(speechHost: Context): SpeechSource = when (backend) {
+        VoiceEngine.Capture.OFFLINE_VOSK -> offline!!.newSource()
+        VoiceEngine.Capture.IN_APP_ON_DEVICE -> SystemSpeechSource(speechHost, onDevice = true)
+        else -> SystemSpeechSource(speechHost, onDevice = false)
     }
 
-    private fun listenIntent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "pt-BR")
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2800)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2200)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1200)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+    private fun destroySource() {
+        source?.cancel()
+        source?.destroy()
+        source = null
     }
 
-    private fun destroyRecognizer() {
-        recognizer?.setRecognitionListener(null)
-        runCatching { recognizer?.cancel() }
-        runCatching { recognizer?.destroy() }
-        recognizer = null
-    }
-
-    private fun stopRecognizerOnly() {
+    private fun stopSourceOnly() {
         handler.removeCallbacksAndMessages(null)
-        destroyRecognizer()
+        destroySource()
     }
 
     private fun stopInternal() {
         session = false
-        stopRecognizerOnly()
+        stopSourceOnly()
     }
 
     private fun finishWith(text: String) {
         session = false
-        stopRecognizerOnly()
+        stopSourceOnly()
         val clean = text.trim()
         _ui.value = if (clean.isEmpty()) {
             // Erro com estado IDLE some da tela: a mensagem precisa do estado ERROR para aparecer.
@@ -182,7 +169,7 @@ class VoiceCaptureController(private val context: Context) {
 
     private fun requestSystemUi() {
         session = false
-        stopRecognizerOnly()
+        stopSourceOnly()
         _ui.value = VoiceUiState(state = VoiceState.PREPARING, needSystem = true)
     }
 
@@ -199,7 +186,7 @@ class VoiceCaptureController(private val context: Context) {
             else -> "Não consegui ouvir. Toque de novo ou escreva o recado."
         }
         session = false
-        stopRecognizerOnly()
+        stopSourceOnly()
         _ui.value = VoiceUiState(state = VoiceState.ERROR, error = human)
     }
 
@@ -209,9 +196,15 @@ class VoiceCaptureController(private val context: Context) {
             heardReady = heardReady,
             current = backend,
             onDeviceAvailable = onDeviceAvailable(unwrapActivity(hostContext)),
+            recognitionAvailable = SpeechRecognizer.isRecognitionAvailable(
+                unwrapActivity(hostContext),
+            ),
         )
         when (next) {
-            VoiceEngine.Capture.IN_APP_ON_DEVICE -> {
+            VoiceEngine.Capture.OFFLINE_VOSK,
+            VoiceEngine.Capture.IN_APP_DEFAULT,
+            VoiceEngine.Capture.IN_APP_ON_DEVICE,
+            -> {
                 backend = next
                 retries = 0
                 heardReady = false
@@ -221,7 +214,7 @@ class VoiceCaptureController(private val context: Context) {
                 handler.postDelayed({ if (session) beginListening() }, 350)
             }
             VoiceEngine.Capture.SYSTEM_UI -> requestSystemUi()
-            VoiceEngine.Capture.IN_APP_DEFAULT, null -> failWith(error)
+            null -> failWith(error)
         }
     }
 
@@ -230,27 +223,20 @@ class VoiceCaptureController(private val context: Context) {
         return SpeechRecognizer.isOnDeviceRecognitionAvailable(host)
     }
 
-    private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
+    private val listener = object : SpeechSource.Listener {
+        override fun onReady() {
             if (!session) return
             heardReady = true
             armWatchdog(LISTENING_TIMEOUT_MS)
             _ui.value = _ui.value.copy(state = VoiceState.LISTENING, error = null)
         }
 
-        override fun onBeginningOfSpeech() {
+        override fun onSpeechBegin() {
             // O motor começou a ouvir de fato: o prazo de escuta recomeça daqui.
             if (session) armWatchdog(LISTENING_TIMEOUT_MS)
         }
 
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            val text = partialResults
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                .orEmpty()
+        override fun onPartial(text: String) {
             if (text.isNotBlank() && session) {
                 // Re-arma: quem está falando há mais de 20 s não pode ser cortado no meio.
                 // O prazo existe para o motor calado, não para quem está ditando.
@@ -266,35 +252,29 @@ class VoiceCaptureController(private val context: Context) {
             }
         }
 
-        override fun onError(error: Int) {
+        override fun onError(code: Int) {
             if (!session) return
             val elapsed = SystemClock.elapsedRealtime() - startedAt
-            when (VoiceRetry.decide(error, _ui.value.partial, retries, elapsed)) {
+            when (VoiceRetry.decide(code, _ui.value.partial, retries, elapsed)) {
                 VoiceRetry.Action.USE_PARTIAL -> finishWith(_ui.value.partial.trim())
                 VoiceRetry.Action.RETRY -> {
                     retries += 1
-                    destroyRecognizer()
+                    destroySource()
                     handler.removeCallbacksAndMessages(null)
                     heardReady = false
                     // O partial da tentativa anterior não pode virar o texto final da próxima.
                     _ui.value = VoiceUiState(state = VoiceState.PREPARING)
                     handler.postDelayed({ if (session) beginListening() }, 350)
                 }
-                VoiceRetry.Action.FAIL -> switchOrFail(error)
+                VoiceRetry.Action.FAIL -> switchOrFail(code)
             }
         }
 
-        override fun onResults(results: Bundle?) {
+        override fun onFinal(text: String) {
             if (!session) return
-            val text = results
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                .orEmpty()
             val used = text.ifBlank { _ui.value.partial }
             finishWith(used.trim())
         }
-
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
     }
 
     private companion object {

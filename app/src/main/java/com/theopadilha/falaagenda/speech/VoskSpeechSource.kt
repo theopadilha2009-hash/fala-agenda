@@ -1,0 +1,162 @@
+package com.theopadilha.falaagenda.speech
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Handler
+import android.os.Looper
+import androidx.core.content.ContextCompat
+import org.vosk.Model
+import org.vosk.Recognizer
+
+/**
+ * O motor offline: microfone cru (16 kHz, mono, PCM 16 bits) direto no Vosk, sem
+ * passar pelo serviço de reconhecimento do aparelho — é por isso que funciona sem
+ * rede e sem a conta do fabricante.
+ *
+ * O AudioRecord bloqueia, então a escuta roda em thread própria; os avisos voltam
+ * na thread principal, que é onde o controller e a tela vivem. `acceptWaveForm`
+ * devolve `true` quando o Vosk entendeu que a fala acabou (silêncio no fim), e é
+ * aí que o recado fecha — não há um "parar" da nossa parte.
+ */
+class VoskSpeechSource(
+    context: Context,
+    private val model: () -> Model,
+    private val sampleRate: Int = SAMPLE_RATE,
+) : SpeechSource {
+    private val appContext = context.applicationContext
+    private val main = Handler(Looper.getMainLooper())
+    private var worker: Thread? = null
+
+    @Volatile private var listener: SpeechSource.Listener? = null
+
+    @Volatile private var record: AudioRecord? = null
+
+    @Volatile private var running = false
+
+    override fun start(listener: SpeechSource.Listener) {
+        if (!hasMicrophone()) {
+            listener.onError(VoiceEngine.INSUFFICIENT_PERMISSIONS)
+            return
+        }
+        this.listener = listener
+        running = true
+        worker = Thread({ transcribe() }, "vosk-escuta").also { it.start() }
+    }
+
+    override fun cancel() {
+        listener = null
+        stop()
+    }
+
+    override fun destroy() {
+        listener = null
+        stop()
+    }
+
+    private fun stop() {
+        running = false
+        releaseRecord()
+    }
+
+    /**
+     * Avisos só chegam se a escuta ainda é a de agora: um parcial que ficou na fila
+     * da thread principal não pode reabrir a tela depois de um cancelar.
+     */
+    private fun emit(block: (SpeechSource.Listener) -> Unit) {
+        main.post {
+            listener?.let(block)
+        }
+    }
+
+    private fun transcribe() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+        var recognizer: Recognizer? = null
+        try {
+            recognizer = Recognizer(model(), sampleRate.toFloat())
+            val recorder = openRecorder()
+            if (recorder == null) {
+                emit { it.onError(VoiceRetry.CLIENT) }
+                return
+            }
+            record = recorder
+            recorder.startRecording()
+            emit { it.onReady() }
+
+            val buffer = ByteArray(BUFFER_BYTES)
+            while (running) {
+                val read = recorder.read(buffer, 0, buffer.size)
+                if (read < 0) break // microfone caiu (ou foi liberado por baixo)
+                if (read == 0) continue
+                if (recognizer.acceptWaveForm(buffer, read)) {
+                    val text = VoskOutcome.text(recognizer.result)
+                    emit { it.onEndOfSpeech() }
+                    emit { it.onFinal(text) }
+                    return
+                }
+                val partial = VoskOutcome.partial(recognizer.partialResult)
+                if (partial.isNotBlank()) emit { it.onPartial(partial) }
+            }
+        } catch (_: Exception) {
+            // Modelo pela metade, lib nativa ausente, microfone ocupado: quem decide
+            // o próximo motor é o controller, não esta thread.
+            emit { it.onError(VoiceRetry.CLIENT) }
+        } finally {
+            releaseRecord()
+            runCatching { recognizer?.close() }
+        }
+    }
+
+    private fun hasMicrophone(): Boolean =
+        ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    // start() já barrou sem a permissão; o que sobra é ela ter sido revogada no meio.
+    @SuppressLint("MissingPermission")
+    private fun openRecorder(): AudioRecord? {
+        val minimum = AudioRecord.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        if (minimum <= 0) return null
+        val size = maxOf(minimum, BUFFER_BYTES * 2)
+        val recorder = try {
+            AudioRecord(
+                // VOICE_RECOGNITION já vem sem o processamento agressivo de voz do telefone.
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                size,
+            )
+        } catch (_: SecurityException) {
+            return null
+        }
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            runCatching { recorder.release() }
+            return null
+        }
+        return recorder
+    }
+
+    private fun releaseRecord() {
+        val opened = record ?: return
+        record = null
+        runCatching { if (opened.recordingState == AudioRecord.RECORDSTATE_RECORDING) opened.stop() }
+        runCatching { opened.release() }
+        worker = null
+    }
+
+    private companion object {
+        /** 16 kHz é a taxa que o modelo do Vosk espera; outra taxa piora o resultado. */
+        const val SAMPLE_RATE = 16_000
+
+        /** ~0,25 s de áudio por leitura, como no exemplo oficial do Vosk. */
+        const val BUFFER_BYTES = 8_000
+    }
+}

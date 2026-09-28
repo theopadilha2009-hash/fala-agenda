@@ -79,6 +79,27 @@ class WriteStepTest {
         assertThat(writeStepFor(session.state.value)).isEqualTo(WriteStep.Waiting)
     }
 
+    /**
+     * Ela tocou "Escrever tarefa" com o parse em voo e começou a digitar: a espera acabou
+     * ali. O parse daquela fala volta depois — e não pode levar a tela (com o texto dela
+     * dentro) para a confirmação, nem deixar o "Continuar" preso a uma espera que não é mais
+     * dela.
+     */
+    @Test
+    fun aFalaAbandonadaNaoTrocaATelaDeEscrita() {
+        val gate = CompletableDeferred<Unit>()
+        val session = SpeechSession(escopoSemConfinamento()) { gate.await(); recado() }
+
+        session.understand("comprar pão amanhã às 10:00")
+        session.discard()
+        // O botão "Continuar" sai do estado da sessão: sem espera, ele está na mão dela.
+        assertThat(writeStepFor(session.state.value)).isEqualTo(WriteStep.Waiting)
+
+        gate.complete(Unit)
+
+        assertThat(writeStepFor(session.state.value)).isEqualTo(WriteStep.Waiting)
+    }
+
     @Test
     fun oErroTambemEsperaATelaSerRecriada() {
         val session = SpeechSession(escopoSemConfinamento()) { throw IllegalStateException("sem rede") }

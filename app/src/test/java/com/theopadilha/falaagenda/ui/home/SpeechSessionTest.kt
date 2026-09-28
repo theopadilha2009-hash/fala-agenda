@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.Test
 import java.time.LocalDate
 import java.time.LocalTime
@@ -96,6 +97,84 @@ class SpeechSessionTest {
 
         assertThat(chamadas).isEqualTo(0)
         assertThat(session.state.value.understanding).isFalse()
+    }
+
+    /**
+     * O recado que ninguém mais espera não pode aparecer: com ele na sessão, a home o
+     * consumiria (`LaunchedEffect(speech.draft)`) e trocaria a tela por baixo dela.
+     */
+    @Test
+    fun oRecadoAbandonadoPorOutraFalaNaoChegaAAparecer() {
+        val gate = CompletableDeferred<Unit>()
+        val vistos = mutableListOf<SpeechUiState>()
+        val scope = escopoSemConfinamento()
+        val session = SpeechSession(scope) { texto ->
+            if (texto == "tomar remédio") gate.await()
+            recado(texto)
+        }
+        scope.launch { session.state.collect { vistos += it } }
+
+        session.understand("tomar remédio")
+        session.understand("tomar água")
+        gate.complete(Unit)
+
+        assertThat(vistos.mapNotNull { it.draft?.title }).doesNotContain("tomar remédio")
+        assertThat(session.state.value.draft?.title).isEqualTo("tomar água")
+    }
+
+    /**
+     * Ela escolheu escrever a tarefa em vez de esperar: o parse daquela fala volta depois e
+     * não publica nada. Com o rascunho na sessão, a tela de escrita — com o que ela digitou
+     * — era trocada pela confirmação do recado falado.
+     */
+    @Test
+    fun oRecadoDescartadoNaoPublicaNadaQuandoOParseVolta() {
+        val gate = CompletableDeferred<Unit>()
+        val session = SpeechSession(escopoSemConfinamento()) { gate.await(); recado() }
+
+        session.understand("comprar pão amanhã às 10:00")
+        session.discard()
+        assertThat(session.state.value.understanding).isFalse()
+
+        gate.complete(Unit)
+
+        assertThat(session.state.value.draft).isNull()
+        assertThat(session.state.value.error).isNull()
+        assertThat(session.state.value.understanding).isFalse()
+    }
+
+    /** A falha do recado abandonado é tão dela quanto o rascunho: não aparece na escrita. */
+    @Test
+    fun aFalhaDoRecadoDescartadoNaoApareceNaTelaDeEscrita() {
+        val gate = CompletableDeferred<Unit>()
+        val session = SpeechSession(escopoSemConfinamento()) {
+            gate.await()
+            throw IllegalStateException("sem rede")
+        }
+
+        session.understand("comprar pão amanhã às 10:00")
+        session.discard()
+
+        gate.complete(Unit)
+
+        assertThat(session.state.value.error).isNull()
+        assertThat(session.state.value.understanding).isFalse()
+    }
+
+    /** O que ela escreveu e mandou de novo não fica atrás de um parse abandonado. */
+    @Test
+    fun oRecadoAbandonadoNaoSeguraOTurnoDoProximo() {
+        val gate = CompletableDeferred<Unit>()
+        val session = SpeechSession(escopoSemConfinamento()) { texto ->
+            if (texto == "comprar pão") gate.await()
+            recado(texto)
+        }
+
+        session.understand("comprar pão")
+        session.discard()
+        session.understand("tomar água")
+
+        assertThat(session.state.value.draft?.title).isEqualTo("tomar água")
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.theopadilha.falaagenda.ui.home
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,25 +36,48 @@ class SpeechSession(
     private val _state = MutableStateFlow(SpeechUiState())
     val state: StateFlow<SpeechUiState> = _state.asStateFlow()
     private val lock = Mutex()
+    // Cada pedido de entendimento leva um número. Quem o abandona (ver [discard]) avança o
+    // número, e o parse que volta de uma fala abandonada não publica nada — o `Job.cancel`
+    // sozinho não bastava: o parse que já retornou pode estar na fila para publicar quando
+    // o abandono acontece. `understand` e `discard` são chamados da tela (Main), e o parse
+    // volta para o mesmo escopo: o número não é compartilhado entre threads.
+    private var generation = 0
+    private var inFlight: Job? = null
 
     /** Um recado por vez: falar de novo antes de o anterior chegar atropelaria o parse. */
     fun understand(text: String) {
         val heard = text.trim()
         if (heard.isEmpty()) return
-        scope.launch {
+        val mine = ++generation
+        inFlight?.cancel()
+        inFlight = scope.launch {
             lock.withLock {
+                // A fala que perdeu a vez morre com o número dela, sem tocar no estado.
+                if (mine != generation) return@withLock
                 _state.value = SpeechUiState(understanding = true)
                 val arrived = try {
                     SpeechUiState(draft = parse(heard))
                 } catch (cancelled: CancellationException) {
-                    _state.value = SpeechUiState()
+                    if (mine == generation) _state.value = SpeechUiState()
                     throw cancelled
                 } catch (_: Exception) {
                     SpeechUiState(error = UNDERSTAND_FAILED_MESSAGE)
                 }
-                _state.value = arrived
+                if (mine == generation) _state.value = arrived
             }
         }
+    }
+
+    /**
+     * Ela escolheu escrever a tarefa em vez de esperar o entendimento: o que estava em voo
+     * deixa de ser dela. Sem isto, o parse daquela fala terminava depois e a tela de escrita
+     * — com o que ela digitou — era trocada pela confirmação do recado falado.
+     */
+    fun discard() {
+        generation++
+        inFlight?.cancel()
+        inFlight = null
+        _state.value = SpeechUiState()
     }
 
     /** A home pegou o rascunho: ele não volta a aparecer numa próxima composição. */

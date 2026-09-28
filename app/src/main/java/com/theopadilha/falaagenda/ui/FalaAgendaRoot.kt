@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
@@ -212,8 +213,20 @@ fun FalaAgendaRoot(
                 onThemeMode = { mode -> pendingTheme = mode.name },
                 onOpenMonth = { nav.navigate("month") },
                 onOpenUpdate = { nav.navigate("update") },
-                onWrite = { nav.navigate("write") },
-                onQuick = { minutes -> nav.navigate("quick/$minutes") },
+                // As duas saídas que a home oferece enquanto ela espera o entendimento
+                // ("Escrever tarefa" e os atalhos do "Daqui N min") são a decisão dela de
+                // abandonar a espera: o parse daquela fala é descartado aqui, no toque, e
+                // não volta para trocar a tela por baixo dela. Sem isto, ela digitava a
+                // tarefa (ou salvava um "Daqui 5 min") e o recado falado a levava para a
+                // confirmação com o texto digitado já jogado fora.
+                onWrite = {
+                    homeVm.speech.discard()
+                    nav.navigate("write")
+                },
+                onQuick = { minutes ->
+                    homeVm.speech.discard()
+                    nav.navigate("quick/$minutes")
+                },
                 onDraftReady = {
                     editingItemId = null
                     draft = it
@@ -282,89 +295,100 @@ fun FalaAgendaRoot(
                     CircularProgressIndicator()
                 }
             }
+            // A tela é reiniciada quando o rascunho ou a ocorrência mudam. O aviso é atendido
+            // aqui, que compõe em qualquer destino: com ela já na confirmação, o
+            // `launchSingleTop` do `openForEdit` reaproveita a mesma entrada do `NavHost` e
+            // o `ConfirmDraftScreen` guarda os campos em `rememberSaveable` — sem a chave, os
+            // campos continuavam os do rascunho anterior ("Comprar pão") enquanto as ações
+            // já eram as da ocorrência do aviso ("Tomar remédio"): o "Salvar" renomeava o
+            // remédio com o texto dela, e "Concluir"/"Excluir" agiam no remédio enquanto ela
+            // lia outra coisa. Com a chave, o que está na tela é o que as ações vão alterar.
+            // A entrada continua sendo reaproveitada (não empilha tela a cada abertura).
             if (current != null && !awaitingEditingItem) {
-                ConfirmDraftScreen(
-                    initial = current,
-                    // A gravação *desta* tela — e não o `busy` do ViewModel, que também
-                    // fica verdadeiro para a escrita de outra tela: com ele, a tela presa
-                    // aqui mostrava "Salvando…" por causa de uma gravação que não era dela.
-                    saving = saving,
-                    editing = editingItem != null,
-                    occurrenceStatus = editingItem?.occurrence?.status,
-                    isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
-                    onComplete = editingItem?.let { item ->
-                        {
-                            // O recado só aparece depois que a gravação passou: falhou,
-                            // o home mostra o erro em vez de um "Feito." que não houve.
-                            homeVm.complete(item)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onSnooze = editingItem?.let { item ->
-                        { minutes ->
-                            homeVm.snooze(item.occurrence.id, minutes)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onDelete = editingItem?.let { item ->
-                        {
-                            homeVm.delete(item)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onRetry = editingItem?.let { item ->
-                        {
-                            homeVm.retryMissed(item.occurrence.id)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onRepeat = editingItem?.let { item ->
-                        {
-                            saveRequest = homeVm.repeatTomorrow(item)
-                        }
-                    },
-                    onEndSeries = editingItem?.let { item ->
-                        {
-                            homeVm.endSeries(item.series.id)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onCancel = {
-                        editingItemId = null
-                        nav.popBackStack()
-                    },
-                    onSave = { confirmed ->
-                        // Um pedido por vez, como o botão desabilitado já garante: dois
-                        // toques no mesmo quadro viram duas gravações (e `saveDraft` sempre
-                        // cria uma série nova).
-                        if (!saving) {
-                            val editId = editingItem?.occurrence?.id
-                            val date = confirmed.localDate
-                            val time = confirmed.localTime
-                            // Só registra o pedido, com a identidade que o ViewModel dá a
-                            // ele: o desfecho chega pelo ViewModel, que atravessa o giro.
-                            saveRequest = if (editId != null && date != null && time != null) {
-                                homeVm.edit(
-                                    editId,
-                                    confirmed.title,
-                                    date,
-                                    time,
-                                    confirmed.recurrence,
-                                    confirmed.amountCents,
-                                    confirmed.observation,
-                                )
-                            } else {
-                                homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)
+                key(current, editingItemId) {
+                    ConfirmDraftScreen(
+                        initial = current,
+                        // A gravação *desta* tela — e não o `busy` do ViewModel, que também
+                        // fica verdadeiro para a escrita de outra tela: com ele, a tela presa
+                        // aqui mostrava "Salvando…" por causa de uma gravação que não era dela.
+                        saving = saving,
+                        editing = editingItem != null,
+                        occurrenceStatus = editingItem?.occurrence?.status,
+                        isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
+                        onComplete = editingItem?.let { item ->
+                            {
+                                // O recado só aparece depois que a gravação passou: falhou,
+                                // o home mostra o erro em vez de um "Feito." que não houve.
+                                homeVm.complete(item)
+                                editingItemId = null
+                                nav.popBackStack()
                             }
-                        }
-                    },
-                    saveError = confirmError,
-                )
+                        },
+                        onSnooze = editingItem?.let { item ->
+                            { minutes ->
+                                homeVm.snooze(item.occurrence.id, minutes)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onDelete = editingItem?.let { item ->
+                            {
+                                homeVm.delete(item)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onRetry = editingItem?.let { item ->
+                            {
+                                homeVm.retryMissed(item.occurrence.id)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onRepeat = editingItem?.let { item ->
+                            {
+                                saveRequest = homeVm.repeatTomorrow(item)
+                            }
+                        },
+                        onEndSeries = editingItem?.let { item ->
+                            {
+                                homeVm.endSeries(item.series.id)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onCancel = {
+                            editingItemId = null
+                            nav.popBackStack()
+                        },
+                        onSave = { confirmed ->
+                            // Um pedido por vez, como o botão desabilitado já garante: dois
+                            // toques no mesmo quadro viram duas gravações (e `saveDraft` sempre
+                            // cria uma série nova).
+                            if (!saving) {
+                                val editId = editingItem?.occurrence?.id
+                                val date = confirmed.localDate
+                                val time = confirmed.localTime
+                                // Só registra o pedido, com a identidade que o ViewModel dá a
+                                // ele: o desfecho chega pelo ViewModel, que atravessa o giro.
+                                saveRequest = if (editId != null && date != null && time != null) {
+                                    homeVm.edit(
+                                        editId,
+                                        confirmed.title,
+                                        date,
+                                        time,
+                                        confirmed.recurrence,
+                                        confirmed.amountCents,
+                                        confirmed.observation,
+                                    )
+                                } else {
+                                    homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)
+                                }
+                            }
+                        },
+                        saveError = confirmError,
+                    )
+                }
             }
         }
         composable("write") {

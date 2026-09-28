@@ -30,7 +30,7 @@ data class VoiceUiState(
  */
 class VoiceCaptureController(
     private val context: Context,
-    private val offline: OfflineSpeech? = null,
+    private val offline: () -> OfflineSpeech? = { null },
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var source: SpeechSource? = null
@@ -43,6 +43,9 @@ class VoiceCaptureController(
     private var startedAt = 0L
     private var hostContext: Context = context
     private var backend = VoiceEngine.Capture.IN_APP_DEFAULT
+
+    /** Resolvido a cada escuta: o modelo pode ter chegado com o app já aberto. */
+    private var offlineSpeech: OfflineSpeech? = null
 
     private val watchdog = Runnable { onWatchdog() }
 
@@ -75,10 +78,11 @@ class VoiceCaptureController(
         if (session) stopInternal()
         hostContext = host
         val speechHost = unwrapActivity(host)
+        offlineSpeech = offline()
         backend = VoiceEngine.initial(
             recognitionAvailable = SpeechRecognizer.isRecognitionAvailable(speechHost),
             onDeviceAvailable = onDeviceAvailable(speechHost),
-            offlineAvailable = offline != null,
+            offlineAvailable = offlineSpeech != null,
         )
         session = true
         retries = 0
@@ -134,7 +138,7 @@ class VoiceCaptureController(
     }
 
     private fun newSource(speechHost: Context): SpeechSource = when (backend) {
-        VoiceEngine.Capture.OFFLINE_VOSK -> offline!!.newSource()
+        VoiceEngine.Capture.OFFLINE_VOSK -> offlineSpeech!!.newSource()
         VoiceEngine.Capture.IN_APP_ON_DEVICE -> SystemSpeechSource(speechHost, onDevice = true)
         else -> SystemSpeechSource(speechHost, onDevice = false)
     }

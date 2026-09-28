@@ -18,6 +18,7 @@ import com.theopadilha.falaagenda.domain.time.AppClock
 import com.theopadilha.falaagenda.domain.time.SystemAppClock
 import com.theopadilha.falaagenda.platform.AppUpdater
 import com.theopadilha.falaagenda.reminders.ReminderScheduler
+import com.theopadilha.falaagenda.speech.OfflineModelInstaller
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoskModel
 
@@ -56,6 +57,8 @@ class AppContainer(
     )
     val activation = ActivationClient(supabase)
     // Sem o modelo baixado isto é null e a fala segue no motor do sistema, como antes.
-    val voice = VoiceCaptureController(appContext, offline = VoskModel.offlineSpeech(appContext))
+    // A consulta é por escuta, não uma vez só: o download pode terminar com o app aberto.
+    val voice = VoiceCaptureController(appContext, offline = { VoskModel.offlineSpeech(appContext) })
+    val offlineModel = OfflineModelInstaller(appContext)
     val updater = AppUpdater(appContext)
 }

@@ -36,6 +36,11 @@ class FalaAgendaApplication : Application() {
         appScope.launch {
             runCatching { container.tasks.rescheduleAll() }
         }
+        // O modelo da fala offline chega em segundo plano, uma vez só. Enquanto não
+        // chega, quem ouve é o motor do sistema — por isso a falha aqui não é erro.
+        appScope.launch {
+            runCatching { container.offlineModel.installIfNeeded() }
+        }
         appScope.launch {
             collectWidgetUpdates(
                 agenda = container.tasks.observeAgenda(),

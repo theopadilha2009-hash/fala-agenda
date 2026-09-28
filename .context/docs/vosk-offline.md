@@ -34,9 +34,20 @@ motor melhor depois.
   offline falhar, o app volta para o motor do sistema, não pula direto para a tela do
   celular. O que é nosso não pode ser pior que o do aparelho.
 
-## Como ligar
+## Como liga
 
-O modelo não viaja junto; sem ele o app se comporta exatamente como antes.
+O app baixa o modelo sozinho, em segundo plano, na primeira abertura em que houver
+rede (`OfflineModelInstaller`, disparado pelo `FalaAgendaApplication`). Enquanto não
+chega, quem ouve é o motor do sistema — a fala funciona desde o primeiro segundo, e a
+escuta seguinte já usa o offline. A consulta é feita a cada escuta, não uma vez só, para
+o modelo que chega com o app aberto não ficar esperando a próxima abertura.
+
+O download segue as mesmas regras do instalador de APK: host em allowlist
+(`alphacephei.com`, a fonte oficial dos modelos do Vosk), sha256 fixo no código,
+teto de tamanho, extração que recusa caminho para fora da pasta, e nada pela metade
+ficando no lugar — falhou, apaga e tenta de novo na próxima abertura.
+
+Para quem preferir provisionar antes, sem depender do primeiro uso:
 
 ```bash
 bash scripts/vosk-model.sh          # baixa e envia para o aparelho por USB
@@ -61,9 +72,10 @@ motor do sistema.
 
 ## Pendências
 
-- **O app não baixa o modelo sozinho.** Hoje o provisionamento é por USB. Para chegar
-  na usuária, falta o download em primeiro uso (o `AppUpdater` já faz download de APK,
-  então há caminho). Enquanto isso, a feature só existe em aparelho provisionado à mão.
+- **O download do modelo não foi exercitado contra a rede de verdade.** O teste roda
+  contra servidor local (MockWebServer) e prova allowlist, soma, extração e instalação;
+  o que falta provar é o download real de 31 MB com a rede do aparelho, incluindo o
+  que acontece se ela cair no meio.
 - **Tamanho do APK**: as .so do Vosk somam ~17 MB nas duas ABIs de celular (mais ~19 MB
   em x86/x86_64, que só servem a emulador). APK debug: 32,4 MB. Vale decidir sobre
   ABI splits antes de distribuir.

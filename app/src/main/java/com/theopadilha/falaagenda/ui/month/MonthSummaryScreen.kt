@@ -50,7 +50,8 @@ fun MonthSummaryScreen(
 ) {
     val factory = remember(container) { MonthSummaryViewModel.factory(container) }
     val viewModel: MonthSummaryViewModel = viewModel(factory = factory)
-    val agenda by viewModel.agenda.collectAsState()
+    val agendaUi by viewModel.agenda.collectAsState()
+    val agenda = agendaUi.sections
     var month by remember { mutableStateOf(initialMonth) }
     val rows = remember(agenda) { agenda.insightRows() }
     val insight = remember(rows, month) { MonthInsights.of(rows, month) }
@@ -105,55 +106,74 @@ fun MonthSummaryScreen(
                 }
             }
 
-            QuietCard {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("${insight.completed} feitas", style = MaterialTheme.typography.titleMedium)
-                    Text("${insight.missed} não realizadas", style = MaterialTheme.typography.bodyMedium)
-                    if (insight.spentCents > 0) {
+            // A leitura da agenda falhou: sem isto a tela mostrava um mês zerado — "0 feitas",
+            // "nada neste mês" — para uma agenda que ela não conseguiu ler. O zero é uma
+            // afirmação falsa: ela pode ter tarefas. A releitura da `agendaUiFrom` volta
+            // sozinha, e o resumo reaparece quando o banco responder.
+            if (agendaUi.failed) {
+                QuietCard {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            "Gasto marcado: ${insight.spentLabel()}",
+                            "Não consegui ler a sua agenda",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "Pode ser que falte tarefa neste resumo, ou que ele esteja desatualizado. Nada foi perdido.",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
                 }
-            }
-
-            Text("O que mais você fez", style = MaterialTheme.typography.titleMedium)
-            if (insight.frequent.isEmpty()) {
-                Text(
-                    emptyFrequentMessage(month, YearMonth.now()),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             } else {
-                insight.frequent.forEach { row ->
-                    QuietCard {
-                        Row(
-                            Modifier.padding(16.dp).fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(row.title, style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    if (row.times == 1) "1 vez" else "${row.times} vezes",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
+                QuietCard {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("${insight.completed} feitas", style = MaterialTheme.typography.titleMedium)
+                        Text("${insight.missed} não realizadas", style = MaterialTheme.typography.bodyMedium)
+                        if (insight.spentCents > 0) {
+                            Text(
+                                "Gasto marcado: ${insight.spentLabel()}",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                }
+
+                Text("O que mais você fez", style = MaterialTheme.typography.titleMedium)
+                if (insight.frequent.isEmpty()) {
+                    Text(
+                        emptyFrequentMessage(month, YearMonth.now()),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    insight.frequent.forEach { row ->
+                        QuietCard {
+                            Row(
+                                Modifier.padding(16.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(row.title, style = MaterialTheme.typography.titleMedium)
+                                    Text(
+                                        if (row.times == 1) "1 vez" else "${row.times} vezes",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            Text(
-                "Se a tarefa foi paga, coloque o valor na hora de salvar. No fim do mês a soma aparece aqui.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (insight.spentCents > 0) {
                 Text(
-                    Money.formatReais(insight.spentCents),
-                    style = MaterialTheme.typography.titleMedium,
+                    "Se a tarefa foi paga, coloque o valor na hora de salvar. No fim do mês a soma aparece aqui.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (insight.spentCents > 0) {
+                    Text(
+                        Money.formatReais(insight.spentCents),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
             }
         }
     }

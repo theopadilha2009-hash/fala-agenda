@@ -71,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.data.repo.AgendaItem
+import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.domain.insight.Money
 import com.theopadilha.falaagenda.domain.insight.MonthInsights
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
@@ -82,6 +83,7 @@ import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.DraftSaver
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
+import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.month.insightRows
@@ -509,15 +511,17 @@ fun HomeScreen(
                                     "Pode ser que falte tarefa nesta lista, ou que ela esteja desatualizada. Nada foi perdido.",
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
-                                TextButton(
-                                    onClick = viewModel::retryAgendaRead,
-                                    modifier = Modifier.heightIn(min = 56.dp),
-                                ) { Text("Tentar de novo", style = MaterialTheme.typography.labelLarge) }
+                                // O primário é este: é a ação que ela quer tomar na tela.
+                                PrimaryButton("Tentar de novo", onClick = viewModel::retryAgendaRead)
                             }
                         }
                     }
                 }
-                if (agenda.today.isEmpty() && agenda.upcoming.isEmpty()) {
+                // O convite a falar é sobre "não há nada" — e com a leitura falhando a home
+                // não pode afirmar isso. Ele é justamente o que leva ela a recadastrar o que
+                // já existe (segunda série, segundo alarme), o mesmo dano que o "Nada para
+                // hoje" suprimido ao lado.
+                if (showsSpeakInvite(agenda, agendaUi.failed)) {
                     item {
                         Text(
                             "Pode falar: tomar remédio amanhã às 8h",
@@ -761,6 +765,18 @@ private suspend fun SnackbarHostState.say(
     currentSnackbarData?.dismiss()
     return showSnackbar(message = message, actionLabel = actionLabel, duration = duration)
 }
+
+/**
+ * O convite a falar cabe só quando a home pode afirmar que não há nada.
+ *
+ * Ele saía da mesma pergunta que o "Nada para hoje" — lista vazia, e nada mais —, e com a
+ * leitura da agenda falhando a home dizia as duas coisas na mesma tela: o cartão "Não
+ * consegui ler a sua agenda" em cima e o convite logo abaixo. O convite é o que leva ela a
+ * recadastrar o que já existe (segunda série, segundo alarme), e a lista vazia da falha não
+ * é uma lista vazia: é uma lista que não foi lida.
+ */
+internal fun showsSpeakInvite(agenda: AgendaSections, failed: Boolean): Boolean =
+    !failed && agenda.today.isEmpty() && agenda.upcoming.isEmpty()
 
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==

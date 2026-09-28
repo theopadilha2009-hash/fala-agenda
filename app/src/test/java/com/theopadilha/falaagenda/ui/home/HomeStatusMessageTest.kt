@@ -12,9 +12,11 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.reminder.QuickRemind
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
@@ -269,6 +271,41 @@ class HomeStatusMessageTest {
         }
         assertThat((secoes.today + secoes.upcoming).map { it.series.title })
             .containsExactly("tomar água", "tomar água")
+    }
+
+    /**
+     * O "Tentar de novo" da falha de leitura precisa dar sinal. Quando a releitura falha de
+     * novo, o estado que ela publica é igual ao que já está na tela (`AgendaUi` é data class,
+     * e o `StateFlow` conflaciona valores iguais): nada mudaria, e o toque dela não teria
+     * produzido resposta nenhuma — ela toca outra vez, achando que não foi atendida. O
+     * recado sai pelo canal que a home já mostra.
+     */
+    @Test
+    fun oToqueQueNaoConsegueLerDeNovoDaUmRecado() {
+        runBlocking { container.tasks.saveDraft(recado()) }
+        // O banco sai do ar: é o cenário do disco cheio / banco corrompido, em que a
+        // releitura também não vai conseguir.
+        container.db.close()
+        val assinatura = CoroutineScope(Dispatchers.Unconfined).launch { viewModel.agendaUi.collect { } }
+        try {
+            runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.agendaUi.first { it.failed } } }
+
+            runBlocking {
+                withTimeout(TEMPO_LIMITE) {
+                    // O toque pode cair no vão entre a falha e a espera da releitura: ela
+                    // toca de novo, como faria.
+                    while (viewModel.statusMessage.value == null) {
+                        viewModel.retryAgendaRead()
+                        delay(50)
+                    }
+                }
+            }
+
+            val recado = viewModel.statusMessage.value
+            assertThat(recado!!.text).isEqualTo("Ainda não consegui ler a sua agenda.")
+        } finally {
+            assinatura.cancel()
+        }
     }
 
     private fun recado(

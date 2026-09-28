@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.data.repo.AgendaSections
+import com.theopadilha.falaagenda.data.repo.EditOutcome
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
@@ -61,6 +62,14 @@ data class AgendaUi(
 /** Espera entre releituras da agenda quando o banco não responde. */
 internal const val AGENDA_RETRY_DELAY_MS = 5_000L
 
+/**
+ * A espera entre releituras nunca é zero: um `retryDelayMs` zerado (ou negativo) viraria
+ * laço quente — a fonte que falha sempre seria reassinada em rajada, queimando bateria — em
+ * vez de esperar o disco voltar.
+ */
+internal fun agendaRetryDelay(retryDelayMs: Long): Long =
+    if (retryDelayMs > 0) retryDelayMs else AGENDA_RETRY_DELAY_MS
+
 /** Nunca emite: sem sinal de fora, a espera entre tentativas é só o tempo. */
 private val NoRetrySignal: Flow<Unit> = MutableSharedFlow()
 
@@ -105,41 +114,74 @@ internal val initialAgendaUi = AgendaUi(
  * Terminar no `catch` deixava o `failed` grudado pelo resto da vida do processo: o
  * `observeAll()` do Room desassina no `finally` quando a coleta morre, e nenhuma gravação
  * ressuscita o fluxo — a tarefa ficava impossível de abrir até matar o app. Por isso a falha
- * não fecha a coleta: espera [retryDelayMs] (ou [retrySignal], quando a tela pede a releitura
- * na hora) e assina de novo, como o widget da agenda já fazia.
+ * não fecha a coleta: espera [agendaRetryDelay] (ou [retrySignal], quando a tela pede a
+ * releitura na hora) e assina de novo, como o widget da agenda já fazia.
+ *
+ * A releitura que a tela pediu e que falhou de novo avisa por [onRetryFailed]: o estado que
+ * ela publica é igual ao anterior — `AgendaUi` é data class e o `MutableStateFlow`
+ * conflaciona valores iguais —, então sem este aviso o toque dela não produziria sinal
+ * nenhum na tela e ela tocaria outra vez, achando que não foi atendida.
  */
 internal fun agendaUiFrom(
     source: Flow<AgendaSections>,
     memory: LastGoodAgenda = LastGoodAgenda(),
     retrySignal: Flow<Unit> = NoRetrySignal,
     retryDelayMs: Long = AGENDA_RETRY_DELAY_MS,
+    onRetryFailed: suspend () -> Unit = {},
 ): Flow<AgendaUi> = flow {
+    // `pedidoDaTela` é a memória de *por que* a tentativa que acabou de falhar aconteceu: a
+    // espera terminou por um toque em "Tentar de novo", e não pelo tempo. Só esse toque
+    // precisa de resposta — a repetição automática não vira recado, senão a home repetiria a
+    // frase a cada intervalo.
+    var pedidoDaTela = false
     // A releitura vive dentro da coleta: cada tentativa é uma assinatura nova do banco, e o
     // `stateIn` reinicia esta coleta quando a última assinatura sai e outra volta. É o que faz
     // uma falha passageira não durar o resto do processo.
     while (currentCoroutineContext().isActive) {
-        try {
+        // O que o `emit` daqui atirou, quando atirou: o `take` e o `first` usam
+        // `CancellationException` como controle de fluxo (o `AbortFlowException` deles) e o
+        // escopo continua vivo — sem esta identidade, o aborto do operador de baixo seria
+        // lido como falha da leitura, e a emissão seguinte violaria a transparência de
+        // exceção do `SafeCollector`.
+        var daEmissao: Throwable? = null
+        val falha = try {
             source.collect { sections ->
+                pedidoDaTela = false
                 memory.sections = sections
-                emit(AgendaUi(sections = sections, loaded = true, failed = false))
+                try {
+                    emit(AgendaUi(sections = sections, loaded = true, failed = false))
+                } catch (abaixo: Throwable) {
+                    daEmissao = abaixo
+                    throw abaixo
+                }
             }
             // O fluxo terminou por conta própria (não é o caso do Room): não há o que
             // reassinar.
             return@flow
         } catch (cancelado: CancellationException) {
-            throw cancelado
+            // Cancelamento de verdade é o do coletor (o `stateIn` largou a assinatura): o
+            // escopo já está inativo e a exceção sobe. Um `CancellationException` que não
+            // venha daí nem do emissor de baixo — um `withTimeout` que alguém ponha no
+            // `source`, um `ensureActive` de outra camada — mataria a coleta calada, que é o
+            // defeito que a releitura existe para consertar: com o escopo vivo e a exceção
+            // não sendo de quem está abaixo, ele é falha como outra qualquer.
+            if (cancelado === daEmissao || !currentCoroutineContext().isActive) throw cancelado
+            cancelado
         } catch (erro: Exception) {
-            Log.w(TAG, "Não consegui ler a agenda.", erro)
-            emit(
-                AgendaUi(
-                    sections = memory.sections ?: initialAgendaUi.sections,
-                    loaded = true,
-                    failed = true,
-                ),
-            )
-            // A releitura sai daqui: pelo tempo, ou antes se a tela pedir.
-            withTimeoutOrNull(retryDelayMs) { retrySignal.first() }
+            if (erro === daEmissao) throw erro
+            erro
         }
+        Log.w(TAG, "Não consegui ler a agenda.", falha)
+        emit(
+            AgendaUi(
+                sections = memory.sections ?: initialAgendaUi.sections,
+                loaded = true,
+                failed = true,
+            ),
+        )
+        if (pedidoDaTela) onRetryFailed()
+        // A releitura sai daqui: pelo tempo, ou antes se a tela pedir.
+        pedidoDaTela = withTimeoutOrNull(agendaRetryDelay(retryDelayMs)) { retrySignal.first() } != null
     }
 }
 
@@ -273,6 +315,10 @@ class HomeViewModel(
         source = container.tasks.observeAgenda(),
         memory = lastGoodAgenda,
         retrySignal = retrySignals,
+        // O toque no "Tentar de novo" que falha de novo precisa de resposta: o estado que sai
+        // da releitura é igual ao que já está na tela, e sem o recado o toque dela não teria
+        // produzido sinal nenhum.
+        onRetryFailed = { publishStatus("Ainda não consegui ler a sua agenda.") },
     ).stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -525,8 +571,24 @@ class HomeViewModel(
             action = "Não consegui salvar a mudança.",
             onError = { message -> publishFailed(requestId, DraftSaveOrigin.CONFIRM, message) },
             // Salvar uma mudança não agenda alarme novo: o aviso de alarme inexato fica onde está.
-            onSuccess = {
-                publishSaved(requestId, DraftSaveOrigin.CONFIRM, AgendaFormat.announce(date, time, LocalDate.now()))
+            onSuccess = { desfecho ->
+                if (desfecho == EditOutcome.SAVED) {
+                    publishSaved(
+                        requestId,
+                        DraftSaveOrigin.CONFIRM,
+                        AgendaFormat.announce(date, time, LocalDate.now()),
+                    )
+                } else {
+                    // A ocorrência saiu do banco (o "Excluir" de outra tela, a varredura do
+                    // start) e a gravação virou no-op: anunciar "Salvo" aqui era dizer que o
+                    // que ela digitou ficou guardado quando não ficou. O desfecho sai como
+                    // falha, com o rascunho no lugar dela.
+                    publishFailed(
+                        requestId,
+                        DraftSaveOrigin.CONFIRM,
+                        "Esta tarefa não está mais na agenda. Nada foi mudado.",
+                    )
+                }
             },
         ) {
             container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)

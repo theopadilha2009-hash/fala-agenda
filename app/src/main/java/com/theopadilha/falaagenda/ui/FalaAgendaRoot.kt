@@ -43,6 +43,7 @@ import com.theopadilha.falaagenda.ui.capture.ConfirmDraftScreen
 import com.theopadilha.falaagenda.ui.capture.WriteStep
 import com.theopadilha.falaagenda.ui.capture.WriteTaskScreen
 import com.theopadilha.falaagenda.ui.capture.writeStepFor
+import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
 import com.theopadilha.falaagenda.ui.home.AgendaUi
 import com.theopadilha.falaagenda.ui.home.DraftSaveOrigin
@@ -274,7 +275,9 @@ fun FalaAgendaRoot(
             // horário, e um segundo alarme. Aqui a tela diz o que aconteceu e oferece o
             // "Tentar de novo" e a saída; o `popBackStack` dela devolve para o destino de
             // baixo, que é de onde o aviso a trouxe se ela estava no mês ou nos Ajustes.
-            val editingUnavailable = editingItemId != null && agendaUi.failed && editingItem == null
+            // A decisão é de [editingUnavailable], que tem teste próprio: trocar um `&&` por
+            // um `||` aqui volta ao segundo alarme sem acender nada.
+            val editingBlocked = editingUnavailable(agendaUi, editingItemId, editingItem)
             val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
             // Os pedidos de gravação que ainda não foram mostrados a ninguém (ver
             // `pendingDraftSaves`): a gravação *desta* tela, e não o `busy` do ViewModel, que
@@ -324,7 +327,7 @@ fun FalaAgendaRoot(
             // Sem a agenda não dá para saber o que a tarefa editada tem hoje no banco, e o
             // "Salvar" daqui criaria uma série nova: a tela sai do caminho de edição e diz
             // por quê.
-            if (current != null && editingUnavailable) {
+            if (current != null && editingBlocked) {
                 AgendaReadFailure(
                     onRetry = homeVm::retryAgendaRead,
                     onBack = {
@@ -342,7 +345,7 @@ fun FalaAgendaRoot(
             // remédio com o texto dela, e "Concluir"/"Excluir" agiam no remédio enquanto ela
             // lia outra coisa. Com a chave, o que está na tela é o que as ações vão alterar.
             // A entrada continua sendo reaproveitada (não empilha tela a cada abertura).
-            if (current != null && !awaitingEditingItem && !editingUnavailable) {
+            if (current != null && !awaitingEditingItem && !editingBlocked) {
                 key(current, editingItemId) {
                     ConfirmDraftScreen(
                         initial = current,
@@ -563,6 +566,13 @@ fun FalaAgendaRoot(
  */
 @Composable
 private fun AgendaReadFailure(onRetry: () -> Unit, onBack: () -> Unit) {
+    // O toque que não conseguiu ler de novo precisa de resposta aqui também: a releitura que
+    // falha sai igual ao que já está na tela (`AgendaUi` é data class, e o `StateFlow`
+    // conflaciona valores iguais), e sem isto o toque dela não produziria sinal nenhum — ela
+    // toca outra vez, achando que não foi atendida. O recado da home (snackbar) não vale
+    // nesta tela, que é outra composição. Se a releitura conseguir, esta tela sai e o texto
+    // vai junto.
+    var retried by remember { mutableStateOf(false) }
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
             modifier = Modifier
@@ -580,11 +590,42 @@ private fun AgendaReadFailure(onRetry: () -> Unit, onBack: () -> Unit) {
                 "Não deu para ler a sua agenda agora, então não dá para abrir esta tarefa. Nada foi mudado.",
                 style = MaterialTheme.typography.bodyLarge,
             )
-            SecondaryButton("Tentar de novo", onClick = onRetry)
+            if (retried) {
+                Text(
+                    "Ainda não consegui ler a sua agenda.",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            // O primário é a tentativa de novo; o "Voltar" é a saída.
+            PrimaryButton(
+                "Tentar de novo",
+                onClick = {
+                    retried = true
+                    onRetry()
+                },
+            )
             SecondaryButton("Voltar", onClick = onBack)
         }
     }
 }
+
+/**
+ * A leitura da agenda falhou com a tela de edição aberta e a tarefa editada não está na
+ * lista.
+ *
+ * É um predicado de três valores, e confundir dois deles é o segundo alarme: sem o item não
+ * dá para saber o que a tarefa tem hoje, e seguir para o `ConfirmDraftScreen` com
+ * `editing = false` cria uma série nova com o mesmo título e o mesmo horário. A leitura que
+ * respondeu "não consegui ler" não é a mesma coisa que a tarefa ter saído da agenda — só a
+ * primeira bloqueia a edição. O item presente na última lista boa vale, mesmo com a
+ * releitura falhando: a bandeira diz "esta é a última lista que consegui ler", e é ela que a
+ * tela de confirmação lê.
+ */
+internal fun editingUnavailable(
+    agendaUi: AgendaUi,
+    editingItemId: String?,
+    editingItem: AgendaItem?,
+): Boolean = editingItemId != null && agendaUi.failed && editingItem == null
 
 /**
  * O que o toque no aviso pede da agenda lida.

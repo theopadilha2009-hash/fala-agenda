@@ -7,9 +7,12 @@ import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
@@ -18,7 +21,12 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import java.time.Instant
@@ -33,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * `loaded` falso para sempre: a tela só tinha o indicador de carregamento, sem botão e sem
  * saída. Ler o banco é uma tarefa que pode falhar; falhar tem que virar estado utilizável.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class AgendaUiFailureTest {
     private val vazia = AgendaSections(emptyList(), emptyList(), emptyList(), emptyList())
 
@@ -178,6 +187,117 @@ class AgendaUiFailureTest {
             assertThat(estados.map { it.failed }).containsExactly(false, true, true).inOrder()
             assertThat(estados.drop(1).map { it.sections }).containsExactly(cheia, cheia)
         }
+    }
+
+    /**
+     * A fonte que sempre falha é reassinada **com espera**: sem o intervalo, a releitura vira
+     * um laço quente que queima bateria em vez de esperar o disco voltar. O widget da agenda
+     * tem esta mesma prova (`bancoQuebradoParaSempreNaoDerrubaNemGiraSemEsperar`).
+     */
+    @Test
+    fun aFonteQueSempreFalhaEhTentadaDeNovoComEspera() = runTest {
+        val tentativas = AtomicInteger()
+        val fonte = flow<AgendaSections> {
+            tentativas.incrementAndGet()
+            throw IllegalStateException("disco cheio")
+        }
+
+        val job = launch { agendaUiFrom(fonte, retryDelayMs = 5_000).collect { } }
+        runCurrent()
+        assertThat(tentativas.get()).isEqualTo(1)
+
+        advanceTimeBy(5_001)
+        assertThat(tentativas.get()).isEqualTo(2)
+
+        job.cancel()
+        advanceUntilIdle()
+    }
+
+    /**
+     * A espera nunca é zero. O único chamador não passa o parâmetro, mas quem passar um `0`
+     * (um teste, uma tela nova querendo releitura imediata) transformaria a fonte que falha
+     * sempre em rajada — e ninguém perceberia, porque a tela continua igual. Com a guarda, o
+     * `0` cai na espera de sempre: uma tentativa agora, outra só depois do intervalo.
+     */
+    @Test
+    fun esperaZeroNaoViraRajada() = runTest {
+        val tentativas = AtomicInteger()
+        val fonte = flow<AgendaSections> {
+            if (tentativas.incrementAndGet() < 4) throw IllegalStateException("o banco não responde")
+            emit(vazia)
+        }
+
+        val job = launch { agendaUiFrom(fonte, retryDelayMs = 0).collect { } }
+        runCurrent()
+        // Sem a guarda esta contagem já seria 4: as tentativas todas no mesmo instante.
+        assertThat(tentativas.get()).isEqualTo(1)
+
+        advanceTimeBy(AGENDA_RETRY_DELAY_MS + 1)
+        assertThat(tentativas.get()).isEqualTo(2)
+
+        job.cancel()
+        advanceUntilIdle()
+    }
+
+    /**
+     * Nem todo `CancellationException` é o cancelamento do coletor. Um `withTimeout` que
+     * alguém venha a pôr no `source`, um `ensureActive` de outra camada, sai daqui como
+     * cancelamento e mata a coleta calada — o `failed` ficava grudado e a releitura nunca
+     * acontecia, que é exatamente o defeito que a releitura existe para consertar. Com o
+     * escopo ainda vivo, ele é falha como outra qualquer.
+     */
+    @Test
+    fun cancelamentoQueNaoEhDoColetorNaoMataAColeta() = runBlocking {
+        val cheia = AgendaSections(listOf(itemDeHoje("s1:2026-08-20")), emptyList(), emptyList(), emptyList())
+        val tentativas = AtomicInteger()
+        val fonte = flow<AgendaSections> {
+            if (tentativas.incrementAndGet() == 1) throw CancellationException("o timeout de dentro da fonte")
+            emit(cheia)
+        }
+
+        val estados = withTimeout(5_000) { agendaUiFrom(fonte, retryDelayMs = 1).take(2).toList() }
+
+        assertThat(estados.map { it.failed }).containsExactly(true, false).inOrder()
+        assertThat(estados.last().sections).isEqualTo(cheia)
+    }
+
+    /**
+     * O toque no "Tentar de novo" que falha de novo precisa de resposta: o estado que sai da
+     * releitura é igual ao anterior (`AgendaUi` é data class) e o `StateFlow` conflaciona
+     * valores iguais — nada mudaria na tela e o toque dela não teria produzido sinal nenhum.
+     * O aviso é só do toque: a falha que ninguém pediu não vira recado, senão a home
+     * repetiria a frase a cada tentativa automática.
+     */
+    @Test
+    fun oToqueQueFalhaDeNovoAvisaATela() = runTest {
+        val tentativas = AtomicInteger()
+        val fonte = flow<AgendaSections> {
+            tentativas.incrementAndGet()
+            throw IllegalStateException("o banco não responde")
+        }
+        val sinal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val avisos = AtomicInteger()
+
+        val job = launch {
+            agendaUiFrom(
+                fonte,
+                retrySignal = sinal,
+                retryDelayMs = 60_000,
+                onRetryFailed = { avisos.incrementAndGet() },
+            ).collect { }
+        }
+        runCurrent()
+        assertThat(tentativas.get()).isEqualTo(1)
+        assertThat(avisos.get()).isEqualTo(0)
+
+        sinal.emit(Unit)
+        runCurrent()
+
+        assertThat(tentativas.get()).isEqualTo(2)
+        assertThat(avisos.get()).isEqualTo(1)
+
+        job.cancel()
+        advanceUntilIdle()
     }
 
     private fun itemDeHoje(occurrenceId: String): AgendaItem {

@@ -326,6 +326,14 @@ class TaskRepository(
         )
     }
 
+    /**
+     * Grava a edição de uma ocorrência e diz se gravou.
+     *
+     * A ocorrência (ou a série dela) pode ter saído do banco enquanto a tela de edição estava
+     * aberta: aí a gravação é um no-op, e voltar como sucesso fazia a tela anunciar "Salvo"
+     * para o que a usuária digitou sem que nada tivesse sido gravado — o texto dela se
+     * perderia em silêncio. [EditOutcome.GONE] é o que a tela usa para dizer isso a ela.
+     */
     suspend fun editOccurrence(
         occurrenceId: String,
         title: String,
@@ -334,10 +342,10 @@ class TaskRepository(
         recurrence: com.theopadilha.falaagenda.domain.model.RecurrenceRule,
         amountCents: Long? = null,
         observation: String = "",
-    ) = writer.withLock {
+    ): EditOutcome = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
-        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock EditOutcome.GONE
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock EditOutcome.GONE
         val original = row.toDomain()
         val sameWhen = original.localDate == date && series.localTime == time
         val finished = original.status == OccurrenceStatus.COMPLETED ||
@@ -351,7 +359,7 @@ class TaskRepository(
                     updatedAt = now,
                 ).toEntity(),
             )
-            return@withLock
+            return@withLock EditOutcome.SAVED
         }
         val pending = occurrenceDao.forSeries(series.id)
             .map { it.toDomain() }
@@ -387,7 +395,7 @@ class TaskRepository(
                 series = serieRow,
                 deleteSeriesRow = false,
             )
-            return@withLock
+            return@withLock EditOutcome.SAVED
         }
         val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
         occurrenceDao.applyBatch(
@@ -401,6 +409,7 @@ class TaskRepository(
         // passada criava três datas vencidas, o próximo avanço marcava todas como não
         // realizadas e a agenda ficava sem as futuras até o app reabrir.
         spawnUpcomingPreview(updatedSeries, OccurrenceLifecycle.todayIn(clock.zoneId(), now))
+        EditOutcome.SAVED
     }
 
     suspend fun retryMissed(occurrenceId: String): RetryResult? = writer.withLock {
@@ -628,3 +637,12 @@ data class RetryResult(
     val date: java.time.LocalDate,
     val time: java.time.LocalTime,
 )
+
+/** Ver [TaskRepository.editOccurrence]: a diferença entre ter gravado e não ter o que gravar. */
+enum class EditOutcome {
+    /** A ocorrência estava no banco e a mudança foi gravada. */
+    SAVED,
+
+    /** A ocorrência (ou a série dela) não está mais no banco: nada foi gravado. */
+    GONE,
+}

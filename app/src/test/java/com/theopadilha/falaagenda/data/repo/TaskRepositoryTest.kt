@@ -896,6 +896,45 @@ class TaskRepositoryTest {
     }
 
     /**
+     * A edição de uma ocorrência que saiu do banco virava no-op **com sucesso**: a linha não
+     * está lá, o `editOccurrence` volta sem gravar e quem chamou anuncia "Salvo" para o que
+     * ela digitou. Com a última lista boa preservada de propósito, "Editar" numa tarefa
+     * apagada por fora perderia o texto dela em silêncio — a classe de defeito que o critério
+     * nº 1 do app proíbe. A gravação tem que dizer que não gravou.
+     */
+    @Test
+    fun edicaoDeOcorrenciaSumidaReportaQueNaoGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.deleteOccurrence(saved.occurrence.id)
+
+        val gravou = repo.editOccurrence(
+            saved.occurrence.id,
+            "Cabelo",
+            LocalDate.of(2026, 8, 21),
+            LocalTime.of(9, 0),
+            RecurrenceRule(),
+        )
+
+        assertThat(gravou).isEqualTo(EditOutcome.GONE)
+    }
+
+    /** O caminho normal continua dizendo que gravou. */
+    @Test
+    fun edicaoDeOcorrenciaVivaReportaQueGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+
+        val gravou = repo.editOccurrence(
+            saved.occurrence.id,
+            "Cabelo",
+            LocalDate.of(2026, 8, 22),
+            LocalTime.of(10, 0),
+            RecurrenceRule(),
+        )
+
+        assertThat(gravou).isEqualTo(EditOutcome.SAVED)
+    }
+
+    /**
      * Editar para uma data passada não pode ancorar o preview nessa data: as três datas
      * nasciam no passado, o próximo avanço marcava todas como não realizadas e a agenda
      * ficava sem as datas futuras até o app reabrir.

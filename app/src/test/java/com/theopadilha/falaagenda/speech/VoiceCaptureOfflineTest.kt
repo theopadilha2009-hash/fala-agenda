@@ -36,7 +36,7 @@ class VoiceCaptureOfflineTest {
     @Test
     fun comModeloAEscutaEOfflineSemTocarNoMotorDoSistema() {
         val fake = FakeSource()
-        val controller = VoiceCaptureController(context, offline = OfflineSpeech { fake })
+        val controller = VoiceCaptureController(context, offline = { OfflineSpeech { fake } })
 
         controller.start(context)
         idle()
@@ -48,7 +48,7 @@ class VoiceCaptureOfflineTest {
     @Test
     fun oParcialDoOfflineChegaNaTela() {
         val fake = FakeSource()
-        val controller = VoiceCaptureController(context, offline = OfflineSpeech { fake })
+        val controller = VoiceCaptureController(context, offline = { OfflineSpeech { fake } })
         controller.start(context)
         idle()
 
@@ -63,7 +63,7 @@ class VoiceCaptureOfflineTest {
     @Test
     fun oFinalDoOfflineFechaORecado() {
         val fake = FakeSource()
-        val controller = VoiceCaptureController(context, offline = OfflineSpeech { fake })
+        val controller = VoiceCaptureController(context, offline = { OfflineSpeech { fake } })
         controller.start(context)
         idle()
 
@@ -79,7 +79,7 @@ class VoiceCaptureOfflineTest {
     @Test
     fun offlineQueFalhaVoltaParaOMotorDoSistema() {
         val fake = FakeSource()
-        val controller = VoiceCaptureController(context, offline = OfflineSpeech { fake })
+        val controller = VoiceCaptureController(context, offline = { OfflineSpeech { fake } })
         controller.start(context)
         idle()
 
@@ -89,6 +89,28 @@ class VoiceCaptureOfflineTest {
 
         // Voltou para o caminho de sempre: um recognizer do aparelho foi criado.
         assertThat(ShadowSpeechRecognizer.getLatestSpeechRecognizer()).isNotNull()
+    }
+
+    @Test
+    fun modeloQueChegaDepoisPassaAValerNaProximaEscuta() {
+        val fake = FakeSource()
+        var baixado = false
+        val controller = VoiceCaptureController(
+            context,
+            offline = { if (baixado) OfflineSpeech { fake } else null },
+        )
+
+        controller.start(context)
+        idle()
+        assertThat(fake.started).isFalse()
+
+        // O download terminou com o app aberto: a escuta seguinte já é a offline.
+        baixado = true
+        controller.cancel()
+        controller.start(context)
+        idle()
+
+        assertThat(fake.started).isTrue()
     }
 
     private class FakeSource : SpeechSource {

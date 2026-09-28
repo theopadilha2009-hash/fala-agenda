@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
@@ -45,8 +46,32 @@ internal val initialAgendaUi = AgendaUi(
     loaded = false,
 )
 
-internal fun agendaUiFrom(source: Flow<AgendaSections>): Flow<AgendaUi> =
-    source.map { AgendaUi(sections = it, loaded = true) }
+/**
+ * A agenda em estado utilizável, mesmo quando a leitura falha.
+ *
+ * A tela de confirmação decide por `loaded` se o rascunho é a edição de uma tarefa ou uma
+ * tarefa nova (`FalaAgendaRoot.awaitingEditingItem`): um fluxo que estoura sem emitir deixava
+ * o `loaded` falso para sempre, e a tela ficava só com o indicador de carregamento — sem
+ * botão, sem saída a não ser o Back do sistema. Ler o banco é uma tarefa que pode falhar, e
+ * falhar tem que virar estado utilizável, nunca uma espera sem fim.
+ *
+ * A falha que chega **depois** de a agenda já ter vindo não emite nada de propósito: o
+ * `stateIn` guarda o último valor bom, e é essa lista que a tela de confirmação lê para saber
+ * que a tarefa editada existe. Trocá-la por uma agenda vazia transformaria "Editar tarefa" em
+ * "tarefa nova" — segunda série com o mesmo título e o mesmo horário, e um segundo alarme.
+ */
+internal fun agendaUiFrom(source: Flow<AgendaSections>): Flow<AgendaUi> {
+    var emitiu = false
+    return source
+        .map { sections ->
+            emitiu = true
+            AgendaUi(sections = sections, loaded = true)
+        }
+        .catch { error ->
+            Log.w(TAG, "Não consegui ler a agenda.", error)
+            if (!emitiu) emit(initialAgendaUi.copy(loaded = true))
+        }
+}
 
 /**
  * De onde partiu a gravação de um rascunho. O desfecho sai por [HomeViewModel.draftSaveOutcome]

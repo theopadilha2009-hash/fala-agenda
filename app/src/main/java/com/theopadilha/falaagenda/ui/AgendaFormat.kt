@@ -109,14 +109,20 @@ object AgendaFormat {
         return when {
             minutes in -1L..1L -> "agora"
             minutes in 2L..59L -> "daqui $minutes min"
-            minutes in 60L..(24L * 60L - 1L) -> {
-                val hours = minutes / 60
-                val rest = minutes % 60
-                if (rest == 0L) "daqui $hours h" else "daqui $hours h $rest min"
-            }
+            minutes in 60L..(24L * 60L - 1L) -> "daqui ${hoursAndMinutes(minutes)}"
             minutes in -59L..-2L -> "há ${-minutes} min"
-            minutes in -(24L * 60L - 1L)..-60L -> "há ${-minutes / 60} h"
+            // O passado perde os minutos do mesmo jeito que o futuro perdia: 90 minutos atrás
+            // saía como "há 1 h". É o que a pessoa lê na lista de hoje, para a tarefa cujo
+            // horário já passou e que não leva a marca de atrasada (ver `lateMark`).
+            minutes in -(24L * 60L - 1L)..-60L -> "há ${hoursAndMinutes(-minutes)}"
             else -> null
         }
+    }
+
+    /** "1 h 30 min", "2 h": o mesmo desenho dos dois lados da frase, para não voltarem a divergir. */
+    private fun hoursAndMinutes(minutes: Long): String {
+        val hours = minutes / 60
+        val rest = minutes % 60
+        return if (rest == 0L) "$hours h" else "$hours h $rest min"
     }
 }

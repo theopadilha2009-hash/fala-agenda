@@ -531,17 +531,23 @@ class TaskRepository(
     }
 
     /**
-     * Alarme marcado para um instante que já passou e nunca foi entregue (`lastReminderAt`
-     * antes dele) ainda é entrega pendente. Vale até [JANELA_ENTREGA_PENDENTE] depois do
-     * horário marcado — dentro dela o `rescheduleAll` de todo start rearma o aviso; passada
-     * ela, o `advance` volta a decidir e a ocorrência vira não realizada, que é o terminador
-     * da entrega pendente (nada fica pendurado para sempre).
+     * Alarme marcado para um instante que já passou e ainda não foi entregue é entrega
+     * pendente. Nunca tendo tocado, a escada nem começou (`lastReminderAt` nulo): o aviso das
+     * 22:00 que o Doze segurou continua pendente depois da meia-noite — sem isso a primeira
+     * varredura do dia seguinte o arquivava como não realizada e o único aviso do dia morria
+     * calado. Com um aviso já entregue, vale o critério de sempre: o que está marcado é a
+     * repetição seguinte, e ela só é entrega pendente se o último aviso ficou para trás.
+     *
+     * Vale até [JANELA_ENTREGA_PENDENTE] depois do horário marcado — dentro dela o
+     * `rescheduleAll` de todo start rearma o aviso; passada ela, o `advance` volta a decidir
+     * e a ocorrência vira não realizada, que é o terminador da entrega pendente (nada fica
+     * pendurado para sempre).
      */
     private fun entregaPendente(occurrence: TaskOccurrence, now: Instant): Boolean {
         val marcado = occurrence.nextReminderAt ?: return false
-        val ultimoAviso = occurrence.lastReminderAt ?: return false
-        return !marcado.isAfter(now) &&
-            ultimoAviso.isBefore(marcado) &&
+        if (marcado.isAfter(now)) return false
+        val ultimoAviso = occurrence.lastReminderAt
+        return (ultimoAviso == null || ultimoAviso.isBefore(marcado)) &&
             now.isBefore(marcado.plus(JANELA_ENTREGA_PENDENTE))
     }
 

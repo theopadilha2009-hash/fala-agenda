@@ -26,7 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
@@ -57,8 +57,11 @@ fun SettingsScreen(
         initial = QuietHours(LocalTime.of(22, 0), LocalTime.of(8, 0)),
     )
     val themeMode by container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
-    var picking by remember { mutableStateOf<String?>(null) }
-    var code by remember { mutableStateOf("") }
+    // Sobrevivem à rotação: girar com o seletor de horário aberto não fecha mais o diálogo
+    // (e não perde o horário já mexido, que o `TimePickerState` salva junto) nem limpa o
+    // código de ativação meio digitado.
+    var picking by rememberSaveable { mutableStateOf<String?>(null) }
+    var code by rememberSaveable { mutableStateOf("") }
     val token = container.tokenStore.token()
     val configured = container.supabase.isConfigured
     val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(container))

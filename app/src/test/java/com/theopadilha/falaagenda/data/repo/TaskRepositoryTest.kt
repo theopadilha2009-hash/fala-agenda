@@ -746,6 +746,79 @@ class TaskRepositoryTest {
     }
 
     /**
+     * A outra metade da entrega pendente: o aviso que ainda NÃO tocou. O remédio das 22:00
+     * não é entregue (Doze, alarme inexato, aparelho desligado), a escada nem começou
+     * (`lastReminderAt` nulo) e ela só liga o aparelho às 00:30. A varredura da virada da
+     * meia-noite arquivava a ocorrência como não realizada e cancelava o alarme: o único
+     * aviso do dia morria calado. Dentro da janela ele é entrega pendente como qualquer
+     * outro, e o `rescheduleAll` rearma o primeiro degrau.
+     */
+    @Test
+    fun avisoNuncaEntregueNaViradaDaMeiaNoiteContinuaPendente() {
+        runBlocking {
+            val madrugada = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 0, 30).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaMadrugada = TaskRepository(seriesDao, occDao, madrugada, sched)
+            val series = serieDaNoite(madrugada.instant())
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
+            occDao.upsert(
+                ocorrenciaAdiada(
+                    seriesId = series.id,
+                    dia = LocalDate.of(2026, 8, 19),
+                    lastReminderAt = null,
+                    nextReminderAt = LocalDateTime.of(2026, 8, 19, 22, 0).atZone(zone).toInstant(),
+                ).copy(reminderStep = ReminderPolicy.STEP_FIRST).toEntity(),
+            )
+
+            repoDaMadrugada.rescheduleAll()
+
+            val stored = occDao.get(ontem)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(sched.cancelled).doesNotContain(ontem)
+            // Rearmado no primeiro degrau: é o que faz o aviso atrasado ainda tocar.
+            assertThat(sched.scheduled).contains(ontem)
+        }
+    }
+
+    /** O terminador da janela vale também para o aviso que nunca tocou. */
+    @Test
+    fun avisoNuncaEntregueForaDaJanelaViraNaoRealizada() {
+        runBlocking {
+            val manhaSeguinte = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 9, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, manhaSeguinte, sched)
+            val series = serieDaNoite(manhaSeguinte.instant())
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 19))
+            occDao.upsert(
+                ocorrenciaAdiada(
+                    seriesId = series.id,
+                    dia = LocalDate.of(2026, 8, 19),
+                    lastReminderAt = null,
+                    // marcado para ontem 22:00, nunca entregue: 11 h de atraso, janela fechada
+                    nextReminderAt = LocalDateTime.of(2026, 8, 19, 22, 0).atZone(zone).toInstant(),
+                ).copy(reminderStep = ReminderPolicy.STEP_FIRST).toEntity(),
+            )
+
+            repoDaManha.rescheduleAll()
+
+            val stored = occDao.get(ontem)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.MISSED)
+            assertThat(stored.nextReminderAt).isNull()
+            assertThat(sched.cancelled).contains(ontem)
+        }
+    }
+
+    /**
      * Editar para uma data passada não pode ancorar o preview nessa data: as três datas
      * nasciam no passado, o próximo avanço marcava todas como não realizadas e a agenda
      * ficava sem as datas futuras até o app reabrir.

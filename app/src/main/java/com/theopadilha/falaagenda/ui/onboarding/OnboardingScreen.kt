@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -16,10 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,8 +36,9 @@ import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+
+private const val TAG = "FalaAgendaOnboarding"
 
 @Composable
 fun OnboardingScreen(
@@ -43,18 +46,33 @@ fun OnboardingScreen(
     settings: SettingsStore,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var micRefused by remember { mutableStateOf(false) }
     var notifRefused by remember { mutableStateOf(false) }
+    // A saída daqui fica guardada num estado que o giro não apaga, e quem a executa é o
+    // efeito abaixo. No escopo da composição, girar o aparelho logo depois do toque
+    // cancelava a gravação do `onboardingComplete` no meio (ou antes de ela começar, no
+    // despacho) e o onboarding voltava a aparecer na abertura seguinte — ela já tinha
+    // começado a usar o aplicativo.
+    var finishing by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(finishing) {
+        if (!finishing) return@LaunchedEffect
+        try {
+            settings.setOnboardingComplete()
+        } catch (cancellation: CancellationException) {
+            // Sair de cena no meio não é falha: a tela recriada encontra a saída guardada
+            // e grava de novo.
+            throw cancellation
+        } catch (error: Exception) {
+            // A gravação não pode segurar a saída daqui: ela segue para a home do mesmo
+            // jeito, e o onboarding (e o botão) continuam valendo na próxima abertura.
+            Log.w(TAG, "Não consegui marcar o onboarding como visto.", error)
+        }
+        finishing = false
+        onFinished()
+    }
 
     fun finish() {
-        scope.launch {
-            // A gravação não pode segurar a saída daqui: sem o runCatching a corrotina
-            // morria antes do onFinished e o toque em "Começar" não fazia nada.
-            runCatching { settings.setOnboardingComplete() }
-            // Se a tela saiu de cena no meio, navegar no controller já descartado quebra.
-            if (isActive) onFinished()
-        }
+        finishing = true
     }
 
     fun requestExactAlarm() {

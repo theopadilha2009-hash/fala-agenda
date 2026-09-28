@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,12 +41,12 @@ import com.theopadilha.falaagenda.ui.settings.SettingsScreen
 import com.theopadilha.falaagenda.ui.update.UpdateScreen
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.launch
-import androidx.compose.runtime.rememberCoroutineScope
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZonedDateTime
+
+private const val TAG = "FalaAgendaRoot"
 
 @Composable
 fun FalaAgendaRoot(
@@ -75,8 +76,11 @@ fun FalaAgendaRoot(
     // A tarefa editada é guardada pelo id e reencontrada na agenda: o item inteiro não
     // cabe no Bundle e, relido da agenda, volta sempre com o estado do banco.
     var editingItemId by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingOccurrenceId by remember { mutableStateOf<String?>(null) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
+    // O pedido do alarme e o recado da última ação atravessam o giro: a home só os dá por
+    // consumidos depois de mostrar o que eles pedem, e um `remember` aqui os apagava no
+    // meio do aviso — o toque no alarme ficava sem resposta e a exclusão, sem desfazer.
+    var pendingOccurrenceId by rememberSaveable { mutableStateOf<String?>(null) }
+    var statusMessage by rememberSaveable { mutableStateOf<String?>(null) }
     // Erro de gravação mostrado na própria tela de confirmação, que não pode sumir
     // como se tivesse salvado.
     var confirmError by rememberSaveable { mutableStateOf<String?>(null) }
@@ -93,7 +97,29 @@ fun FalaAgendaRoot(
         onOpenOccurrenceConsumed()
     }
     val themeMode by container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
-    val scope = rememberCoroutineScope()
+    // A aparência escolhida no menu da home: a escolha fica guardada (o giro não a apaga)
+    // até a gravação terminar. No escopo da composição, girar o aparelho entre o toque e a
+    // gravação cancelava o DataStore no meio — ou antes de ele começar — e a aparência
+    // voltava à antiga, sem aviso nenhum.
+    var pendingTheme by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingTheme) {
+        val name = pendingTheme ?: return@LaunchedEffect
+        // Nome que não é de um tema conhecido (Bundle de outra versão) não derruba a
+        // abertura: vale o que já está gravado.
+        val mode = runCatching { ThemeMode.valueOf(name) }.getOrNull()
+        if (mode != null) {
+            try {
+                container.settings.setThemeMode(mode)
+            } catch (cancellation: CancellationException) {
+                // Girar não é falha: a escolha continua guardada e a tela recriada a grava.
+                throw cancellation
+            } catch (error: Exception) {
+                Log.w(TAG, "Não consegui salvar a aparência.", error)
+                statusMessage = "Não consegui salvar a aparência. Tente de novo."
+            }
+        }
+        pendingTheme = null
+    }
 
     if (!onboardingReady) {
         Box(
@@ -133,20 +159,10 @@ fun FalaAgendaRoot(
                 onStartSpeakConsumed = onStartSpeakConsumed,
                 onOpenSettings = { nav.navigate("settings") },
                 themeMode = themeMode,
-                onThemeMode = { mode ->
-                    // O escopo é o da composição: gravação que falha sem tratamento aqui
-                    // derrubaria o processo. E o toque não pode passar em silêncio — o
-                    // tema continua o antigo e a home diz por quê.
-                    scope.launch {
-                        try {
-                            container.settings.setThemeMode(mode)
-                        } catch (cancellation: CancellationException) {
-                            throw cancellation
-                        } catch (_: Exception) {
-                            statusMessage = "Não consegui salvar a aparência. Tente de novo."
-                        }
-                    }
-                },
+                // A gravação é do efeito acima; aqui só se registra a escolha. Falha de
+                // gravação não pode passar em silêncio: o tema continua o antigo e a home
+                // diz por quê.
+                onThemeMode = { mode -> pendingTheme = mode.name },
                 onOpenMonth = { nav.navigate("month") },
                 onOpenUpdate = { nav.navigate("update") },
                 onWrite = { nav.navigate("write") },
@@ -402,10 +418,14 @@ private const val NO_AMOUNT = Long.MIN_VALUE
  * recriação da Activity como a lista de primitivos que o Bundle aceita. Lista vazia
  * quer dizer "nenhum rascunho em andamento".
  *
+ * Vale para os dois lugares em que um rascunho espera por ela: a tela de confirmação
+ * (o `draft` daqui) e a caixa "Pode salvar?" da home, que já tirou o recado da sessão
+ * quando o gira — sem o mesmo tratamento ali, o giro apagava a fala reconhecida.
+ *
  * A ordem dos campos em [DraftSaver] é o formato salvo: mexer nela exige mexer em
  * [draftFrom].
  */
-private val DraftSaver = Saver<ParsedTaskDraft?, ArrayList<Any?>>(
+internal val DraftSaver = Saver<ParsedTaskDraft?, ArrayList<Any?>>(
     save = { draft ->
         if (draft == null) {
             ArrayList()

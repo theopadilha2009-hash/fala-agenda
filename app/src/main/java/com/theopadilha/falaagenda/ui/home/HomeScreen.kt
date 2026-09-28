@@ -80,6 +80,7 @@ import com.theopadilha.falaagenda.reminders.NotificationHelper
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
+import com.theopadilha.falaagenda.ui.DraftSaver
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
@@ -129,7 +130,9 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var widgetHelp by remember { mutableStateOf(false) }
-    var quickSaveError by remember { mutableStateOf<String?>(null) }
+    // O erro e o rascunho da caixa somem juntos: os dois atravessam o giro (ver o
+    // `quickDraft` abaixo).
+    var quickSaveError by rememberSaveable { mutableStateOf<String?>(null) }
     // Binder síncrono: se ficasse na recomposição, rodaria a cada parcial da fala.
     var batteryOk by remember { mutableStateOf(DeviceIntents.isBatteryUnrestricted(context)) }
     var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
@@ -153,11 +156,12 @@ fun HomeScreen(
     // O estado vem do ViewModel: girar o aparelho no meio não devolve o microfone à mão
     // dela nem joga fora o recado que está sendo entendido.
     val understanding = speech.understanding
+    // O menu fecha e o que ela tocou acontece no mesmo toque — sem esperar a animação.
+    // Enquanto a ação esperava o `close()` (que é suspenso), girar o aparelho no meio
+    // cancelava a corrotina e o destino nunca abria, calado.
     val closeAnd: (() -> Unit) -> Unit = { action ->
-        scope.launch {
-            drawerState.close()
-            action()
-        }
+        scope.launch { drawerState.close() }
+        action()
     }
     // Tela de sistema não existe em todo aparelho: o DeviceIntents.open concentra o
     // runCatching e diz se abriu. O toque nunca fica sem resposta — sem isso o
@@ -166,6 +170,23 @@ fun HomeScreen(
         if (!DeviceIntents.open(context, intent)) {
             scope.launch { snackbar.showSnackbar(failure) }
         }
+    }
+    // "Enviar o aplicativo" copia o APK instalado inteiro (segundos) antes de abrir o
+    // seletor: girar no meio cancelava a cópia e o seletor nunca abria, calado. O pedido
+    // fica guardado até o seletor abrir — a tela recriada ainda o encontra.
+    var shareApp by rememberSaveable { mutableStateOf(false) }
+    // O "não está mais na agenda" do aviso tocado: guardado até sair na tela.
+    var missingNotice by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(shareApp) {
+        if (!shareApp) return@LaunchedEffect
+        val apk = withContext(Dispatchers.IO) {
+            runCatching { DeviceIntents.copyInstalledApk(context) }.getOrNull()
+        }
+        openOrReport(
+            DeviceIntents.shareChooser(context, apk),
+            "Não consegui abrir o compartilhamento neste celular.",
+        )
+        shareApp = false
     }
     val completeWithUndo: (AgendaItem) -> Unit = { item ->
         viewModel.complete(item) {
@@ -181,7 +202,13 @@ fun HomeScreen(
             }
         }
     }
-    var quickDraft by remember { mutableStateOf<ParsedTaskDraft?>(null) }
+    // A caixa "Pode salvar?" guarda o rascunho num estado que a rotação recria: o efeito
+    // abaixo já tirou o recado da sessão para abrir a caixa (consumeDraft), então um
+    // `remember` aqui apagava a fala reconhecida e parseada no giro, sem erro nenhum.
+    // É o mesmo `DraftSaver` que a tela de confirmação usa em FalaAgendaRoot.
+    var quickDraft by rememberSaveable(stateSaver = DraftSaver) {
+        mutableStateOf<ParsedTaskDraft?>(null)
+    }
     val handleDraft: (ParsedTaskDraft) -> Unit = { draft ->
         if (draft.canQuickConfirm(Instant.now(), ZoneId.systemDefault())) {
             quickDraft = draft
@@ -281,10 +308,14 @@ fun HomeScreen(
         handleDraft(draft)
     }
 
+    // O erro da fala mora na sessão até alguém mostrá-lo, e quem o tira de lá é esta tela:
+    // o `consumeError` só roda depois que o aviso saiu inteiro. Consumido antes, girar o
+    // aparelho com o aviso na tela (que fica segundos suspenso neste ponto) apagava a
+    // mensagem para sempre — a fala falhava e ela não ficava sabendo.
     LaunchedEffect(speech.error) {
         val message = speech.error ?: return@LaunchedEffect
-        viewModel.speech.consumeError()
         snackbar.say(message)
+        viewModel.speech.consumeError()
     }
 
     LaunchedEffect(inexact) {
@@ -295,9 +326,12 @@ fun HomeScreen(
 
     LaunchedEffect(statusMessage) {
         val message = statusMessage ?: return@LaunchedEffect
-        onStatusConsumed()
         if (undoableDelete != null) {
-            // Excluir é o único aviso que precisa de volta na mesma frase.
+            // Excluir é o único aviso que precisa de volta na mesma frase: o desfazer
+            // anda junto do aviso, e o aviso só é dado por consumido quando ele sai da
+            // tela. Sem isso, o giro no meio do aviso apagava a frase e deixava o
+            // desfazer armado — o próximo aviso qualquer aparecia com um "Desfazer" que
+            // ressuscitava uma exclusão já aceita.
             val result = snackbar.say(
                 message = message,
                 actionLabel = "Desfazer",
@@ -311,12 +345,15 @@ fun HomeScreen(
         } else {
             snackbar.say(message)
         }
+        onStatusConsumed()
     }
 
+    // Mesmo desenho dos outros avisos: a falha de gravação fica no ViewModel até a tela
+    // mostrá-la inteira. Consumida antes, o giro apagava o único lugar onde ela aparece.
     LaunchedEffect(writeError) {
         val message = writeError ?: return@LaunchedEffect
-        viewModel.consumeWriteError()
         snackbar.showSnackbar(message, duration = SnackbarDuration.Long)
+        viewModel.consumeWriteError()
     }
 
     LaunchedEffect(openOccurrenceId, agendaUi) {
@@ -332,9 +369,20 @@ fun HomeScreen(
         // "carregou" sai do mesmo valor que a busca de cima, então ele não pode ser de
         // uma lista que não passou por aqui.
         if (agendaUi.loaded) {
-            snackbar.showSnackbar("Esta tarefa não está mais na agenda.")
+            // O pedido é dado por consumido aqui, mas o aviso fica guardado até sair
+            // inteiro: este efeito depende da agenda, que muda sozinha (o alarme grava, o
+            // dia vira) — deixar o pedido de pé faria a mesma frase voltar do começo a
+            // cada mudança. Girar com o aviso na tela não o apaga: a tela recriada ainda
+            // o encontra esperando.
             onOpenOccurrenceConsumed()
+            missingNotice = true
         }
+    }
+
+    LaunchedEffect(missingNotice) {
+        if (!missingNotice) return@LaunchedEffect
+        snackbar.showSnackbar("Esta tarefa não está mais na agenda.")
+        missingNotice = false
     }
 
     ModalNavigationDrawer(
@@ -367,19 +415,7 @@ fun HomeScreen(
                         )
                     }
                 },
-                onShare = {
-                    closeAnd {
-                        scope.launch {
-                            val apk = withContext(Dispatchers.IO) {
-                                runCatching { DeviceIntents.copyInstalledApk(context) }.getOrNull()
-                            }
-                            openOrReport(
-                                DeviceIntents.shareChooser(context, apk),
-                                "Não consegui abrir o compartilhamento neste celular.",
-                            )
-                        }
-                    }
-                },
+                onShare = { closeAnd { shareApp = true } },
                 onBattery = {
                     closeAnd {
                         val opened = DeviceIntents.open(context, DeviceIntents.batterySettings(context))

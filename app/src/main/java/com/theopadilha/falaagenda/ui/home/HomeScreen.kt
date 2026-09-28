@@ -493,6 +493,30 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
+                // A leitura da agenda falhou: sem isto a home escrevia "Nada para hoje. Toque
+                // no microfone embaixo e fale o recado." para uma agenda que ela não conseguiu
+                // ler — e ela recadastrava o que já existia, com dois alarmes de novo. O
+                // microfone continua na mão dela: falar e escrever não dependem da leitura.
+                if (agendaUi.failed) {
+                    item {
+                        QuietCard {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    "Não consegui ler a sua agenda",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    "Pode ser que falte tarefa nesta lista, ou que ela esteja desatualizada. Nada foi perdido.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                TextButton(
+                                    onClick = viewModel::retryAgendaRead,
+                                    modifier = Modifier.heightIn(min = 56.dp),
+                                ) { Text("Tentar de novo", style = MaterialTheme.typography.labelLarge) }
+                            }
+                        }
+                    }
+                }
                 if (agenda.today.isEmpty() && agenda.upcoming.isEmpty()) {
                     item {
                         Text(
@@ -638,7 +662,10 @@ fun HomeScreen(
                     "Hoje",
                     agenda.today,
                     empty = "Nada para hoje. Toque no microfone embaixo e fale o recado.",
-                    showWhenEmpty = true,
+                    // Com a leitura falhando, "Nada para hoje" é afirmação sobre uma agenda
+                    // que a home não leu — o cartão acima é quem diz o que aconteceu. As
+                    // tarefas da última lista boa continuam aparecendo.
+                    showWhenEmpty = !agendaUi.failed,
                     onClick = onEditItem,
                     onComplete = completeWithUndo,
                 )

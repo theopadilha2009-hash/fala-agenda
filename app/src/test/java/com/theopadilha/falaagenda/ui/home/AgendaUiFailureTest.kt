@@ -7,7 +7,6 @@ import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -16,8 +15,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -89,12 +88,16 @@ class AgendaUiFailureTest {
         assertThat(primeira.failed).isFalse()
 
         // A segunda coleta (a home voltou para a tela, o `stateIn` reiniciou o fluxo) cai
-        // antes de emitir: é falha, e não uma lista válida.
-        val segunda = withTimeout(5_000) { agenda.toList() }
+        // antes de emitir: é falha, e não uma lista válida. A coleta não termina mais no
+        // `catch` — ela reassina (ver `aLeituraQueFalhaNaoEhPermanente`), então o que se
+        // espera aqui é o estado, não o fim do fluxo.
+        val segunda = withTimeout(5_000) { agenda.first { it.failed } }
 
-        assertThat(segunda).hasSize(1)
-        assertThat(segunda.single().loaded).isTrue()
-        assertThat(segunda.single().failed).isTrue()
+        assertThat(segunda.loaded).isTrue()
+        assertThat(segunda.failed).isTrue()
+        // E a lista da leitura anterior não é apagada por esta coleta nova que já cai: a
+        // memória atravessa o reinício da coleta (ver `LastGoodAgenda`).
+        assertThat(segunda.sections).isEqualTo(cheia)
     }
 
     /**
@@ -102,29 +105,78 @@ class AgendaUiFailureTest {
      * é essa lista que a tela de confirmação lê para saber que a tarefa editada existe. Com
      * uma agenda vazia ali dentro, "Editar tarefa" virava "tarefa nova" — segunda série com
      * o mesmo título e o mesmo horário, e um segundo alarme.
+     *
+     * O `failed` sai verdadeiro: ele diz "esta é a última lista que consegui ler", e é a home
+     * que anuncia isso (o "Nada para hoje" some). Quem decide por presença na lista continua
+     * com a lista boa na mão.
      */
     @Test
     fun falhaDepoisDaPrimeiraEmissaoNaoApagaAAgendaQueJaVeio() = runBlocking {
         val cheia = AgendaSections(listOf(itemDeHoje("s1:2026-08-20")), emptyList(), emptyList(), emptyList())
         val fonte = MutableStateFlow(cheia)
-        val caiu = CompletableDeferred<Unit>()
         val escopo = CoroutineScope(coroutineContext + SupervisorJob())
         try {
             val estado = agendaUiFrom(
-                fonte
-                    .map { sections -> if (sections === cheia) sections else error("a leitura caiu") }
-                    .onCompletion { caiu.complete(Unit) },
+                fonte.map { sections -> if (sections === cheia) sections else error("a leitura caiu") },
             ).stateIn(escopo, SharingStarted.Eagerly, initialAgendaUi)
 
             withTimeout(5_000) { estado.first { it.loaded } }
             fonte.value = vazia
-            withTimeout(5_000) { caiu.await() }
+            val falhou = withTimeout(5_000) { estado.first { it.failed } }
 
-            assertThat(estado.value.loaded).isTrue()
-            assertThat(estado.value.sections).isEqualTo(cheia)
-            assertThat(estado.value.failed).isFalse()
+            assertThat(falhou.loaded).isTrue()
+            assertThat(falhou.sections).isEqualTo(cheia)
         } finally {
             escopo.cancel()
+        }
+    }
+
+    /**
+     * A falha não pode ser permanente: o `catch` fechava a coleta, o `observeAll()` do Room
+     * desassina no `finally` quando a coleta morre, e nenhuma gravação ressuscitava o fluxo.
+     * O `failed` ficava grudado pelo resto da vida do processo — a tarefa impossível de abrir
+     * até matar o app. Quem devolve a lista é a releitura.
+     */
+    @Test
+    fun aLeituraQueFalhaNaoEhPermanente() = runBlocking {
+        val cheia = AgendaSections(listOf(itemDeHoje("s1:2026-08-20")), emptyList(), emptyList(), emptyList())
+        val tentativas = AtomicInteger()
+        val fonte = flow<AgendaSections> {
+            if (tentativas.incrementAndGet() == 1) throw IllegalStateException("o banco não abriu")
+            emit(cheia)
+        }
+
+        val estados = withTimeout(5_000) { agendaUiFrom(fonte, retryDelayMs = 1).take(2).toList() }
+
+        // A falha sai na tela — ela precisa saber —, e a releitura traz a lista de volta.
+        assertThat(estados.map { it.failed }).containsExactly(true, false).inOrder()
+        assertThat(estados.last().loaded).isTrue()
+        assertThat(estados.last().sections).isEqualTo(cheia)
+    }
+
+    /**
+     * A releitura que falha não pode esvaziar o que está na tela: é essa lista que a tela de
+     * confirmação lê para saber que a tarefa editada existe. Com a agenda vazia ali dentro,
+     * "Editar tarefa" vira "tarefa nova" — segunda série, segundo alarme — e o rascunho que
+     * ela está digitando é desmontado.
+     */
+    @Test
+    fun aReleituraQueFalhaPreservaAListaBoa() {
+        runBlocking {
+            val cheia = AgendaSections(listOf(itemDeHoje("s1:2026-08-20")), emptyList(), emptyList(), emptyList())
+            val tentativas = AtomicInteger()
+            val fonte = flow<AgendaSections> {
+                if (tentativas.incrementAndGet() == 1) {
+                    emit(cheia)
+                    throw IllegalStateException("a leitura caiu depois da lista")
+                }
+                throw IllegalStateException("o banco continua fora")
+            }
+
+            val estados = withTimeout(5_000) { agendaUiFrom(fonte, retryDelayMs = 1).take(3).toList() }
+
+            assertThat(estados.map { it.failed }).containsExactly(false, true, true).inOrder()
+            assertThat(estados.drop(1).map { it.sections }).containsExactly(cheia, cheia)
         }
     }
 

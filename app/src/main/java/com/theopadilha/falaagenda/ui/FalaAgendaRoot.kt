@@ -44,6 +44,7 @@ import com.theopadilha.falaagenda.ui.capture.WriteStep
 import com.theopadilha.falaagenda.ui.capture.WriteTaskScreen
 import com.theopadilha.falaagenda.ui.capture.writeStepFor
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
+import com.theopadilha.falaagenda.ui.home.AgendaUi
 import com.theopadilha.falaagenda.ui.home.DraftSaveOrigin
 import com.theopadilha.falaagenda.ui.home.DraftSaveOutcome
 import com.theopadilha.falaagenda.ui.home.HomeScreen
@@ -173,22 +174,28 @@ fun FalaAgendaRoot(
     // esperando e só valia quando ela voltava para a home, fora de contexto.
     LaunchedEffect(pendingOccurrenceId, agendaUi) {
         val id = pendingOccurrenceId ?: return@LaunchedEffect
-        val item = agendaUi.sections.find(id)
-        if (item != null) {
-            pendingOccurrenceId = null
-            openForEdit(item)
-            return@LaunchedEffect
-        }
-        // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou a
-        // agenda ainda não chegou do banco, ou a leitura da agenda falhou. Só o primeiro caso
-        // merece o recado — e o "carregou" sai do mesmo valor que a busca de cima, então ele
-        // não pode ser de uma lista que não passou por aqui. Na falha o id fica pendente e
-        // ninguém diz nada: anunciar "Esta tarefa não está mais na agenda" quando a agenda não
-        // foi lida é a mentira que este efeito não pode contar. O recado sai pela home, que é
-        // onde ele aparece, e fica guardado até ela mostrá-lo.
-        if (agendaUi.loaded && !agendaUi.failed) {
-            pendingOccurrenceId = null
-            homeVm.publishStatus("Esta tarefa não está mais na agenda.")
+        when (val pedido = agendaNotice(agendaUi, id)) {
+            is AgendaNotice.Open -> {
+                pendingOccurrenceId = null
+                openForEdit(pedido.item)
+            }
+            // A leitura respondeu e a tarefa não está nela: saiu da agenda de verdade.
+            AgendaNotice.Gone -> {
+                pendingOccurrenceId = null
+                homeVm.publishStatus("Esta tarefa não está mais na agenda.")
+            }
+            // Sem leitura (ainda não chegou do banco, ou falhou): nada de concluir por
+            // ausência. Anunciar "Esta tarefa não está mais na agenda" quando a agenda não foi
+            // lida é a mentira que este efeito não pode contar. E o toque no aviso não pode
+            // ficar no silêncio de antes: ela tocou, o alarme do remédio tocou, e nada
+            // respondeu — o id ficava pendente pelo resto da vida do processo. Na falha o id
+            // continua guardado (a releitura pode trazer a tarefa e a tela abre sozinha) e ela
+            // fica sabendo por quê. O recado sai pela home, que é onde ele aparece, e fica
+            // guardado até ela mostrá-lo.
+            AgendaNotice.Unreadable -> if (agendaUi.failed) {
+                homeVm.publishStatus("Não consegui abrir a tarefa agora: não deu para ler a sua agenda.")
+                homeVm.retryAgendaRead()
+            }
         }
     }
 
@@ -264,8 +271,9 @@ fun FalaAgendaRoot(
             // está aqui porque a leitura falhou, e não porque ela não existe mais. Seguir
             // para o `ConfirmDraftScreen` com `editing = false` era o que transformava
             // "Editar tarefa" em tarefa nova — segunda série com o mesmo título e o mesmo
-            // horário, e um segundo alarme. Aqui a tela diz o que aconteceu e devolve ela
-            // para a home.
+            // horário, e um segundo alarme. Aqui a tela diz o que aconteceu e oferece o
+            // "Tentar de novo" e a saída; o `popBackStack` dela devolve para o destino de
+            // baixo, que é de onde o aviso a trouxe se ela estava no mês ou nos Ajustes.
             val editingUnavailable = editingItemId != null && agendaUi.failed && editingItem == null
             val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
             // Os pedidos de gravação que ainda não foram mostrados a ninguém (ver
@@ -317,10 +325,13 @@ fun FalaAgendaRoot(
             // "Salvar" daqui criaria uma série nova: a tela sai do caminho de edição e diz
             // por quê.
             if (current != null && editingUnavailable) {
-                AgendaReadFailure(onBack = {
-                    editingItemId = null
-                    nav.popBackStack()
-                })
+                AgendaReadFailure(
+                    onRetry = homeVm::retryAgendaRead,
+                    onBack = {
+                        editingItemId = null
+                        nav.popBackStack()
+                    },
+                )
             }
             // A tela é reiniciada quando o rascunho ou a ocorrência mudam. O aviso é atendido
             // aqui, que compõe em qualquer destino: com ela já na confirmação, o
@@ -543,11 +554,15 @@ fun FalaAgendaRoot(
 /**
  * A leitura da agenda falhou com a tela de edição aberta — a morte do processo no meio da
  * edição é o caso: o Bundle devolve o id da tarefa, a primeira leitura do banco estoura, e
- * sem a lista não há como saber o que a tarefa tem hoje. É a saída que não oferece o
+ * sem a lista não há como saber o que a tarefa tem hoje. É a tela que não oferece o
  * "Salvar": o caminho de criação criaria uma série nova no lugar de editar a antiga.
+ *
+ * Só o "Voltar" era um beco sem saída mais bonito: a leitura não volta sozinha, e sem o
+ * [onRetry] a única saída era matar o app. [onBack] desce um destino no `NavHost` — o mês ou
+ * os Ajustes, se foi de lá que o aviso a trouxe.
  */
 @Composable
-private fun AgendaReadFailure(onBack: () -> Unit) {
+private fun AgendaReadFailure(onRetry: () -> Unit, onBack: () -> Unit) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
             modifier = Modifier
@@ -565,9 +580,41 @@ private fun AgendaReadFailure(onBack: () -> Unit) {
                 "Não deu para ler a sua agenda agora, então não dá para abrir esta tarefa. Nada foi mudado.",
                 style = MaterialTheme.typography.bodyLarge,
             )
+            SecondaryButton("Tentar de novo", onClick = onRetry)
             SecondaryButton("Voltar", onClick = onBack)
         }
     }
+}
+
+/**
+ * O que o toque no aviso pede da agenda lida.
+ *
+ * São três desfechos, e confundir dois deles é o defeito que este tipo separa: a tarefa não
+ * estar na lista **lida** é uma coisa, e a lista não ter sido lida é outra — a segunda não
+ * autoriza dizer que a tarefa saiu da agenda.
+ */
+internal sealed interface AgendaNotice {
+    /** A tarefa está na lista: é ela que a tela de confirmação abre. */
+    data class Open(val item: AgendaItem) : AgendaNotice
+
+    /** A agenda foi lida e a tarefa não está nela: saiu da agenda de verdade. */
+    data object Gone : AgendaNotice
+
+    /** A agenda não foi lida (ainda não chegou, ou a leitura falhou): nada se conclui. */
+    data object Unreadable : AgendaNotice
+}
+
+/**
+ * Decide o [AgendaNotice] da ocorrência pedida pelo aviso.
+ *
+ * O `loaded` e o `failed` saem do mesmo valor que a busca, e não de um fluxo paralelo: sem
+ * isso o "não está mais na agenda" podia falar de uma lista que nunca passou por aqui. Na
+ * dúvida — leitura que falhou, leitura que ainda não chegou — o pedido continua pendente, e é
+ * o `failed` que diz ao chamador que ele já pode contar para ela o que aconteceu.
+ */
+internal fun agendaNotice(agendaUi: AgendaUi, occurrenceId: String): AgendaNotice {
+    agendaUi.sections.find(occurrenceId)?.let { return AgendaNotice.Open(it) }
+    return if (agendaUi.loaded && !agendaUi.failed) AgendaNotice.Gone else AgendaNotice.Unreadable
 }
 
 private const val NO_EPOCH_DAY = Long.MIN_VALUE
@@ -588,10 +635,11 @@ private const val NO_AMOUNT = Long.MIN_VALUE
  * A ordem dos campos em [DraftSaver] é o formato salvo: mexer nela exige mexer em
  * [draftFrom].
  *
- * A igualdade do rascunho que volta é load-bearing: o `key(current, editingItemId)` da
- * confirmação só continua na mesma tela (sem reiniciar os campos e apagar o que ela digitou)
- * se o rascunho restaurado for `equals` ao anterior. Campo novo em `ParsedTaskDraft` sem o
- * [draftFrom] correspondente perde a digitação dela na rotação, em silêncio.
+ * O rascunho que volta é load-bearing: o `key(current, editingItemId)` da confirmação decide
+ * reiniciar a tela pelo *hash composto* das chaves — hash em que o rascunho entra pelo
+ * `hashCode`, e não por uma comparação `equals` campo a campo. Campo novo em `ParsedTaskDraft`
+ * sem o [draftFrom] correspondente muda o rascunho restaurado e, com ele, o hash da chave: a
+ * confirmação reinicia e a digitação dela se perde, em silêncio.
  */
 internal val DraftSaver = Saver<ParsedTaskDraft?, ArrayList<Any?>>(
     save = { draft ->

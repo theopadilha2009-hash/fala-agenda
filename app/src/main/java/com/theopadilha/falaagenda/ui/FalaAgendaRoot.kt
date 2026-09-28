@@ -29,7 +29,9 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.reminder.QuickRemind
 import com.theopadilha.falaagenda.ui.capture.ConfirmDraftScreen
+import com.theopadilha.falaagenda.ui.capture.WriteStep
 import com.theopadilha.falaagenda.ui.capture.WriteTaskScreen
+import com.theopadilha.falaagenda.ui.capture.writeStepFor
 import com.theopadilha.falaagenda.ui.home.HomeScreen
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
 import com.theopadilha.falaagenda.ui.month.MonthSummaryScreen
@@ -293,33 +295,44 @@ fun FalaAgendaRoot(
             }
         }
         composable("write") {
-            WriteTaskScreen(
-                heading = "Escrever tarefa",
-                help = "Escreva o recado do seu jeito. Na próxima tela você confere data e horário.",
-                placeholder = "Ex.: tomar remédio amanhã às 9h",
-                confirmLabel = "Continuar",
-                onCancel = { nav.popBackStack() },
-                externalError = writeError,
-                onTextChanged = { writeError = null },
-                onConfirm = { text ->
-                    scope.launch {
+            val speech by homeVm.speech.state.collectAsState()
+            // O parse vive no ViewModel, fora do escopo da tela — o mesmo desenho da fala
+            // na home. O `runCatching` de antes engolia o CancellationException como
+            // `null` e o giro do aparelho no meio dos ~20 s deixava o texto no campo sem
+            // rascunho, sem erro e sem mudança de tela: ela escreveu, apertou e o app
+            // parece ter ignorado.
+            val step = writeStepFor(speech)
+            // O desfecho fica guardado na sessão até alguém mostrá-lo, então a tela
+            // recriada ainda o encontra esperando.
+            LaunchedEffect(step) {
+                when (step) {
+                    is WriteStep.Ready -> {
+                        homeVm.speech.consumeDraft()
                         editingItemId = null
-                        // O parser pode falhar em texto esquisito; sem isto a exceção
-                        // derruba o processo. Aqui ela vira recado na própria tela, que
-                        // fica aberta com o texto que a pessoa escreveu ou ditou.
-                        val parsed = runCatching { homeVm.parse(text) }.getOrNull()
-                        if (parsed == null) {
-                            writeError = "Não consegui entender o recado. Tente de novo."
-                            return@launch
-                        }
                         writeError = null
-                        draft = parsed
+                        draft = step.draft
                         nav.navigate("confirm") {
                             popUpTo("write") { inclusive = true }
                             launchSingleTop = true
                         }
                     }
-                },
+                    is WriteStep.Failed -> {
+                        homeVm.speech.consumeError()
+                        writeError = step.message
+                    }
+                    WriteStep.Waiting -> Unit
+                }
+            }
+            WriteTaskScreen(
+                heading = "Escrever tarefa",
+                help = "Escreva o recado do seu jeito. Na próxima tela você confere data e horário.",
+                placeholder = "Ex.: tomar remédio amanhã às 9h",
+                confirmLabel = "Continuar",
+                understanding = speech.understanding,
+                onCancel = { nav.popBackStack() },
+                externalError = writeError,
+                onTextChanged = { writeError = null },
+                onConfirm = { text -> homeVm.speech.understand(text) },
             )
         }
         composable("quick/{minutes}") { entry ->

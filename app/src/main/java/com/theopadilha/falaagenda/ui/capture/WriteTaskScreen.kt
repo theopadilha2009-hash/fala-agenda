@@ -40,6 +40,7 @@ fun WriteTaskScreen(
     confirmLabel: String,
     onConfirm: (String) -> Unit,
     onCancel: () -> Unit,
+    understanding: Boolean = false,
     externalError: String? = null,
     onTextChanged: () -> Unit = {},
 ) {
@@ -49,6 +50,16 @@ fun WriteTaskScreen(
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
+    // Com IA o parse leva até ~20 s: sem isto o toque não tem resposta nenhuma, e o
+    // recado já entregue seria entregue de novo. Um por vez, como na home.
+    val submit = {
+        val value = text.trim()
+        if (value.isBlank()) {
+            error = "Escreva o recado neste campo."
+        } else if (!understanding) {
+            onConfirm(value)
+        }
+    }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
@@ -84,25 +95,14 @@ fun WriteTaskScreen(
                 isError = (externalError ?: error) != null,
                 supportingText = (externalError ?: error)?.let { { Text(it) } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(
-                    onDone = {
-                        val value = text.trim()
-                        if (value.isBlank()) {
-                            error = "Escreva o recado neste campo."
-                        } else {
-                            onConfirm(value)
-                        }
-                    },
-                ),
+                keyboardActions = KeyboardActions(onDone = { submit() }),
             )
-            PrimaryButton(confirmLabel) {
-                val value = text.trim()
-                if (value.isBlank()) {
-                    error = "Escreva o recado neste campo."
-                } else {
-                    onConfirm(value)
-                }
+            if (understanding) {
+                // Ela apertou e o app está pensando: dizer isso é a diferença entre
+                // esperar e achar que o toque não pegou.
+                Text("Entendendo o recado…", style = MaterialTheme.typography.bodyLarge)
             }
+            PrimaryButton(confirmLabel, enabled = !understanding, onClick = submit)
             SecondaryButton("Cancelar", onClick = onCancel)
         }
     }

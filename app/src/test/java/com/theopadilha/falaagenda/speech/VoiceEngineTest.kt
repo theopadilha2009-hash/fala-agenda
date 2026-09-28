@@ -83,6 +83,66 @@ class VoiceEngineTest {
     }
 
     @Test
+    fun offlineVemAntesDoMotorDoSistema() {
+        assertThat(
+            VoiceEngine.initial(
+                recognitionAvailable = true,
+                onDeviceAvailable = true,
+                offlineAvailable = true,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.OFFLINE_VOSK)
+    }
+
+    @Test
+    fun semModeloOMotorDoSistemaContinuaValendo() {
+        assertThat(
+            VoiceEngine.initial(
+                recognitionAvailable = true,
+                onDeviceAvailable = true,
+                offlineAvailable = false,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.IN_APP_DEFAULT)
+    }
+
+    @Test
+    fun offlineQuebradoVoltaParaOMotorPadrao() {
+        assertThat(
+            VoiceEngine.afterFail(
+                error = VoiceRetry.CLIENT,
+                heardReady = true,
+                current = VoiceEngine.Capture.OFFLINE_VOSK,
+                onDeviceAvailable = true,
+                recognitionAvailable = true,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.IN_APP_DEFAULT)
+    }
+
+    @Test
+    fun offlineQuebradoSemReconhecimentoVaiParaTelaDoCelular() {
+        assertThat(
+            VoiceEngine.afterFail(
+                error = VoiceRetry.CLIENT,
+                heardReady = true,
+                current = VoiceEngine.Capture.OFFLINE_VOSK,
+                onDeviceAvailable = false,
+                recognitionAvailable = false,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.SYSTEM_UI)
+    }
+
+    @Test
+    fun semPermissaoNoOfflineNaoTrocaDeMotor() {
+        assertThat(
+            VoiceEngine.afterFail(
+                error = VoiceEngine.INSUFFICIENT_PERMISSIONS,
+                heardReady = false,
+                current = VoiceEngine.Capture.OFFLINE_VOSK,
+                onDeviceAvailable = true,
+            ),
+        ).isNull()
+    }
+
+    @Test
     fun onDeviceQuebradoCaiNaTelaDoCelular() {
         assertThat(
             VoiceEngine.afterFail(

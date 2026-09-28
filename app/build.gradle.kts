@@ -92,6 +92,10 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            // O JNA procura a lib dele no disco; sem extrair, o Vosk não abre em aparelho.
+            useLegacyPackaging = true
+        }
     }
 }
 
@@ -129,6 +133,9 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.vosk.android)
+    // O Vosk carrega a lib nativa pelo JNA, e o JNA quer a dele extraída do APK.
+    implementation(libs.jna) { artifact { type = "aar" } }
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

@@ -19,6 +19,7 @@ import com.theopadilha.falaagenda.domain.time.SystemAppClock
 import com.theopadilha.falaagenda.platform.AppUpdater
 import com.theopadilha.falaagenda.reminders.ReminderScheduler
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
+import com.theopadilha.falaagenda.speech.VoskModel
 
 class AppContainer(
     context: Context,
@@ -54,6 +55,7 @@ class AppContainer(
         isAiEnabled = { supabase.isConfigured && !tokenStore.token().isNullOrBlank() },
     )
     val activation = ActivationClient(supabase)
-    val voice = VoiceCaptureController(appContext)
+    // Sem o modelo baixado isto é null e a fala segue no motor do sistema, como antes.
+    val voice = VoiceCaptureController(appContext, offline = VoskModel.offlineSpeech(appContext))
     val updater = AppUpdater(appContext)
 }

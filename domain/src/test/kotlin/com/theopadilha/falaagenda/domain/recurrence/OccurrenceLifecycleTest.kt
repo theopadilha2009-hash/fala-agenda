@@ -13,6 +13,8 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
+import kotlin.math.abs
 
 class OccurrenceLifecycleTest {
     private val zone = ZoneId.of("America/Sao_Paulo")
@@ -235,15 +237,27 @@ class OccurrenceLifecycleTest {
         assertThat(depois).containsExactly(recente, hoje)
     }
 
+    /**
+     * Teto de tombstones: as 240 datas do cenário estão todas dentro da janela de retenção, então
+     * quem decide o que sobra é o teto — e o corte leva as mais distantes de hoje, nunca as
+     * próximas (as que o preview e o `advance` vão materializar).
+     */
     @Test
     fun skipDateTemTetoDeDatas() {
         val hoje = LocalDate.of(2026, 9, 27)
-        val muitas = (0 until 200).map { hoje.minusDays(it.toLong()) }.toSet()
-        val depois = OccurrenceLifecycle.skipDate(muitas, hoje, hoje)
-        assertThat(depois).contains(hoje)
-        assertThat(depois.size).isAtMost(OccurrenceLifecycle.MAX_SKIPPED_DATES)
         val limite = hoje.minusDays(OccurrenceLifecycle.SKIPPED_RETENTION_DAYS)
-        assertThat(depois.any { it.isBefore(limite) }).isFalse()
+        val muitas = (0 until 2 * OccurrenceLifecycle.MAX_SKIPPED_DATES)
+            .map { limite.plusDays(it.toLong()) }
+            .toSet()
+
+        val depois = OccurrenceLifecycle.skipDate(muitas, hoje, hoje)
+
+        assertThat(depois).hasSize(OccurrenceLifecycle.MAX_SKIPPED_DATES)
+        assertThat(depois).contains(hoje)
+        val descartadas = (muitas + hoje) - depois
+        val maisDistanteGuardada = depois.maxOf { abs(ChronoUnit.DAYS.between(hoje, it)) }
+        val maisProximaDescartada = descartadas.minOf { abs(ChronoUnit.DAYS.between(hoje, it)) }
+        assertThat(maisProximaDescartada).isAtLeast(maisDistanteGuardada)
     }
 
     @Test

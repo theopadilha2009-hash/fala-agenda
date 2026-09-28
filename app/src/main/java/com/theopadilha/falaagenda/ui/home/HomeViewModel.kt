@@ -4,13 +4,14 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.theopadilha.falaagenda.data.repo.AgendaItem
+import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
-import com.theopadilha.falaagenda.domain.reminder.QuickRemind
 import com.theopadilha.falaagenda.platform.UpdateCheck
 import com.theopadilha.falaagenda.ui.AgendaFormat
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,25 +24,46 @@ import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.LocalTime
 
+/**
+ * A lista e a resposta para "isto já veio do banco?" no mesmo valor.
+ *
+ * Eram duas assinaturas independentes de `observeAgenda()`, e a resposta de um fluxo valia
+ * para a lista do outro: com o app em outra tela, os valores retidos dos dois `stateIn`
+ * diziam "carregou" enquanto a lista ainda era a inicial vazia, e o toque no aviso do
+ * remédio respondia "Esta tarefa não está mais na agenda" — descartando o id. Quem busca a
+ * ocorrência por id lê os dois campos da mesma emissão: [loaded] nunca fala de uma lista
+ * que não é [sections].
+ */
+data class AgendaUi(
+    val sections: AgendaSections,
+    val loaded: Boolean,
+)
+
+/** Antes da primeira emissão: nada de concluir por ausência. */
+internal val initialAgendaUi = AgendaUi(
+    sections = AgendaSections(emptyList(), emptyList(), emptyList(), emptyList()),
+    loaded = false,
+)
+
+internal fun agendaUiFrom(source: Flow<AgendaSections>): Flow<AgendaUi> =
+    source.map { AgendaUi(sections = it, loaded = true) }
+
 private const val TAG = "FalaAgendaHome"
 
 class HomeViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
-    val agenda = container.tasks.observeAgenda().stateIn(
+    val agendaUi: StateFlow<AgendaUi> = agendaUiFrom(container.tasks.observeAgenda()).stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
-        com.theopadilha.falaagenda.data.repo.AgendaSections(emptyList(), emptyList(), emptyList(), emptyList()),
+        initialAgendaUi,
     )
 
     /**
-     * Primeira lista vinda do banco. Antes dela a agenda está vazia só por não ter
-     * carregado — quem chega por um lembrete precisa saber a diferença antes de ouvir
-     * que a tarefa não existe mais.
+     * O parse da fala roda no escopo do ViewModel: sobrevive à rotação e a sair da home, e
+     * o rascunho fica guardado até a tela mostrá-lo.
      */
-    val agendaLoaded: StateFlow<Boolean> = container.tasks.observeAgenda()
-        .map { true }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val speech = SpeechSession(scope = viewModelScope, parse = { parse(it) })
 
     private val _inexactWarning = MutableStateFlow(false)
     val inexactWarning: StateFlow<Boolean> = _inexactWarning
@@ -208,19 +230,6 @@ class HomeViewModel(
         onSuccess = { onDone() },
     ) {
         container.tasks.editOccurrence(id, title, date, time, recurrence, amountCents, observation)
-    }
-
-    fun quickRemind(title: String, minutes: Long, onDone: (String) -> Unit = {}) {
-        val now = java.time.ZonedDateTime.now()
-        val draft = QuickRemind.draft(title, minutes, now)
-        if (!draft.isComplete) {
-            onDone("Escreva o que precisa lembrar.")
-            return
-        }
-        saveDraft(draft, onDone = { usedInexact ->
-            setInexactWarning(usedInexact)
-            onDone(AgendaFormat.announce(draft.localDate!!, draft.localTime!!, LocalDate.now()))
-        })
     }
 
     fun repeatTomorrow(item: AgendaItem, onDone: (String) -> Unit = {}) {

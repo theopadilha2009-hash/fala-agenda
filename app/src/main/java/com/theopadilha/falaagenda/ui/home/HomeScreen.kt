@@ -86,8 +86,6 @@ import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.month.insightRows
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
@@ -116,14 +114,15 @@ fun HomeScreen(
     openOccurrenceId: String? = null,
     onOpenOccurrenceConsumed: () -> Unit = {},
 ) {
-    val agenda by viewModel.agenda.collectAsState()
+    val agendaUi by viewModel.agendaUi.collectAsState()
+    val agenda = agendaUi.sections
     val voiceUi by voice.ui.collectAsState()
+    val speech by viewModel.speech.state.collectAsState()
     val inexact by viewModel.inexactWarning.collectAsState()
     val busy by viewModel.busy.collectAsState()
     val availableUpdate by viewModel.availableUpdate.collectAsState()
     val writeError by viewModel.writeError.collectAsState()
     val undoableDelete by viewModel.undoableDelete.collectAsState()
-    val agendaLoaded by viewModel.agendaLoaded.collectAsState()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
@@ -151,10 +150,9 @@ fun HomeScreen(
     val micBlocked = !micGranted && micRefused
 
     // A fala já foi ouvida e agora está sendo entendida (com IA o parse leva até 20 s).
-    // Nesse intervalo o dock avisa e o microfone fica inativo: falar de novo atropelaria
-    // o recado que está sendo entendido.
-    var understanding by remember { mutableStateOf(false) }
-    val parseLock = remember { Mutex() }
+    // O estado vem do ViewModel: girar o aparelho no meio não devolve o microfone à mão
+    // dela nem joga fora o recado que está sendo entendido.
+    val understanding = speech.understanding
     val closeAnd: (() -> Unit) -> Unit = { action ->
         scope.launch {
             drawerState.close()
@@ -270,24 +268,23 @@ fun HomeScreen(
         val text = voiceUi.finalText?.trim().orEmpty()
         if (text.isEmpty()) return@LaunchedEffect
         voice.consumeFinal()
-        // O parse roda no escopo da tela, e não no efeito: consumir o texto final zera
+        // O parse vive no ViewModel, fora do escopo da tela: consumir o texto final zera
         // `finalText` e o LaunchedEffect seria cancelado no meio do parse, calado.
-        scope.launch {
-            parseLock.withLock {
-                understanding = true
-                try {
-                    val draft = runCatching { viewModel.parse(text) }.getOrNull()
-                    if (draft == null) {
-                        snackbar.say("Não consegui entender o recado. Tente de novo ou escreva a tarefa.")
-                    } else {
-                        handleDraft(draft)
-                    }
-                } finally {
-                    // Só volta a pedir fala quando o recado foi entendido, ou quando deu erro.
-                    understanding = false
-                }
-            }
-        }
+        viewModel.speech.understand(text)
+    }
+
+    // O recado entendido pode chegar com a home fora da tela (rotação, Ajustes, Mês): fica
+    // guardado na sessão até alguém mostrá-lo, em vez de sumir com o rascunho.
+    LaunchedEffect(speech.draft) {
+        val draft = speech.draft ?: return@LaunchedEffect
+        viewModel.speech.consumeDraft()
+        handleDraft(draft)
+    }
+
+    LaunchedEffect(speech.error) {
+        val message = speech.error ?: return@LaunchedEffect
+        viewModel.speech.consumeError()
+        snackbar.say(message)
     }
 
     LaunchedEffect(inexact) {
@@ -322,17 +319,19 @@ fun HomeScreen(
         snackbar.showSnackbar(message, duration = SnackbarDuration.Long)
     }
 
-    LaunchedEffect(openOccurrenceId, agenda, agendaLoaded) {
+    LaunchedEffect(openOccurrenceId, agendaUi) {
         val id = openOccurrenceId ?: return@LaunchedEffect
-        val item = agenda.find(id)
+        val item = agendaUi.sections.find(id)
         if (item != null) {
             onEditItem(item)
             onOpenOccurrenceConsumed()
             return@LaunchedEffect
         }
         // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou
-        // a agenda ainda não chegou do banco. Só o segundo caso merece espera.
-        if (agendaLoaded) {
+        // a agenda ainda não chegou do banco. Só o segundo caso merece espera — e o
+        // "carregou" sai do mesmo valor que a busca de cima, então ele não pode ser de
+        // uma lista que não passou por aqui.
+        if (agendaUi.loaded) {
             snackbar.showSnackbar("Esta tarefa não está mais na agenda.")
             onOpenOccurrenceConsumed()
         }
@@ -348,12 +347,17 @@ fun HomeScreen(
                 onUpdate = { closeAnd(onOpenUpdate) },
                 onShareDay = {
                     closeAnd {
+                        val today = LocalDate.now()
                         val text = AgendaFormat.todayShare(
                             agenda.today.map {
                                 AgendaFormat.DayShareLine(
                                     title = it.series.title,
                                     time = it.series.localTime,
                                     observation = it.series.observation,
+                                    // A pendente que atravessou a meia-noite entra em
+                                    // "Hoje": sem a marca, ela era mandada para a família
+                                    // como se fosse de hoje.
+                                    dayMark = AgendaFormat.shareDayMark(it.occurrence.localDate, today),
                                 )
                             },
                         )
@@ -821,16 +825,30 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
             val date = AgendaFormat.dateLabel(item.occurrence.localDate, today)
             val time = AgendaFormat.time(item.series.localTime)
             val relative = AgendaFormat.fromNow(item.occurrence.scheduledAt, Instant.now())
+            // A pendente de ontem vive na seção "Hoje": ela diz que está atrasada em vez de
+            // um "há N h" que se lê igual ao das tarefas de hoje.
+            val late = if (item.occurrence.status == OccurrenceStatus.PENDING) {
+                AgendaFormat.lateMark(item.occurrence.localDate, today)
+            } else {
+                null
+            }
             val detail = buildString {
                 append(date)
                 append(" · ")
                 append(time)
-                if (relative != null && item.occurrence.status == OccurrenceStatus.PENDING) {
-                    append(" · ")
-                    append(relative)
-                } else {
-                    append(" · ")
-                    append(item.series.recurrence.describePtBr())
+                when {
+                    late != null -> {
+                        append(" · ")
+                        append(late)
+                    }
+                    relative != null && item.occurrence.status == OccurrenceStatus.PENDING -> {
+                        append(" · ")
+                        append(relative)
+                    }
+                    else -> {
+                        append(" · ")
+                        append(item.series.recurrence.describePtBr())
+                    }
                 }
                 item.series.amountCents?.let { cents ->
                     append(" · ")

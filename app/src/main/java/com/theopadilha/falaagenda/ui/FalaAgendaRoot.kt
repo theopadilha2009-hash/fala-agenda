@@ -184,8 +184,8 @@ fun FalaAgendaRoot(
             val current = draft
             // Reencontrada na agenda a cada recomposição: sobrevive à recriação da
             // Activity sem guardar o item inteiro no Bundle e sem ficar com cópia velha.
-            val agenda by homeVm.agenda.collectAsState()
-            val editingItem = editingItemId?.let { id -> agenda.find(id) }
+            val agendaUi by homeVm.agendaUi.collectAsState()
+            val editingItem = editingItemId?.let { id -> agendaUi.sections.find(id) }
             LaunchedEffect(current) {
                 if (current == null) nav.popBackStack() else confirmError = null
             }
@@ -335,25 +335,25 @@ fun FalaAgendaRoot(
                 externalError = quickError,
                 onTextChanged = { quickError = null },
                 onConfirm = { title ->
-                    // Mesmo atalho do quickRemind, com onError: só sai da tela depois
-                    // que o banco confirmou, senão uma gravação que falhou joga a
-                    // pessoa de volta sem ela saber que o aviso não existe.
+                    // Só sai da tela depois que o banco confirmou, senão uma gravação que
+                    // falhou joga a pessoa de volta sem ela saber que o aviso não existe.
                     val quick = QuickRemind.draft(title, minutes, ZonedDateTime.now())
-                    val date = quick.localDate
-                    val time = quick.localTime
-                    if (date == null || time == null) {
-                        quickError = "Escreva o que precisa lembrar."
-                    } else {
-                        homeVm.saveDraft(
-                            draft = quick,
-                            onDone = { usedInexact ->
-                                homeVm.setInexactWarning(usedInexact)
-                                statusMessage = AgendaFormat.announce(date, time, LocalDate.now())
-                                nav.popBackStack()
-                            },
-                            onError = { message -> quickError = message },
-                        )
-                    }
+                    homeVm.saveDraft(
+                        draft = quick,
+                        onDone = { usedInexact ->
+                            homeVm.setInexactWarning(usedInexact)
+                            // QuickRemind monta data e horário a partir do "daqui N
+                            // minutos": os dois vêm sempre, e o título vazio já foi
+                            // barrado na tela de escrita.
+                            statusMessage = AgendaFormat.announce(
+                                quick.localDate!!,
+                                quick.localTime!!,
+                                LocalDate.now(),
+                            )
+                            nav.popBackStack()
+                        },
+                        onError = { message -> quickError = message },
+                    )
                 },
             )
         }

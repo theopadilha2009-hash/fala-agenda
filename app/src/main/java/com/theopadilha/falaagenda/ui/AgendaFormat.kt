@@ -45,13 +45,33 @@ object AgendaFormat {
         val title: String,
         val time: LocalTime,
         val observation: String = "",
+        /** "ontem", "25/08": de que dia é a tarefa, quando não é de hoje. Ver [shareDayMark]. */
+        val dayMark: String? = null,
     )
+
+    /**
+     * De que dia é a tarefa para quem lê de fora: nulo quando é de hoje, porque aí o
+     * cabeçalho já diz o dia. A seção "Hoje" da agenda recebe a pendente que atravessou a
+     * meia-noite, então sem esta marca a tarefa de ontem saía no compartilhado como se
+     * fosse de hoje.
+     */
+    fun shareDayMark(date: LocalDate, today: LocalDate): String? =
+        if (date == today) null else dateLabel(date, today).lowercase(locale)
+
+    /**
+     * A pendente que atravessou a meia-noite entra na seção "Hoje" para continuar ao
+     * alcance dela: sem esta marca a linha de ontem ficava igual à de hoje embaixo do mesmo
+     * cabeçalho. Onde não é atrasada a resposta é nula, e a linha mostra o de sempre.
+     */
+    fun lateMark(date: LocalDate, today: LocalDate): String? =
+        if (date.isBefore(today)) "atrasada" else null
 
     fun todayShare(lines: List<DayShareLine>): String {
         if (lines.isEmpty()) return "Hoje no Fala Agenda não tem nada marcado."
         val body = lines.joinToString("\n") { line ->
             val extra = line.observation.trim().takeIf { it.isNotEmpty() }?.let { " — $it" }.orEmpty()
-            "• ${line.title} às ${time(line.time)}$extra"
+            val whenDay = line.dayMark?.trim()?.takeIf { it.isNotEmpty() }?.let { ", $it" }.orEmpty()
+            "• ${line.title}$whenDay às ${time(line.time)}$extra"
         }
         return "Hoje no Fala Agenda:\n$body"
     }

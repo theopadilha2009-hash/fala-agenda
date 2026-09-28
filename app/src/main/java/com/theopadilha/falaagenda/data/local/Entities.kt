@@ -61,10 +61,21 @@ data class OccurrenceEntity(
     val inexactAlarm: Boolean,
 )
 
+/**
+ * Converte a linha para o domínio.
+ *
+ * O fuso **não** sai da coluna `zoneId`: ela guarda o fuso do dia em que a série foi
+ * cadastrada, e ler com ela é o defeito que deixava o aviso tocando 08:00 do lugar antigo
+ * depois de a pessoa trocar o fuso do celular — deslocado, calado e para sempre (é o que
+ * `TaskRepository.toTaskSeries` corrige por cima com o fuso do relógio). Aqui é uma pessoa,
+ * um celular, um app: o fuso que vale é o do aparelho agora, o mesmo que o relógio entrega, e
+ * é ele que sai daqui — assim nenhuma leitura futura ressuscita a coluna sem perceber. A
+ * coluna continua sendo gravada (ver [toEntity]) e o schema não muda.
+ */
 fun SeriesEntity.toDomain(): TaskSeries = TaskSeries(
     id = id,
     title = title,
-    zoneId = ZoneId.of(zoneId),
+    zoneId = ZoneId.systemDefault(),
     localTime = LocalTime.parse(localTime),
     startLocalDate = LocalDate.parse(startLocalDate),
     recurrence = RecurrenceRule(

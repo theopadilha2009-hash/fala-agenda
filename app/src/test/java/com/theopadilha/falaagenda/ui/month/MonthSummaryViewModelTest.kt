@@ -15,12 +15,17 @@ import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -93,7 +98,7 @@ class MonthSummaryViewModelTest {
         val job = launch { viewModel.agenda.collect { } }
         runCurrent()
 
-        assertThat(viewModel.agenda.value.today.map { it.series.title }).containsExactly("Cabelo")
+        assertThat(viewModel.agenda.value.sections.today.map { it.series.title }).containsExactly("Cabelo")
         job.cancel()
     }
 
@@ -177,4 +182,62 @@ private object NoopScheduler : AlarmScheduler {
     ): SchedulerOutcome = SchedulerOutcome(inexact = false, scheduled = true)
     override fun cancel(occurrenceId: String) = Unit
     override fun scheduleRecovery(occurrenceId: String, at: Instant) = Unit
+}
+
+/**
+ * A tela do mês lia a agenda com o `stateIn(scope, started, initialValue)` de três
+ * argumentos, sem `catch`. Essa via não captura a exceção do upstream: ela sobe pela
+ * corrotina criada no `viewModelScope`, que não tem `CoroutineExceptionHandler`, e derruba o
+ * processo — com o banco corrompido ou o disco cheio, ela abria o "Resumo do mês" e o app
+ * fechava sozinho, sem mensagem nenhuma.
+ *
+ * E o que sobrava na tela era pior que o silêncio: uma agenda vazia, que é uma afirmação
+ * falsa — ela pode ter tarefas. A leitura que falha chega como falha, e a coleta continua
+ * viva para tentar de novo.
+ *
+ * Sem confinamento e sem relógio de teste de propósito: a releitura da agenda é uma espera
+ * de verdade, e o que se prova aqui é o estado que sai da falha, não o intervalo.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class MonthSummaryFailureTest {
+    private val zone = ZoneId.of("America/Sao_Paulo")
+    private val clock = FixedAppClock(
+        LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant(),
+        zone,
+    )
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(Dispatchers.Unconfined)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
+    }
+
+    @Test
+    fun aLeituraQueFalhaNaoDerrubaNemViraMesVazioCalado() {
+        val viewModel = MonthSummaryViewModel(
+            TaskRepository(ExplodingSeriesDao(), CountingOccurrenceDao(), clock, NoopScheduler),
+        )
+
+        val assinatura = CoroutineScope(Dispatchers.Unconfined).launch { viewModel.agenda.collect { } }
+        try {
+            val estado = runBlocking { withTimeout(5_000) { viewModel.agenda.first { it.loaded } } }
+
+            assertThat(estado.failed).isTrue()
+        } finally {
+            assinatura.cancel()
+        }
+    }
+}
+
+/** A leitura que estoura: é o caso do banco corrompido com a tela do mês aberta. */
+private class ExplodingSeriesDao : SeriesDao {
+    override suspend fun get(id: String): SeriesEntity? = null
+    override suspend fun getAll(): List<SeriesEntity> = emptyList()
+    override fun observeAll(): Flow<List<SeriesEntity>> = flow { error("o banco não abriu") }
+    override suspend fun upsert(entity: SeriesEntity) = Unit
+    override suspend fun delete(id: String): Int = 0
 }

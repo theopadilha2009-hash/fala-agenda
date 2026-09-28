@@ -71,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.data.repo.AgendaItem
+import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.domain.insight.Money
 import com.theopadilha.falaagenda.domain.insight.MonthInsights
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
@@ -82,6 +83,7 @@ import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.DraftSaver
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
+import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.month.insightRows
@@ -110,8 +112,6 @@ fun HomeScreen(
     onQuick: (Long) -> Unit,
     onDraftReady: (ParsedTaskDraft) -> Unit,
     onEditItem: (AgendaItem) -> Unit,
-    openOccurrenceId: String? = null,
-    onOpenOccurrenceConsumed: () -> Unit = {},
 ) {
     val agendaUi by viewModel.agendaUi.collectAsState()
     val agenda = agendaUi.sections
@@ -184,8 +184,6 @@ fun HomeScreen(
     // seletor: girar no meio cancelava a cópia e o seletor nunca abria, calado. O pedido
     // fica guardado até o seletor abrir — a tela recriada ainda o encontra.
     var shareApp by rememberSaveable { mutableStateOf(false) }
-    // O "não está mais na agenda" do aviso tocado: guardado até sair na tela.
-    var missingNotice by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(shareApp) {
         if (!shareApp) return@LaunchedEffect
         val apk = withContext(Dispatchers.IO) {
@@ -387,35 +385,6 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(openOccurrenceId, agendaUi) {
-        val id = openOccurrenceId ?: return@LaunchedEffect
-        val item = agendaUi.sections.find(id)
-        if (item != null) {
-            onEditItem(item)
-            onOpenOccurrenceConsumed()
-            return@LaunchedEffect
-        }
-        // Tocou no aviso e não abriu nada: ou a tarefa foi excluída depois do alarme, ou
-        // a agenda ainda não chegou do banco. Só o segundo caso merece espera — e o
-        // "carregou" sai do mesmo valor que a busca de cima, então ele não pode ser de
-        // uma lista que não passou por aqui.
-        if (agendaUi.loaded) {
-            // O pedido é dado por consumido aqui, mas o aviso fica guardado até sair
-            // inteiro: este efeito depende da agenda, que muda sozinha (o alarme grava, o
-            // dia vira) — deixar o pedido de pé faria a mesma frase voltar do começo a
-            // cada mudança. Girar com o aviso na tela não o apaga: a tela recriada ainda
-            // o encontra esperando.
-            onOpenOccurrenceConsumed()
-            missingNotice = true
-        }
-    }
-
-    LaunchedEffect(missingNotice) {
-        if (!missingNotice) return@LaunchedEffect
-        snackbar.showSnackbar("Esta tarefa não está mais na agenda.")
-        missingNotice = false
-    }
-
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -526,7 +495,33 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                if (agenda.today.isEmpty() && agenda.upcoming.isEmpty()) {
+                // A leitura da agenda falhou: sem isto a home escrevia "Nada para hoje. Toque
+                // no microfone embaixo e fale o recado." para uma agenda que ela não conseguiu
+                // ler — e ela recadastrava o que já existia, com dois alarmes de novo. O
+                // microfone continua na mão dela: falar e escrever não dependem da leitura.
+                if (agendaUi.failed) {
+                    item {
+                        QuietCard {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    "Não consegui ler a sua agenda",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    "Pode ser que falte tarefa nesta lista, ou que ela esteja desatualizada. Nada foi perdido.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                // O primário é este: é a ação que ela quer tomar na tela.
+                                PrimaryButton("Tentar de novo", onClick = viewModel::retryAgendaRead)
+                            }
+                        }
+                    }
+                }
+                // O convite a falar é sobre "não há nada" — e com a leitura falhando a home
+                // não pode afirmar isso. Ele é justamente o que leva ela a recadastrar o que
+                // já existe (segunda série, segundo alarme), o mesmo dano que o "Nada para
+                // hoje" suprimido ao lado.
+                if (showsSpeakInvite(agenda, agendaUi.failed)) {
                     item {
                         Text(
                             "Pode falar: tomar remédio amanhã às 8h",
@@ -671,7 +666,10 @@ fun HomeScreen(
                     "Hoje",
                     agenda.today,
                     empty = "Nada para hoje. Toque no microfone embaixo e fale o recado.",
-                    showWhenEmpty = true,
+                    // Com a leitura falhando, "Nada para hoje" é afirmação sobre uma agenda
+                    // que a home não leu — o cartão acima é quem diz o que aconteceu. As
+                    // tarefas da última lista boa continuam aparecendo.
+                    showWhenEmpty = !agendaUi.failed,
                     onClick = onEditItem,
                     onComplete = completeWithUndo,
                 )
@@ -768,6 +766,18 @@ private suspend fun SnackbarHostState.say(
     return showSnackbar(message = message, actionLabel = actionLabel, duration = duration)
 }
 
+/**
+ * O convite a falar cabe só quando a home pode afirmar que não há nada.
+ *
+ * Ele saía da mesma pergunta que o "Nada para hoje" — lista vazia, e nada mais —, e com a
+ * leitura da agenda falhando a home dizia as duas coisas na mesma tela: o cartão "Não
+ * consegui ler a sua agenda" em cima e o convite logo abaixo. O convite é o que leva ela a
+ * recadastrar o que já existe (segunda série, segundo alarme), e a lista vazia da falha não
+ * é uma lista vazia: é uma lista que não foi lida.
+ */
+internal fun showsSpeakInvite(agenda: AgendaSections, failed: Boolean): Boolean =
+    !failed && agenda.today.isEmpty() && agenda.upcoming.isEmpty()
+
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -829,7 +839,10 @@ private fun MicDock(
             contentDescription = action,
             onClick = onMic,
         )
-        if (state == VoiceState.IDLE || state == VoiceState.ERROR) {
+        // Entendendo o recado a saída continua à mão: com a IA o parse leva até 20 s, e
+        // sem estes botões ela ficava sem como escrever a tarefa nem usar os atalhos
+        // enquanto esperava — com o microfone fora da mão dela, era ficar sem saída.
+        if (state == VoiceState.IDLE || state == VoiceState.UNDERSTANDING || state == VoiceState.ERROR) {
             // No erro a saída de escrever é obrigatória: se o microfone não vai, é por aqui que ele cria a tarefa.
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),

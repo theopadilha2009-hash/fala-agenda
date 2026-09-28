@@ -366,6 +366,83 @@ class TaskRepositoryTest {
     }
 
     /**
+     * O cruzamento que a tela alcança e que ninguém testava: tarefa única, ela conclui, edita
+     * para outro dia e exclui o cartão novo. A COMPLETED sobrevive na série (é o registro do
+     * que ela fez), então o "Excluir" não cai no ramo "não sobrou nada" — e o ramo da tarefa
+     * única apagava a linha sem tombstone. No próximo start o `advance` rematerializava
+     * `startLocalDate` como PENDENTE e rearmava o alarme: o que ela excluiu voltava e tocava.
+     */
+    @Test
+    fun excluirTarefaUnicaComHistoricoNaoVoltaAoReagendar() {
+        runBlocking {
+            val saved = repo.saveDraft(
+                completeDraft("Dentista", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)),
+            )
+            repo.complete(saved.occurrence.id)
+            repo.editOccurrence(
+                saved.occurrence.id,
+                "Dentista",
+                LocalDate.of(2026, 8, 22),
+                LocalTime.of(9, 0),
+                RecurrenceRule(),
+            )
+            val amanha = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 22))
+            assertThat(occurrenceDao.get(amanha)).isNotNull()
+
+            repo.deleteOccurrence(amanha)
+            assertThat(occurrenceDao.get(amanha)).isNull()
+            scheduler.scheduled.clear()
+
+            repo.rescheduleAll()
+
+            assertThat(occurrenceDao.get(amanha)).isNull()
+            assertThat(scheduler.scheduled).doesNotContain(amanha)
+            // O que ela fez continua na agenda: o histórico não vai junto com o "Excluir".
+            assertThat(repo.snapshotAgenda().completed.map { it.occurrence.localDate })
+                .containsExactly(LocalDate.of(2026, 8, 21))
+        }
+    }
+
+    /**
+     * O horário ela lê na tela; quem dispara é o fuso. A série fica gravada com o fuso do dia
+     * do cadastro, e trocando o fuso do celular o aviso passava a tocar 08:00 do fuso velho —
+     * deslocado, calado e para sempre em toda série já criada. Aqui é uma pessoa, um celular,
+     * um app: o 08:00 que ela lê é o 08:00 daqui.
+     */
+    @Test
+    fun disparoUsaOFusoDoRelogioAgoraENaoOFusoGravadoNaSerie() {
+        runBlocking {
+            val lisboa = ZoneId.of("Europe/Lisbon")
+            // 06:00 em Lisboa (o relógio mudou de fuso); a série tinha sido cadastrada em SP.
+            val relogio = FixedAppClock(Instant.parse("2026-09-27T05:00:00Z"), lisboa)
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDeLisboa = TaskRepository(seriesDao, occDao, relogio, sched)
+            val hoje = LocalDate.of(2026, 9, 27)
+            val criadaEmSaoPaulo = serieDe("s-fuso", "Remédio").copy(startLocalDate = hoje)
+            seriesDao.upsert(criadaEmSaoPaulo.toEntity())
+            val id = OccurrenceIds.of(criadaEmSaoPaulo.id, hoje)
+            occDao.upsert(
+                ocorrenciaDe(
+                    criadaEmSaoPaulo.id,
+                    hoje,
+                    LocalTime.of(8, 0),
+                    OccurrenceStatus.PENDING,
+                ).toEntity(),
+            )
+
+            repoDeLisboa.rescheduleAll()
+
+            val esperado = hoje.atTime(8, 0).atZone(lisboa).toInstant()
+            val depois = occDao.get(id)!!.toDomain()
+            assertThat(depois.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(depois.scheduledAt).isEqualTo(esperado)
+            assertThat(depois.nextReminderAt).isEqualTo(esperado)
+            assertThat(sched.scheduled).contains(id)
+        }
+    }
+
+    /**
      * A pendente que atravessou a meia-noite (aviso adiado pela noite, ainda tocando)
      * continua acionável: ela entra em "Hoje", que para esta usuária é "o que eu preciso
      * fazer agora", e vem antes das de hoje porque é a mais urgente. Antes ela não caía
@@ -816,6 +893,45 @@ class TaskRepositoryTest {
             assertThat(stored.nextReminderAt).isNull()
             assertThat(sched.cancelled).contains(ontem)
         }
+    }
+
+    /**
+     * A edição de uma ocorrência que saiu do banco virava no-op **com sucesso**: a linha não
+     * está lá, o `editOccurrence` volta sem gravar e quem chamou anuncia "Salvo" para o que
+     * ela digitou. Com a última lista boa preservada de propósito, "Editar" numa tarefa
+     * apagada por fora perderia o texto dela em silêncio — a classe de defeito que o critério
+     * nº 1 do app proíbe. A gravação tem que dizer que não gravou.
+     */
+    @Test
+    fun edicaoDeOcorrenciaSumidaReportaQueNaoGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.deleteOccurrence(saved.occurrence.id)
+
+        val gravou = repo.editOccurrence(
+            saved.occurrence.id,
+            "Cabelo",
+            LocalDate.of(2026, 8, 21),
+            LocalTime.of(9, 0),
+            RecurrenceRule(),
+        )
+
+        assertThat(gravou).isEqualTo(EditOutcome.GONE)
+    }
+
+    /** O caminho normal continua dizendo que gravou. */
+    @Test
+    fun edicaoDeOcorrenciaVivaReportaQueGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+
+        val gravou = repo.editOccurrence(
+            saved.occurrence.id,
+            "Cabelo",
+            LocalDate.of(2026, 8, 22),
+            LocalTime.of(10, 0),
+            RecurrenceRule(),
+        )
+
+        assertThat(gravou).isEqualTo(EditOutcome.SAVED)
     }
 
     /**

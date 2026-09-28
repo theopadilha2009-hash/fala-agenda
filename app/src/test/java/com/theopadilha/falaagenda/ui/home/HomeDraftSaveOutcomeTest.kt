@@ -169,6 +169,32 @@ class HomeDraftSaveOutcomeTest {
         assertThat(saved.usedInexactAlarm).isNull()
     }
 
+    /**
+     * A ocorrência que saiu do banco — o "Excluir" de outra tela, a varredura do start —
+     * faz a gravação da edição virar no-op: a linha não está lá e nada é gravado. Anunciar
+     * "Salvo" aí era dizer que o que ela digitou ficou guardado quando não ficou. A falha
+     * sai com o rascunho no lugar, e não pelo canal genérico (que a mostraria longe da
+     * tela onde ela está escrevendo).
+     */
+    @Test
+    fun editarTarefaQueSaiuDaAgendaNaoAnunciaSalvo() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+        runBlocking { container.tasks.deleteOccurrence(salvo.occurrence.id) }
+
+        viewModel.edit(
+            id = salvo.occurrence.id,
+            title = "tomar remédio",
+            date = LocalDate.of(2026, 9, 28),
+            time = LocalTime.of(9, 0),
+            recurrence = RecurrenceRule(),
+        )
+
+        val failed = desfecho() as DraftSaveOutcome.Failed
+        assertThat(failed.origin).isEqualTo(DraftSaveOrigin.CONFIRM)
+        assertThat(failed.message).contains("não está mais na agenda")
+        assertThat(viewModel.writeError.value).isNull()
+    }
+
     private fun desfecho(): DraftSaveOutcome =
         runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.draftSaveOutcome.filterNotNull().first() } }
 

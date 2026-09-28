@@ -87,7 +87,12 @@ object AgendaFormat {
         val greet = greeting(nowTime)
         val next = if (nextTitle != null && nextDate != null && nextTime != null) {
             val whenLabel = dateLabel(nextDate, today).lowercase(locale)
-            " Próximo: $nextTitle, $whenLabel às ${time(nextTime)}."
+            // A pendente que atravessou a meia-noite é a mais urgente e é ela que aparece
+            // aqui; chamá-la de "Próximo" fazia a frase se contradizer — "Próximo: Tomar
+            // remédio, ontem às 08:00". O cartão da lista já a marca como atrasada (ver
+            // [lateMark]); o cabeçalho diz o mesmo.
+            val lead = if (lateMark(nextDate, today) != null) "Atrasada" else "Próximo"
+            " $lead: $nextTitle, $whenLabel às ${time(nextTime)}."
         } else {
             " Nada marcado agora."
         }
@@ -104,13 +109,20 @@ object AgendaFormat {
         return when {
             minutes in -1L..1L -> "agora"
             minutes in 2L..59L -> "daqui $minutes min"
-            minutes in 60L..(24L * 60L - 1L) -> {
-                val hours = minutes / 60
-                if (minutes % 60 == 0L) "daqui $hours h" else "daqui ${hours} h"
-            }
+            minutes in 60L..(24L * 60L - 1L) -> "daqui ${hoursAndMinutes(minutes)}"
             minutes in -59L..-2L -> "há ${-minutes} min"
-            minutes in -(24L * 60L - 1L)..-60L -> "há ${-minutes / 60} h"
+            // O passado perde os minutos do mesmo jeito que o futuro perdia: 90 minutos atrás
+            // saía como "há 1 h". É o que a pessoa lê na lista de hoje, para a tarefa cujo
+            // horário já passou e que não leva a marca de atrasada (ver `lateMark`).
+            minutes in -(24L * 60L - 1L)..-60L -> "há ${hoursAndMinutes(-minutes)}"
             else -> null
         }
+    }
+
+    /** "1 h 30 min", "2 h": o mesmo desenho dos dois lados da frase, para não voltarem a divergir. */
+    private fun hoursAndMinutes(minutes: Long): String {
+        val hours = minutes / 60
+        val rest = minutes % 60
+        return if (rest == 0L) "$hours h" else "$hours h $rest min"
     }
 }

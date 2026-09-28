@@ -2,14 +2,20 @@ package com.theopadilha.falaagenda.ui
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
@@ -17,11 +23,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
+import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.MissingDraftField
@@ -33,6 +43,9 @@ import com.theopadilha.falaagenda.ui.capture.ConfirmDraftScreen
 import com.theopadilha.falaagenda.ui.capture.WriteStep
 import com.theopadilha.falaagenda.ui.capture.WriteTaskScreen
 import com.theopadilha.falaagenda.ui.capture.writeStepFor
+import com.theopadilha.falaagenda.ui.components.PrimaryButton
+import com.theopadilha.falaagenda.ui.components.SecondaryButton
+import com.theopadilha.falaagenda.ui.home.AgendaUi
 import com.theopadilha.falaagenda.ui.home.DraftSaveOrigin
 import com.theopadilha.falaagenda.ui.home.DraftSaveOutcome
 import com.theopadilha.falaagenda.ui.home.HomeScreen
@@ -90,9 +103,10 @@ fun FalaAgendaRoot(
     var writeError by rememberSaveable { mutableStateOf<String?>(null) }
     val factory = remember(container) { AppViewModelFactory(container) }
     val homeVm: HomeViewModel = viewModel(factory = factory)
-    // O alarme pede uma ocorrência por id; a home só avisa que atendeu quando acha o
-    // item. Guardamos o pedido aqui e o damos por consumido na hora, senão um id que
-    // não existe (tarefa excluída) fica pendurado para sempre no intent.
+    val agendaUi by homeVm.agendaUi.collectAsState()
+    // O alarme pede uma ocorrência por id; quem a atende é o efeito abaixo, que a procura
+    // na agenda. O pedido é dado por consumido na hora: um id que não existe (tarefa
+    // excluída) não pode ficar pendurado para sempre no intent.
     LaunchedEffect(openOccurrenceId) {
         val id = openOccurrenceId ?: return@LaunchedEffect
         pendingOccurrenceId = id
@@ -135,6 +149,57 @@ fun FalaAgendaRoot(
         return
     }
 
+    // Abrir uma tarefa da agenda é o mesmo caminho para o toque no cartão e para o toque
+    // no aviso: a tela de confirmação, com o rascunho dela.
+    val openForEdit: (AgendaItem) -> Unit = { item ->
+        editingItemId = item.occurrence.id
+        draft = ParsedTaskDraft(
+            title = item.series.title,
+            localDate = item.occurrence.localDate,
+            localTime = item.series.localTime,
+            recurrence = item.series.recurrence,
+            confidence = 1.0,
+            missingFields = emptySet(),
+            ambiguous = false,
+            transcript = "",
+            amountCents = item.series.amountCents,
+            observation = item.series.observation,
+        )
+        nav.navigate("confirm") {
+            launchSingleTop = true
+        }
+    }
+    // O pedido do aviso é atendido aqui, e não dentro da home: o `NavHost` só compõe o
+    // destino atual, e com ela na confirmação, escrevendo uma tarefa, no "Daqui N min",
+    // no resumo do mês ou nos Ajustes o toque no aviso não fazia nada — o pedido ficava
+    // esperando e só valia quando ela voltava para a home, fora de contexto.
+    LaunchedEffect(pendingOccurrenceId, agendaUi) {
+        val id = pendingOccurrenceId ?: return@LaunchedEffect
+        when (val pedido = agendaNotice(agendaUi, id)) {
+            is AgendaNotice.Open -> {
+                pendingOccurrenceId = null
+                openForEdit(pedido.item)
+            }
+            // A leitura respondeu e a tarefa não está nela: saiu da agenda de verdade.
+            AgendaNotice.Gone -> {
+                pendingOccurrenceId = null
+                homeVm.publishStatus("Esta tarefa não está mais na agenda.")
+            }
+            // Sem leitura (ainda não chegou do banco, ou falhou): nada de concluir por
+            // ausência. Anunciar "Esta tarefa não está mais na agenda" quando a agenda não foi
+            // lida é a mentira que este efeito não pode contar. E o toque no aviso não pode
+            // ficar no silêncio de antes: ela tocou, o alarme do remédio tocou, e nada
+            // respondeu — o id ficava pendente pelo resto da vida do processo. Na falha o id
+            // continua guardado (a releitura pode trazer a tarefa e a tela abre sozinha) e ela
+            // fica sabendo por quê. O recado sai pela home, que é onde ele aparece, e fica
+            // guardado até ela mostrá-lo.
+            AgendaNotice.Unreadable -> if (agendaUi.failed) {
+                homeVm.publishStatus("Não consegui abrir a tarefa agora: não deu para ler a sua agenda.")
+                homeVm.retryAgendaRead()
+            }
+        }
+    }
+
     val start = if (onboardingDone) "home" else "onboarding"
     NavHost(
         navController = nav,
@@ -167,8 +232,20 @@ fun FalaAgendaRoot(
                 onThemeMode = { mode -> pendingTheme = mode.name },
                 onOpenMonth = { nav.navigate("month") },
                 onOpenUpdate = { nav.navigate("update") },
-                onWrite = { nav.navigate("write") },
-                onQuick = { minutes -> nav.navigate("quick/$minutes") },
+                // As duas saídas que a home oferece enquanto ela espera o entendimento
+                // ("Escrever tarefa" e os atalhos do "Daqui N min") são a decisão dela de
+                // abandonar a espera: o parse daquela fala é descartado aqui, no toque, e
+                // não volta para trocar a tela por baixo dela. Sem isto, ela digitava a
+                // tarefa (ou salvava um "Daqui 5 min") e o recado falado a levava para a
+                // confirmação com o texto digitado já jogado fora.
+                onWrite = {
+                    homeVm.speech.discard()
+                    nav.navigate("write")
+                },
+                onQuick = { minutes ->
+                    homeVm.speech.discard()
+                    nav.navigate("quick/$minutes")
+                },
                 onDraftReady = {
                     editingItemId = null
                     draft = it
@@ -176,34 +253,31 @@ fun FalaAgendaRoot(
                         launchSingleTop = true
                     }
                 },
-                onEditItem = { item ->
-                    editingItemId = item.occurrence.id
-                    draft = ParsedTaskDraft(
-                        title = item.series.title,
-                        localDate = item.occurrence.localDate,
-                        localTime = item.series.localTime,
-                        recurrence = item.series.recurrence,
-                        confidence = 1.0,
-                        missingFields = emptySet(),
-                        ambiguous = false,
-                        transcript = "",
-                        amountCents = item.series.amountCents,
-                        observation = item.series.observation,
-                    )
-                    nav.navigate("confirm") {
-                        launchSingleTop = true
-                    }
-                },
-                openOccurrenceId = pendingOccurrenceId,
-                onOpenOccurrenceConsumed = { pendingOccurrenceId = null },
+                onEditItem = openForEdit,
             )
         }
         composable("confirm") {
             val current = draft
-            // Reencontrada na agenda a cada recomposição: sobrevive à recriação da
-            // Activity sem guardar o item inteiro no Bundle e sem ficar com cópia velha.
-            val agendaUi by homeVm.agendaUi.collectAsState()
+            // Reencontrada na agenda a cada recomposição (o valor vem do escopo de cima):
+            // sobrevive à recriação da Activity sem guardar o item inteiro no Bundle e sem
+            // ficar com cópia velha.
             val editingItem = editingItemId?.let { id -> agendaUi.sections.find(id) }
+            // A agenda ainda não respondeu: sem ela não dá para saber se este rascunho é a
+            // edição de uma tarefa ou uma tarefa nova. Decidir agora era o que transformava
+            // "Editar tarefa" em "Confira antes de salvar" e mandava a gravação para o
+            // caminho de criar — uma segunda série com o mesmo título e o mesmo horário, e
+            // um segundo alarme. A tela espera o banco em vez de decidir.
+            val awaitingEditingItem = editingItemId != null && !agendaUi.loaded
+            // A agenda respondeu, e respondeu que não conseguiu ler: a tarefa editada não
+            // está aqui porque a leitura falhou, e não porque ela não existe mais. Seguir
+            // para o `ConfirmDraftScreen` com `editing = false` era o que transformava
+            // "Editar tarefa" em tarefa nova — segunda série com o mesmo título e o mesmo
+            // horário, e um segundo alarme. Aqui a tela diz o que aconteceu e oferece o
+            // "Tentar de novo" e a saída; o `popBackStack` dela devolve para o destino de
+            // baixo, que é de onde o aviso a trouxe se ela estava no mês ou nos Ajustes.
+            // A decisão é de [editingUnavailable], que tem teste próprio: trocar um `&&` por
+            // um `||` aqui volta ao segundo alarme sem acender nada.
+            val editingBlocked = editingUnavailable(agendaUi, editingItemId, editingItem)
             val saveOutcome by homeVm.draftSaveOutcome.collectAsState()
             // Os pedidos de gravação que ainda não foram mostrados a ninguém (ver
             // `pendingDraftSaves`): a gravação *desta* tela, e não o `busy` do ViewModel, que
@@ -240,89 +314,122 @@ fun FalaAgendaRoot(
                     }
                 }
             }
-            if (current != null) {
-                ConfirmDraftScreen(
-                    initial = current,
-                    // A gravação *desta* tela — e não o `busy` do ViewModel, que também
-                    // fica verdadeiro para a escrita de outra tela: com ele, a tela presa
-                    // aqui mostrava "Salvando…" por causa de uma gravação que não era dela.
-                    saving = saving,
-                    editing = editingItem != null,
-                    occurrenceStatus = editingItem?.occurrence?.status,
-                    isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
-                    onComplete = editingItem?.let { item ->
-                        {
-                            // O recado só aparece depois que a gravação passou: falhou,
-                            // o home mostra o erro em vez de um "Feito." que não houve.
-                            homeVm.complete(item)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onSnooze = editingItem?.let { item ->
-                        { minutes ->
-                            homeVm.snooze(item.occurrence.id, minutes)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onDelete = editingItem?.let { item ->
-                        {
-                            homeVm.delete(item)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onRetry = editingItem?.let { item ->
-                        {
-                            homeVm.retryMissed(item.occurrence.id)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onRepeat = editingItem?.let { item ->
-                        {
-                            saveRequest = homeVm.repeatTomorrow(item)
-                        }
-                    },
-                    onEndSeries = editingItem?.let { item ->
-                        {
-                            homeVm.endSeries(item.series.id)
-                            editingItemId = null
-                            nav.popBackStack()
-                        }
-                    },
-                    onCancel = {
+            if (current != null && awaitingEditingItem) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            // Sem a agenda não dá para saber o que a tarefa editada tem hoje no banco, e o
+            // "Salvar" daqui criaria uma série nova: a tela sai do caminho de edição e diz
+            // por quê.
+            if (current != null && editingBlocked) {
+                AgendaReadFailure(
+                    onRetry = homeVm::retryAgendaRead,
+                    onBack = {
                         editingItemId = null
                         nav.popBackStack()
                     },
-                    onSave = { confirmed ->
-                        // Um pedido por vez, como o botão desabilitado já garante: dois
-                        // toques no mesmo quadro viram duas gravações (e `saveDraft` sempre
-                        // cria uma série nova).
-                        if (!saving) {
-                            val editId = editingItem?.occurrence?.id
-                            val date = confirmed.localDate
-                            val time = confirmed.localTime
-                            // Só registra o pedido, com a identidade que o ViewModel dá a
-                            // ele: o desfecho chega pelo ViewModel, que atravessa o giro.
-                            saveRequest = if (editId != null && date != null && time != null) {
-                                homeVm.edit(
-                                    editId,
-                                    confirmed.title,
-                                    date,
-                                    time,
-                                    confirmed.recurrence,
-                                    confirmed.amountCents,
-                                    confirmed.observation,
-                                )
-                            } else {
-                                homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)
-                            }
-                        }
-                    },
-                    saveError = confirmError,
                 )
+            }
+            // A tela é reiniciada quando o rascunho ou a ocorrência mudam. O aviso é atendido
+            // aqui, que compõe em qualquer destino: com ela já na confirmação, o
+            // `launchSingleTop` do `openForEdit` reaproveita a mesma entrada do `NavHost` e
+            // o `ConfirmDraftScreen` guarda os campos em `rememberSaveable` — sem a chave, os
+            // campos continuavam os do rascunho anterior ("Comprar pão") enquanto as ações
+            // já eram as da ocorrência do aviso ("Tomar remédio"): o "Salvar" renomeava o
+            // remédio com o texto dela, e "Concluir"/"Excluir" agiam no remédio enquanto ela
+            // lia outra coisa. Com a chave, o que está na tela é o que as ações vão alterar.
+            // A entrada continua sendo reaproveitada (não empilha tela a cada abertura).
+            if (current != null && !awaitingEditingItem && !editingBlocked) {
+                key(current, editingItemId) {
+                    ConfirmDraftScreen(
+                        initial = current,
+                        // A gravação *desta* tela — e não o `busy` do ViewModel, que também
+                        // fica verdadeiro para a escrita de outra tela: com ele, a tela presa
+                        // aqui mostrava "Salvando…" por causa de uma gravação que não era dela.
+                        saving = saving,
+                        editing = editingItem != null,
+                        occurrenceStatus = editingItem?.occurrence?.status,
+                        isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
+                        onComplete = editingItem?.let { item ->
+                            {
+                                // O recado só aparece depois que a gravação passou: falhou,
+                                // o home mostra o erro em vez de um "Feito." que não houve.
+                                homeVm.complete(item)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onSnooze = editingItem?.let { item ->
+                            { minutes ->
+                                homeVm.snooze(item.occurrence.id, minutes)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onDelete = editingItem?.let { item ->
+                            {
+                                homeVm.delete(item)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onRetry = editingItem?.let { item ->
+                            {
+                                homeVm.retryMissed(item.occurrence.id)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onRepeat = editingItem?.let { item ->
+                            {
+                                saveRequest = homeVm.repeatTomorrow(item)
+                            }
+                        },
+                        onEndSeries = editingItem?.let { item ->
+                            {
+                                homeVm.endSeries(item.series.id)
+                                editingItemId = null
+                                nav.popBackStack()
+                            }
+                        },
+                        onCancel = {
+                            editingItemId = null
+                            nav.popBackStack()
+                        },
+                        onSave = { confirmed ->
+                            // Um pedido por vez, como o botão desabilitado já garante: dois
+                            // toques no mesmo quadro viram duas gravações (e `saveDraft` sempre
+                            // cria uma série nova).
+                            if (!saving) {
+                                val editId = editingItem?.occurrence?.id
+                                val date = confirmed.localDate
+                                val time = confirmed.localTime
+                                // Só registra o pedido, com a identidade que o ViewModel dá a
+                                // ele: o desfecho chega pelo ViewModel, que atravessa o giro.
+                                saveRequest = if (editId != null && date != null && time != null) {
+                                    homeVm.edit(
+                                        editId,
+                                        confirmed.title,
+                                        date,
+                                        time,
+                                        confirmed.recurrence,
+                                        confirmed.amountCents,
+                                        confirmed.observation,
+                                    )
+                                } else {
+                                    homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)
+                                }
+                            }
+                        },
+                        saveError = confirmError,
+                    )
+                }
             }
         }
         composable("write") {
@@ -447,6 +554,110 @@ fun FalaAgendaRoot(
     }
 }
 
+/**
+ * A leitura da agenda falhou com a tela de edição aberta — a morte do processo no meio da
+ * edição é o caso: o Bundle devolve o id da tarefa, a primeira leitura do banco estoura, e
+ * sem a lista não há como saber o que a tarefa tem hoje. É a tela que não oferece o
+ * "Salvar": o caminho de criação criaria uma série nova no lugar de editar a antiga.
+ *
+ * Só o "Voltar" era um beco sem saída mais bonito: a leitura não volta sozinha, e sem o
+ * [onRetry] a única saída era matar o app. [onBack] desce um destino no `NavHost` — o mês ou
+ * os Ajustes, se foi de lá que o aviso a trouxe.
+ */
+@Composable
+private fun AgendaReadFailure(onRetry: () -> Unit, onBack: () -> Unit) {
+    // O toque que não conseguiu ler de novo precisa de resposta aqui também: a releitura que
+    // falha sai igual ao que já está na tela (`AgendaUi` é data class, e o `StateFlow`
+    // conflaciona valores iguais), e sem isto o toque dela não produziria sinal nenhum — ela
+    // toca outra vez, achando que não foi atendida. O recado da home (snackbar) não vale
+    // nesta tela, que é outra composição. Se a releitura conseguir, esta tela sai e o texto
+    // vai junto.
+    var retried by remember { mutableStateOf(false) }
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Text(
+                "Não consegui abrir a tarefa",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.semantics { heading() },
+            )
+            Text(
+                "Não deu para ler a sua agenda agora, então não dá para abrir esta tarefa. Nada foi mudado.",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            if (retried) {
+                Text(
+                    "Ainda não consegui ler a sua agenda.",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            // O primário é a tentativa de novo; o "Voltar" é a saída.
+            PrimaryButton(
+                "Tentar de novo",
+                onClick = {
+                    retried = true
+                    onRetry()
+                },
+            )
+            SecondaryButton("Voltar", onClick = onBack)
+        }
+    }
+}
+
+/**
+ * A leitura da agenda falhou com a tela de edição aberta e a tarefa editada não está na
+ * lista.
+ *
+ * É um predicado de três valores, e confundir dois deles é o segundo alarme: sem o item não
+ * dá para saber o que a tarefa tem hoje, e seguir para o `ConfirmDraftScreen` com
+ * `editing = false` cria uma série nova com o mesmo título e o mesmo horário. A leitura que
+ * respondeu "não consegui ler" não é a mesma coisa que a tarefa ter saído da agenda — só a
+ * primeira bloqueia a edição. O item presente na última lista boa vale, mesmo com a
+ * releitura falhando: a bandeira diz "esta é a última lista que consegui ler", e é ela que a
+ * tela de confirmação lê.
+ */
+internal fun editingUnavailable(
+    agendaUi: AgendaUi,
+    editingItemId: String?,
+    editingItem: AgendaItem?,
+): Boolean = editingItemId != null && agendaUi.failed && editingItem == null
+
+/**
+ * O que o toque no aviso pede da agenda lida.
+ *
+ * São três desfechos, e confundir dois deles é o defeito que este tipo separa: a tarefa não
+ * estar na lista **lida** é uma coisa, e a lista não ter sido lida é outra — a segunda não
+ * autoriza dizer que a tarefa saiu da agenda.
+ */
+internal sealed interface AgendaNotice {
+    /** A tarefa está na lista: é ela que a tela de confirmação abre. */
+    data class Open(val item: AgendaItem) : AgendaNotice
+
+    /** A agenda foi lida e a tarefa não está nela: saiu da agenda de verdade. */
+    data object Gone : AgendaNotice
+
+    /** A agenda não foi lida (ainda não chegou, ou a leitura falhou): nada se conclui. */
+    data object Unreadable : AgendaNotice
+}
+
+/**
+ * Decide o [AgendaNotice] da ocorrência pedida pelo aviso.
+ *
+ * O `loaded` e o `failed` saem do mesmo valor que a busca, e não de um fluxo paralelo: sem
+ * isso o "não está mais na agenda" podia falar de uma lista que nunca passou por aqui. Na
+ * dúvida — leitura que falhou, leitura que ainda não chegou — o pedido continua pendente, e é
+ * o `failed` que diz ao chamador que ele já pode contar para ela o que aconteceu.
+ */
+internal fun agendaNotice(agendaUi: AgendaUi, occurrenceId: String): AgendaNotice {
+    agendaUi.sections.find(occurrenceId)?.let { return AgendaNotice.Open(it) }
+    return if (agendaUi.loaded && !agendaUi.failed) AgendaNotice.Gone else AgendaNotice.Unreadable
+}
+
 private const val NO_EPOCH_DAY = Long.MIN_VALUE
 private const val NO_SECOND_OF_DAY = -1
 private const val NO_DAY_OF_MONTH = -1
@@ -464,6 +675,12 @@ private const val NO_AMOUNT = Long.MIN_VALUE
  *
  * A ordem dos campos em [DraftSaver] é o formato salvo: mexer nela exige mexer em
  * [draftFrom].
+ *
+ * O rascunho que volta é load-bearing: o `key(current, editingItemId)` da confirmação decide
+ * reiniciar a tela pelo *hash composto* das chaves — hash em que o rascunho entra pelo
+ * `hashCode`, e não por uma comparação `equals` campo a campo. Campo novo em `ParsedTaskDraft`
+ * sem o [draftFrom] correspondente muda o rascunho restaurado e, com ele, o hash da chave: a
+ * confirmação reinicia e a digitação dela se perde, em silêncio.
  */
 internal val DraftSaver = Saver<ParsedTaskDraft?, ArrayList<Any?>>(
     save = { draft ->

@@ -112,4 +112,52 @@ class AgendaFormatTest {
         assertThat(AgendaFormat.fromNow(now.minusSeconds(20 * 60), now)).isEqualTo("há 20 min")
         assertThat(AgendaFormat.fromNow(now.plusSeconds(3 * 24 * 3600), now)).isNull()
     }
+
+    /**
+     * A hora cheia não engole os minutos que sobram: a 1 h 30 min o aviso sai "daqui 1 h 30
+     * min", e só a hora redonda fica sem os minutos ("daqui 23 h").
+     */
+    @Test
+    fun fromNowHorasComMinutosRestantes() {
+        val now = LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant()
+        assertThat(AgendaFormat.fromNow(now.plusSeconds(90 * 60), now)).isEqualTo("daqui 1 h 30 min")
+        assertThat(AgendaFormat.fromNow(now.plusSeconds(103 * 60), now)).isEqualTo("daqui 1 h 43 min")
+        assertThat(AgendaFormat.fromNow(now.plusSeconds(23 * 3600), now)).isEqualTo("daqui 23 h")
+    }
+
+    /**
+     * O passado tinha o mesmo defeito que o futuro tinha: a hora cheia engolia os minutos, e
+     * a tarefa de hoje que já passou saía como "há 1 h" às 11h30 de um aviso das 10h — a
+     * frase que a pessoa lê na lista de hoje. O que passa de 24 h não é "de hoje": continua
+     * sem rótulo relativo.
+     */
+    @Test
+    fun fromNowHorasComMinutosRestantesNoPassado() {
+        val now = LocalDateTime.of(2026, 8, 20, 12, 0).atZone(zone).toInstant()
+        assertThat(AgendaFormat.fromNow(now.minusSeconds(59 * 60), now)).isEqualTo("há 59 min")
+        assertThat(AgendaFormat.fromNow(now.minusSeconds(60 * 60), now)).isEqualTo("há 1 h")
+        assertThat(AgendaFormat.fromNow(now.minusSeconds(65 * 60), now)).isEqualTo("há 1 h 5 min")
+        assertThat(AgendaFormat.fromNow(now.minusSeconds(90 * 60), now)).isEqualTo("há 1 h 30 min")
+        assertThat(AgendaFormat.fromNow(now.minusSeconds(120 * 60), now)).isEqualTo("há 2 h")
+        assertThat(AgendaFormat.fromNow(now.minusSeconds(1439 * 60), now)).isEqualTo("há 23 h 59 min")
+        assertThat(AgendaFormat.fromNow(now.minusSeconds(1440 * 60), now)).isNull()
+    }
+
+    /**
+     * A pendente que atravessou a meia-noite entra na seção "Hoje" por desenho, e é ela a
+     * mais urgente: sem a marca de atrasada, o cabeçalho anunciava "Próximo: ..., ontem às
+     * 08:00" — a frase se contradizendo sozinha.
+     */
+    @Test
+    fun headlineNaoChamaDeProximoOQueJaEPassou() {
+        val text = AgendaFormat.headline(
+            nowTime = LocalTime.of(8, 0),
+            today = today,
+            nextTitle = "Tomar remédio",
+            nextDate = today.minusDays(1),
+            nextTime = LocalTime.of(8, 0),
+            missedCount = 0,
+        )
+        assertThat(text).isEqualTo("Bom dia. Atrasada: Tomar remédio, ontem às 08:00.")
+    }
 }

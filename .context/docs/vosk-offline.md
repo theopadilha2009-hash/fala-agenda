@@ -86,8 +86,8 @@ motor do sistema.
   contra servidor local (MockWebServer) e prova allowlist, soma, extração e instalação;
   o que falta provar é o download real de 31 MB com a rede do aparelho, incluindo o
   que acontece se ela cair no meio.
-- **Tamanho do APK**: o `abiFilters` cortou x86, x86_64, mips, mips64 e armeabi — ~20 MB
-  de lib nativa que só existia para emulador ou para arquitetura morta (os 20 MB são o
+- **Tamanho do APK**: o `abiFilters` cortou x86, x86_64, mips, mips64 e armeabi — ~19 MiB
+  de lib nativa que só existia para emulador ou para arquitetura morta (os 19 MiB são o
   tamanho em disco; no APK as `.so` vão comprimidas, a 36% do original). Ficaram
   arm64-v8a e armeabi-v7a, porque não se sabe qual é a do aparelho dela. APK debug:
   32,41 MB → 25,20 MB.

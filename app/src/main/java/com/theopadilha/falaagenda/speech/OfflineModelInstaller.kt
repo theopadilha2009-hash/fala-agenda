@@ -65,7 +65,7 @@ class OfflineModelInstaller(
     ): Job? {
         if (VoskModel.isInstalled(context)) return null
         if (!emCurso.compareAndSet(false, true)) return null
-        return scope.launch {
+        val job = scope.launch {
             try {
                 installIfNeeded(source, sha256)
             } finally {
@@ -75,6 +75,12 @@ class OfflineModelInstaller(
                 emCurso.set(false)
             }
         }
+        // Escopo cancelado no instante do `launch`: o corpo nem começa, o `finally` não roda e
+        // a trava — que é do processo, não da escuta — ficaria presa pelo resto da vida dele.
+        // Todo pedido seguinte devolveria `null` sem dizer nada, e o modelo nunca chegaria.
+        // Trabalho que não está de pé não segura a trava.
+        if (!job.isActive) emCurso.set(false)
+        return job
     }
 
     /** `true` quando o modelo está instalado ao fim — inclusive se já estava. */

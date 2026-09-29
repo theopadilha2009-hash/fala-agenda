@@ -108,8 +108,17 @@ class VoskSpeechSource(
                 if (partial.isNotBlank()) emit { it.onPartial(partial) }
             }
         } catch (_: Exception) {
-            // Modelo pela metade, lib nativa ausente, microfone ocupado: quem decide
-            // o próximo motor é o controller, não esta thread.
+            // Modelo pela metade, microfone ocupado: quem decide o próximo motor é o
+            // controller, não esta thread.
+            emit { it.onError(VoiceRetry.CLIENT) }
+        } catch (_: LinkageError) {
+            // A lib nativa é o caso mais grave, e este catch é o que separa "a fala volta
+            // para o motor do sistema" de "o app fecha sozinho". `UnsatisfiedLinkError` não
+            // é Exception, e no aparelho a falha de ligação sai do bloco estático do
+            // `LibVosk` como `ExceptionInInitializerError` (e na tentativa seguinte, com a
+            // classe já marcada, como `NoClassDefFoundError`) — a família toda é
+            // `LinkageError`. Sem pegar isto aqui, o erro sobe pela thread `vosk-escuta`,
+            // que não tem handler, e em aparelho isso derruba o processo.
             emit { it.onError(VoiceRetry.CLIENT) }
         } finally {
             releaseRecord()

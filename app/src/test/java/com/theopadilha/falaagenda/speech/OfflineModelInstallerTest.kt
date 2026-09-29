@@ -15,6 +15,8 @@ import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import okhttp3.Dns
@@ -23,6 +25,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okio.Buffer
 import org.junit.After
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -178,6 +181,50 @@ class OfflineModelInstallerTest {
         assertThat(server.requestCount).isEqualTo(1)
     }
 
+    /**
+     * A guarda que sustenta `oPedidoNaoConsultaARede` só vale se estourar por qualquer
+     * caminho. O `applicationContext` de um `ContextWrapper` é o contexto de verdade, então
+     * um gate reescrito como `applicationContext.getSystemService(CONNECTIVITY_SERVICE)`
+     * passaria verde com a consulta de volta no lugar.
+     */
+    @Test
+    fun aGuardaDoTesteEstouraPorQualquerCaminho() {
+        val guarda = contextoQueNaoTemRede()
+
+        assertThrows(IllegalStateException::class.java) {
+            guarda.getSystemService(Context.CONNECTIVITY_SERVICE)
+        }
+        assertThrows(IllegalStateException::class.java) {
+            guarda.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE)
+        }
+    }
+
+    /**
+     * O escopo pode estar morto no instante do `launch`: aí o corpo da corrotina nem começa,
+     * o `finally` não roda, e a trava — que é do processo, não da escuta — fica presa para o
+     * resto da vida dele. Todo pedido seguinte devolveria `null` sem dizer nada, e o modelo
+     * nunca chegaria.
+     */
+    @Test
+    fun pedidoEmEscopoCanceladoNaoTravaOPedidoSeguinte() {
+        val zip = modeloZip()
+        server.enqueue(MockResponse().setBody(Buffer().write(zip)))
+        val instalador = installer()
+        val morto = CoroutineScope(Job() + Dispatchers.Unconfined).apply { cancel() }
+
+        val perdido = instalador.request(morto, url(), sha256(zip))
+
+        // O pedido foi aceito — quem chamou não tem como saber que nasceu morto.
+        assertThat(perdido).isNotNull()
+        assertThat(server.requestCount).isEqualTo(0)
+
+        val seguinte = instalador.request(CoroutineScope(Dispatchers.Unconfined), url(), sha256(zip))
+
+        assertThat(seguinte).isNotNull()
+        assertThat(server.requestCount).isEqualTo(1)
+        assertThat(VoskModel.isInstalled(context)).isTrue()
+    }
+
     @Test
     fun pedidoBaixaOModeloQuandoNaoTemNadaInstalado() {
         val zip = modeloZip()
@@ -229,10 +276,13 @@ class OfflineModelInstallerTest {
      * único critério dele é o pedido de voz, e é isso que este contexto prova.
      */
     private fun contextoQueNaoTemRede(): Context = object : ContextWrapper(context) {
-        override fun getSystemService(name: String): Any? {
-            if (name == Context.CONNECTIVITY_SERVICE) error("o download consultou a rede")
-            return super.getSystemService(name)
-        }
+        // Por padrão o `applicationContext` de um wrapper é o contexto de verdade — era por
+        // aí que a guarda deixava passar. Devolvendo o próprio wrapper, o pedido de serviço
+        // estoura em qualquer serviço e por qualquer caminho.
+        override fun getApplicationContext(): Context = this
+
+        override fun getSystemService(name: String): Any? =
+            error("o download consultou o sistema: $name")
     }
 
     private fun modeloZip(

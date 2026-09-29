@@ -61,6 +61,50 @@ class AppUpdaterTest {
         assertThat(AppUpdater.allowedDownloadUrl("not-a-url")).isFalse()
     }
 
+    /**
+     * A release do fixture publica o instalador mas esquece o `.sha256`. Sem a soma não há
+     * como conferir o arquivo, então não pode sobrar uma instalação silenciosamente mais fraca.
+     */
+    @Test
+    fun releaseSemArquivoDeSomaNaoEhOferecida() {
+        val json = """
+            {
+              "tag_name": "v0.9.9",
+              "assets": [
+                {
+                  "name": "app-release.apk",
+                  "browser_download_url": "https://github.com/theopadilha2009-hash/fala-agenda/releases/download/v0.9.9/app-release.apk"
+                }
+              ]
+            }
+        """.trimIndent()
+        val check = AppUpdater.fromJson(json, "0.4.0")
+        assertThat(check.sha256Url).isNull()
+        assertThat(check.apkUrl).isNotNull()
+        assertThat(check.newer).isFalse()
+        assertThat(check.message).contains("0.9.9")
+        assertThat(check.message).contains("conferência")
+    }
+
+    /**
+     * A assinatura prova autoria, não versão: um APK velho e legítimo numa release nova passa
+     * por ela e rebaixaria o aplicativo. Quem separa uma coisa da outra é o `versionCode`.
+     */
+    @Test
+    fun instaladorMaisAntigoOuIgualAoDoAparelhoEhRebaixamento() {
+        assertThat(AppUpdater.isDowngrade(remote = 6L, installed = 6L)).isTrue()
+        assertThat(AppUpdater.isDowngrade(remote = 5L, installed = 6L)).isTrue()
+        assertThat(AppUpdater.isDowngrade(remote = 7L, installed = 6L)).isFalse()
+    }
+
+    @Test
+    fun semOsDoisNumerosNaoDaParaFalarEmRebaixamento() {
+        // Quem barra aí é a assinatura; o updater não inventa rebaixamento sem os dois lados.
+        assertThat(AppUpdater.isDowngrade(remote = null, installed = 6L)).isFalse()
+        assertThat(AppUpdater.isDowngrade(remote = 7L, installed = null)).isFalse()
+        assertThat(AppUpdater.isDowngrade(remote = null, installed = null)).isFalse()
+    }
+
     @Test
     fun mesmaVersaoNaoAtualiza() {
         val json = """

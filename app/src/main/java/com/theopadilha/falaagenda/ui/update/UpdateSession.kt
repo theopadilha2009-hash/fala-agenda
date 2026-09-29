@@ -1,6 +1,7 @@
 package com.theopadilha.falaagenda.ui.update
 
 import com.theopadilha.falaagenda.platform.UpdateCheck
+import com.theopadilha.falaagenda.platform.UpdateRefused
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +36,9 @@ const val APK_GONE_MESSAGE =
     "O arquivo que tinha sido baixado não está mais no aparelho (o Android limpa o cache " +
         "quando falta espaço). Toque em \"Baixar e instalar\" para baixar de novo."
 
+/** O que já foi recusado, para não oferecer de novo: o endereço do arquivo e o recado. */
+private data class Refusal(val apkUrl: String, val reason: String)
+
 /**
  * Instalar um arquivo que já não existe faz o instalador falhar com "não foi possível
  * analisar o pacote" e deixa a tela presa nesse botão para sempre. Por isso o arquivo
@@ -59,6 +63,7 @@ class UpdateSession(
     private val _state = MutableStateFlow(UpdateUiState())
     val state: StateFlow<UpdateUiState> = _state.asStateFlow()
     private var started = false
+    private var refusal: Refusal? = null
 
     /** Chamada quando a tela abre. Se ela já esteve aqui, o estado guardado é o que vale. */
     fun start() {
@@ -84,8 +89,23 @@ class UpdateSession(
                 )
                 return@launch
             }
-            _state.value = _state.value.copy(checking = false, info = found)
+            _state.value = _state.value.copy(checking = false, info = comRecusa(found))
         }
+    }
+
+    /**
+     * A release que já foi recusada continua recusada enquanto for a mesma: mesma URL, mesmo
+     * veredito. Sem isto, o "Procurar de novo" traria a mesma oferta da checagem e o botão
+     * voltaria a convidar o download que acabou de ser negado. Release nova é outro endereço,
+     * e essa volta a ser oferecida.
+     */
+    private fun comRecusa(found: UpdateCheck): UpdateCheck {
+        val recusa = refusal ?: return found
+        if (found.apkUrl != recusa.apkUrl) {
+            refusal = null
+            return found
+        }
+        return found.copy(newer = false, message = recusa.reason)
     }
 
     /** Baixa o instalador. Nada aqui depende de quem está olhando a tela. */
@@ -94,6 +114,7 @@ class UpdateSession(
         val info = current.info ?: return
         val url = info.apkUrl ?: return
         if (current.working || current.apk != null) return
+        if (refusal?.apkUrl == url) return
         _state.value = current.copy(downloading = true, message = null)
         scope.launch {
             val apk = try {
@@ -101,6 +122,12 @@ class UpdateSession(
             } catch (cancelled: CancellationException) {
                 _state.value = _state.value.copy(downloading = false)
                 throw cancelled
+            } catch (refused: UpdateRefused) {
+                _state.value = _state.value.copy(
+                    downloading = false,
+                    info = registrarRecusa(refused, url),
+                )
+                return@launch
             } catch (failed: Exception) {
                 _state.value = _state.value.copy(
                     downloading = false,
@@ -110,6 +137,18 @@ class UpdateSession(
             }
             _state.value = _state.value.copy(downloading = false, apk = apk, message = null)
         }
+    }
+
+    /**
+     * A recusa entra no `info` (e não só no `message` da tela) para sobreviver ao "Procurar de
+     * novo": a checagem seguinte devolveria a mesma oferta, e o botão voltaria a convidar o
+     * download que acabou de ser negado. `newer = false` é o que a tela lê para oferecer o
+     * download — é o mesmo caminho que a release sem `.sha256` já usava.
+     */
+    private fun registrarRecusa(refused: UpdateRefused, url: String): UpdateCheck? {
+        val recusa = Refusal(url, refused.reason)
+        refusal = recusa
+        return _state.value.info?.copy(newer = false, message = recusa.reason)
     }
 
     /** Recado na tela sem mexer no resto do estado. */

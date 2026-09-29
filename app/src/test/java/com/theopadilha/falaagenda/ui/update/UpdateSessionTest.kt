@@ -1,7 +1,9 @@
 package com.theopadilha.falaagenda.ui.update
 
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.platform.AppUpdater
 import com.theopadilha.falaagenda.platform.UpdateCheck
+import com.theopadilha.falaagenda.platform.UpdateRefused
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -174,6 +176,57 @@ class UpdateSessionTest {
         assertThat(session.state.value.checking).isFalse()
         assertThat(session.state.value.message).isEqualTo("Sem internet agora.")
         assertThat(session.state.value.info).isNull()
+    }
+
+    @Test
+    fun recusaDefinitivaNaoConvidaOutroDownload() {
+        var downloads = 0
+        val session = UpdateSession(
+            scope = escopoDoProcesso(),
+            lookUp = { achou() },
+            fetch = { _, _ ->
+                downloads++
+                throw UpdateRefused(AppUpdater.VERSAO_NAO_E_MAIS_NOVA)
+            },
+        )
+
+        session.start()
+        session.downloadNow()
+
+        // O recado dela aparece e o botão deixa de convidar os mesmos 13 MB de novo.
+        assertThat(session.state.value.message ?: session.state.value.info?.message)
+            .isEqualTo(AppUpdater.VERSAO_NAO_E_MAIS_NOVA)
+        assertThat(session.state.value.info?.newer).isFalse()
+
+        // Nem por dentro: o mesmo endereço já recusado não volta a baixar.
+        session.downloadNow()
+        assertThat(downloads).isEqualTo(1)
+
+        // "Procurar de novo" não rearma o convite enquanto for a mesma release.
+        session.refresh()
+        assertThat(session.state.value.info?.newer).isFalse()
+        assertThat(session.state.value.info?.message).isEqualTo(AppUpdater.VERSAO_NAO_E_MAIS_NOVA)
+    }
+
+    @Test
+    fun releaseNovaDepoisDaRecusaVoltaASerOferecida() {
+        var endereco = "https://github.com/x/fala-agenda/releases/download/v0.6.0/app-release.apk"
+        val session = UpdateSession(
+            scope = escopoDoProcesso(),
+            lookUp = { achou(apkUrl = endereco) },
+            fetch = { _, _ -> throw UpdateRefused(AppUpdater.VERSAO_NAO_E_MAIS_NOVA) },
+        )
+
+        session.start()
+        session.downloadNow()
+        assertThat(session.state.value.info?.newer).isFalse()
+
+        // A release seguinte é outro arquivo, e a recusa era daquele: volta a ser oferecida.
+        endereco = "https://github.com/x/fala-agenda/releases/download/v0.6.1/app-release.apk"
+        session.refresh()
+
+        assertThat(session.state.value.info?.newer).isTrue()
+        assertThat(session.state.value.info?.message).contains("Tem versão nova")
     }
 
     @Test

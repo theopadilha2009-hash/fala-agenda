@@ -9,6 +9,7 @@ import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
 import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
 import org.junit.Test
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -209,6 +210,79 @@ class OccurrenceLifecycleTest {
             todayInSeriesZone = LocalDate.of(2026, 9, 27),
         )
         assertThat(change.markMissed.map { it.id }).containsExactly(vencida.id)
+    }
+
+    /**
+     * Um instante marcado no passado dispara na hora no `AlarmManager`, e a varredura roda em
+     * toda abertura do aplicativo: rearmá-lo era uma notificação por abertura — o remédio da
+     * manhã chegando em rajada à tarde. Fora da janela de entrega pendente, a varredura deixa
+     * o instante vencido quieto; a ocorrência continua na agenda e quem a encerra é a virada
+     * do dia.
+     */
+    @Test
+    fun naoRearmaInstanteVencidoForaDaJanela() {
+        val hoje = LocalDate.of(2026, 9, 27)
+        val vencida = occurrence(
+            hoje,
+            nextReminderAt = now.minusSeconds(7 * 3600),
+            lastReminderAt = now.minusSeconds(8 * 3600),
+        )
+
+        assertThat(OccurrenceLifecycle.valeRearmar(vencida, now, Duration.ofHours(6))).isFalse()
+    }
+
+    /** Dentro da janela o rearme é o que faz o aviso bloqueado tocar atrasado. */
+    @Test
+    fun rearmaInstanteVencidoDentroDaJanela() {
+        val hoje = LocalDate.of(2026, 9, 27)
+        val atrasada = occurrence(hoje, nextReminderAt = now.minusSeconds(3600))
+
+        assertThat(OccurrenceLifecycle.entregaPendente(atrasada, now, Duration.ofHours(6))).isTrue()
+        assertThat(OccurrenceLifecycle.valeRearmar(atrasada, now, Duration.ofHours(6))).isTrue()
+    }
+
+    /** Instante marcado à frente é o caso de sempre: boot, troca de hora, start. */
+    @Test
+    fun rearmaInstanteFuturo() {
+        val hoje = LocalDate.of(2026, 9, 27)
+        val futura = occurrence(hoje, nextReminderAt = now.plusSeconds(3600))
+
+        assertThat(OccurrenceLifecycle.valeRearmar(futura, now, Duration.ofHours(6))).isTrue()
+    }
+
+    /** A escada encerrada (sem instante marcado) não tem o que rearmar. */
+    @Test
+    fun semInstanteMarcadoNaoHaEntregaPendente() {
+        val hoje = LocalDate.of(2026, 9, 27)
+        val semNada = occurrence(hoje, nextReminderAt = null)
+
+        assertThat(OccurrenceLifecycle.entregaPendente(semNada, now, Duration.ofHours(6))).isFalse()
+        assertThat(OccurrenceLifecycle.valeRearmar(semNada, now, Duration.ofHours(6))).isTrue()
+    }
+
+    /**
+     * O alarme da virada do dia cai no próximo 00:05 local. É ele que faz o dia virar: sem
+     * broadcast que chegue (`DATE_CHANGED` não é exceção do broadcast implícito desde o
+     * Android 8), a ocorrência de ontem ficaria pendente para sempre.
+     */
+    @Test
+    fun nextDaySweepCaiNoProximoCincoDaMadrugada() {
+        // 11:00 UTC é 08:00 em São Paulo: o próximo 00:05 é o de amanhã.
+        val agora = Instant.parse("2026-09-27T11:00:00Z")
+
+        val proximo = OccurrenceLifecycle.nextDaySweep(agora, zone)
+
+        assertThat(proximo).isEqualTo(Instant.parse("2026-09-28T03:05:00Z"))
+    }
+
+    /** Armado depois da meia-noite (ou às 00:05 em ponto), o alarme é o de amanhã. */
+    @Test
+    fun nextDaySweepDepoisDaMeiaNoiteVaiParaOAmanha() {
+        val madrugada = Instant.parse("2026-09-27T03:06:00Z")
+
+        val proximo = OccurrenceLifecycle.nextDaySweep(madrugada, zone)
+
+        assertThat(proximo).isEqualTo(Instant.parse("2026-09-28T03:05:00Z"))
     }
 
     private fun occurrence(

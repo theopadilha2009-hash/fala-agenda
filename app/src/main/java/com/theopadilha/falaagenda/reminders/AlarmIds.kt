@@ -16,6 +16,16 @@ object AlarmIds {
     const val EXTRA_SERIES_ID = "series_id"
     const val EXTRA_ACTION = "action"
 
+    /** A varredura da virada do dia — não é de ocorrência nenhuma. */
+    const val ACTION_DAILY_SWEEP = "daily_sweep"
+
+    /**
+     * Id do alarme da virada do dia. O `requestCode` sai do mesmo lane + hash das ocorrências,
+     * e por isso ele precisa de um id próprio, estável e que não seja um `seriesId:localDate`
+     * de ninguém: o alarme é do aplicativo inteiro, não de uma tarefa.
+     */
+    const val DAILY_SWEEP_ID = "com.theopadilha.falaagenda.DAILY_SWEEP"
+
     /** Id da notificação do lembrete na tela. */
     const val NOTIF_REMINDER = "notif"
 
@@ -42,6 +52,7 @@ object AlarmIds {
             ACTION_OPEN -> 4
             NOTIF_REMINDER -> 5
             NOTIF_NOT_APPLIED -> 7
+            ACTION_DAILY_SWEEP -> 8
             else -> 6
         }
         val digest = MessageDigest.getInstance("SHA-256")

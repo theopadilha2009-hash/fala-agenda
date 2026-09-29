@@ -67,6 +67,17 @@ class TaskRepository(
         sectionsOf(seriesDao.getAll(), occurrenceDao.getAll())
 
     /**
+     * O retrato que o widget mostra: só o que ainda está de pé.
+     *
+     * Igual a [snapshotAgenda] no que o widget lê — `today` e `upcoming` saem exclusivamente das
+     * pendentes, em [sectionsOf] como aqui —, mas sem puxar o histórico: as concluídas e as não
+     * realizadas ficam de fora da leitura, não só do filtro. Ele repinta no boot, na troca de
+     * hora e em toda virada do dia, e o que cresce sem poda é justamente o que ele não mostra.
+     */
+    suspend fun snapshotPendentes(): AgendaSections =
+        sectionsOf(seriesDao.getAll(), occurrenceDao.byStatus(OccurrenceStatus.PENDING.name))
+
+    /**
      * A série entra no cálculo de disparo com o fuso do relógio AGORA, nunca com o que ficou
      * gravado no dia do cadastro. Aqui é uma pessoa, um celular, um app: o horário que ela lê
      * na tela é o horário local dela hoje, e o aviso tem que tocar nele. Com o fuso velho,
@@ -577,14 +588,32 @@ class TaskRepository(
 
     suspend fun rescheduleAll() = writer.withLock {
         val now = clock.instant()
+        // Primeiro de tudo, e antes de qualquer leitura, porque é o único gatilho da virada do
+        // dia: `DATE_CHANGED` não é exceção do broadcast implícito desde o Android 8 (o app tem
+        // targetSdk 36) e só `TIME_SET`, `TIMEZONE_CHANGED` e `NEXT_ALARM_CLOCK_CHANGED` chegam,
+        // então quem vira o dia é este alarme — rearmado aqui, no start do processo, no boot, na
+        // troca de hora e pela própria virada. Não depende de ocorrência nenhuma, e uma leitura
+        // que estoure no meio do caminho (`SQLiteDiskIOException` é condição conhecida desta
+        // base) não pode deixar o dia seguinte sem varredura: os dois chamadores engolem a
+        // exceção com log, e o dia não viraria até ela abrir o aplicativo.
+        scheduler.scheduleDailySweep(OccurrenceLifecycle.nextDaySweep(now, clock.zoneId()))
         val seriesList = seriesDao.getAll().map { it.toTaskSeries() }
         seriesList.forEach { series ->
             applyLifecycle(series, now)
         }
-        occurrenceDao.getAll().map { it.toDomain() }
-            .filter { it.status == OccurrenceStatus.PENDING }
+        // As pendentes, não o histórico inteiro: `getAll` trazia toda ocorrência já gravada
+        // desde o começo do aplicativo (sem poda) para descartar tudo que não fosse PENDING.
+        // E a série de cada uma sai do retrato que a varredura já leu — antes era um `get`
+        // por ocorrência, o N+1 que a agenda de anos dela pagava em todo start.
+        val seriesById = seriesList.associateBy { it.id }
+        occurrenceDao.byStatus(OccurrenceStatus.PENDING.name).map { it.toDomain() }
             .forEach { occ ->
-                val series = seriesDao.get(occ.seriesId)?.toTaskSeries() ?: return@forEach
+                val series = seriesById[occ.seriesId] ?: return@forEach
+                // Instante marcado no passado só volta ao alarme enquanto for entrega
+                // pendente: ver `OccurrenceLifecycle.valeRearmar`.
+                if (!OccurrenceLifecycle.valeRearmar(occ, now, JANELA_ENTREGA_PENDENTE)) {
+                    return@forEach
+                }
                 val scheduled = scheduler.schedule(
                     occ,
                     series,
@@ -616,25 +645,13 @@ class TaskRepository(
     }
 
     /**
-     * Alarme marcado para um instante que já passou e ainda não foi entregue é entrega
-     * pendente. Nunca tendo tocado, a escada nem começou (`lastReminderAt` nulo): o aviso das
-     * 22:00 que o Doze segurou continua pendente depois da meia-noite — sem isso a primeira
-     * varredura do dia seguinte o arquivava como não realizada e o único aviso do dia morria
-     * calado. Com um aviso já entregue, vale o critério de sempre: o que está marcado é a
-     * repetição seguinte, e ela só é entrega pendente se o último aviso ficou para trás.
-     *
-     * Vale até [JANELA_ENTREGA_PENDENTE] depois do horário marcado — dentro dela o
-     * `rescheduleAll` de todo start rearma o aviso; passada ela, o `advance` volta a decidir
-     * e a ocorrência vira não realizada, que é o terminador da entrega pendente (nada fica
-     * pendurado para sempre).
+     * A regra é do ciclo de vida (`OccurrenceLifecycle.entregaPendente`); aqui ela só entra na
+     * janela de entrega deste aplicativo. Dentro da janela o `rescheduleAll` rearma o aviso e o
+     * `advance` não o arquiva; passada ela, o `advance` volta a decidir e a ocorrência vira não
+     * realizada, que é o terminador da entrega pendente (nada fica pendurado para sempre).
      */
-    private fun entregaPendente(occurrence: TaskOccurrence, now: Instant): Boolean {
-        val marcado = occurrence.nextReminderAt ?: return false
-        if (marcado.isAfter(now)) return false
-        val ultimoAviso = occurrence.lastReminderAt
-        return (ultimoAviso == null || ultimoAviso.isBefore(marcado)) &&
-            now.isBefore(marcado.plus(JANELA_ENTREGA_PENDENTE))
-    }
+    private fun entregaPendente(occurrence: TaskOccurrence, now: Instant): Boolean =
+        OccurrenceLifecycle.entregaPendente(occurrence, now, JANELA_ENTREGA_PENDENTE)
 
     private suspend fun spawnNextIfNeeded(series: TaskSeries, completedDate: java.time.LocalDate, now: Instant) {
         if (series.isEnded || !series.recurrence.isRecurring) return

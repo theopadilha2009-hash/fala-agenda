@@ -17,8 +17,11 @@ import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.time.LocalDate
 
 class AgendaWidgetProvider : AppWidgetProvider() {
@@ -32,7 +35,7 @@ class AgendaWidgetProvider : AppWidgetProvider() {
         if (app is FalaAgendaApplication) {
             app.appScope.launch {
                 try {
-                    val snapshot = snapshotOrFallback { app.container.tasks.snapshotAgenda() }
+                    val snapshot = snapshotOrFallback { app.container.tasks.snapshotPendentes() }
                     val mode = themeModeOf(app)
                     val remote = views(app, snapshot, widgetColors(app, mode))
                     appWidgetIds.forEach { appWidgetManager.updateAppWidget(it, remote) }
@@ -56,19 +59,49 @@ class AgendaWidgetProvider : AppWidgetProvider() {
 
     companion object {
         fun refresh(context: Context, sections: AgendaSections, mode: ThemeMode) {
+            paint(context, snapshotOf(sections), mode)
+        }
+
+        /**
+         * Repinta o widget agora, sem esperar mudança no banco.
+         *
+         * A virada do dia e a troca de hora mudam o que o widget deve dizer — o "Hoje" que
+         * virou ontem, a "Próxima" que já passou — sem escrever nada, e quem repinta o widget
+         * é a escrita no banco (ver `collectWidgetUpdates`). Sem este empurrão ele seguia
+         * anunciando o dia velho da meia-noite até a próxima mexida na agenda.
+         */
+        suspend fun refreshNow(context: Context) {
+            val app = context.applicationContext as? FalaAgendaApplication ?: return
+            val snapshot = snapshotOrFallback { app.container.tasks.snapshotPendentes() }
+            val mode = themeModeOf(app)
+            withContext(Dispatchers.Main) { paint(context, snapshot, mode) }
+        }
+
+        private fun paint(context: Context, snapshot: Snapshot, mode: ThemeMode) {
             val app = context.applicationContext
             val manager = AppWidgetManager.getInstance(app)
             val ids = manager.getAppWidgetIds(ComponentName(app, AgendaWidgetProvider::class.java))
             if (ids.isEmpty()) return
-            val snapshot = snapshotOf(sections)
             val remote = views(app, snapshot, widgetColors(app, mode))
             ids.forEach { manager.updateAppWidget(it, remote) }
         }
 
-        internal fun snapshotOf(sections: AgendaSections, today: LocalDate = LocalDate.now()): Snapshot {
-            val next = (sections.today + sections.upcoming)
+        internal fun snapshotOf(
+            sections: AgendaSections,
+            today: LocalDate = LocalDate.now(),
+            now: Instant = Instant.now(),
+        ): Snapshot {
+            val pendentes = (sections.today + sections.upcoming)
                 .filter { it.occurrence.status == OccurrenceStatus.PENDING }
+            // Quem ainda vai tocar ganha de quem já passou. `sectionsOf` põe de propósito a
+            // pendente que atravessou a meia-noite dentro de "Hoje" (ela é a mais urgente e
+            // continua acionável), e o `minByOrNull` sozinho elegia justamente ela: o widget
+            // anunciava "Próxima — Tomar remédio — Ontem · 08:00" da meia-noite às 08:00, que
+            // é a janela em que ela olha o telefone para planejar o dia.
+            val next = pendentes
+                .filter { !it.occurrence.scheduledAt.isBefore(now) }
                 .minByOrNull { it.occurrence.scheduledAt }
+                ?: pendentes.minByOrNull { it.occurrence.scheduledAt }
             return if (next == null) {
                 Snapshot(
                     title = "Nada marcado",
@@ -80,6 +113,14 @@ class AgendaWidgetProvider : AppWidgetProvider() {
                     title = next.series.title,
                     whenLabel = "${AgendaFormat.dateLabel(next.occurrence.localDate, today)} · ${AgendaFormat.time(next.series.localTime)}",
                     empty = false,
+                    // Sem nada à frente, o que sobrou é o que já passou — e o rótulo diz isso.
+                    // O critério aqui é a HORA (`scheduledAt`), e o da home é o DIA
+                    // (`AgendaFormat.headline` reserva "Atrasada" para a data vencida e mostra
+                    // a tarefa de hoje com horário passado como "há 7 h"): às 15:00, com o
+                    // remédio das 08:00 pendente e nada à frente, o widget diz
+                    // "Atrasada — Hoje · 08:00" e a home diz "há 7 h". A divergência é
+                    // decisão de produto e está registrada no PR.
+                    late = next.occurrence.scheduledAt.isBefore(now),
                 )
             }
         }
@@ -90,9 +131,10 @@ class AgendaWidgetProvider : AppWidgetProvider() {
          */
         internal suspend fun snapshotOrFallback(
             today: LocalDate = LocalDate.now(),
+            now: Instant = Instant.now(),
             readSections: suspend () -> AgendaSections,
         ): Snapshot = try {
-            snapshotOf(readSections(), today)
+            snapshotOf(readSections(), today, now)
         } catch (cancelado: CancellationException) {
             throw cancelado
         } catch (erro: Throwable) {
@@ -109,7 +151,16 @@ class AgendaWidgetProvider : AppWidgetProvider() {
 
         internal fun views(context: Context, snapshot: Snapshot, colors: WidgetColors?): RemoteViews {
             val remote = RemoteViews(context.packageName, R.layout.widget_agenda)
-            remote.setTextViewText(R.id.widget_kicker, if (snapshot.empty) "Agenda" else "Próxima")
+            // "Próxima" só quando há o que vir: com a hora marcada já passada o kicker diz
+            // "Atrasada", e a tela não mente sobre o que vai acontecer.
+            remote.setTextViewText(
+                R.id.widget_kicker,
+                when {
+                    snapshot.empty -> "Agenda"
+                    snapshot.late -> "Atrasada"
+                    else -> "Próxima"
+                },
+            )
             remote.setTextViewText(R.id.widget_title, snapshot.title)
             remote.setTextViewText(R.id.widget_when, snapshot.whenLabel)
             if (colors != null) {
@@ -148,5 +199,7 @@ class AgendaWidgetProvider : AppWidgetProvider() {
         val title: String,
         val whenLabel: String,
         val empty: Boolean,
+        /** O que o widget está mostrando é o que já passou: o kicker diz "Atrasada". */
+        val late: Boolean = false,
     )
 }

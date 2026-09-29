@@ -5,8 +5,10 @@ import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
 import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
@@ -23,6 +25,13 @@ object OccurrenceLifecycle {
     // rematerializar uma data excluída
     const val SKIPPED_RETENTION_DAYS = 90L
     const val MAX_SKIPPED_DATES = 120
+
+    /**
+     * Quando a varredura da virada do dia toca. Cinco minutos depois da meia-noite de
+     * propósito: o alarme não disputa o instante exato da virada com o sistema, e o dia
+     * local já virou para quem for ler o relógio.
+     */
+    val DAY_SWEEP_AT: LocalTime = LocalTime.of(0, 5)
 
     fun scheduledInstant(series: TaskSeries, localDate: LocalDate): Instant =
         ZonedDateTime.of(localDate, series.localTime, series.zoneId).toInstant()
@@ -184,6 +193,72 @@ object OccurrenceLifecycle {
             ?.let { maxOf(occurrence.localDate, it) }
             ?: occurrence.localDate
         return referencia.isBefore(todayInSeriesZone)
+    }
+
+    /**
+     * A varredura pode entregar ao alarme o instante que esta ocorrência já tem marcado?
+     *
+     * Instante marcado para agora ou depois: sim, é o caso de sempre — start do processo,
+     * boot, troca de hora, virada do dia.
+     *
+     * Instante marcado que já passou: só enquanto for [entregaPendente]. No `AlarmManager` um
+     * instante no passado dispara na hora, então rearmá-lo é disparar agora — e a varredura
+     * roda em toda abertura do aplicativo. A repetição das 09:30 que o Doze segurou, rearmada
+     * às 16:00 pelo start seguinte, entregava o remédio da manhã de novo: cinco aberturas,
+     * cinco avisos em rajada. Fora da janela, nada se perde: a ocorrência continua na agenda
+     * e quem a encerra é a virada do dia, que a marca como não realizada ([expirou]).
+     *
+     * Dentro da janela o rearme continua de pé de propósito — é o que faz o aviso bloqueado
+     * (permissão negada, canal desligado) tocar atrasado quando ela abre o aplicativo.
+     * Ver `TaskRepository.fire`.
+     */
+    fun valeRearmar(
+        occurrence: TaskOccurrence,
+        now: Instant,
+        janelaEntrega: Duration,
+    ): Boolean {
+        val marcado = occurrence.nextReminderAt ?: return true
+        return !marcado.isBefore(now) || entregaPendente(occurrence, now, janelaEntrega)
+    }
+
+    /**
+     * Alarme marcado para um instante que já passou e ainda não foi entregue é entrega
+     * pendente. Nunca tendo tocado, a escada nem começou (`lastReminderAt` nulo): o aviso das
+     * 22:00 que o Doze segurou continua pendente depois da meia-noite — sem isso a primeira
+     * varredura do dia seguinte o arquivava como não realizada e o único aviso do dia morria
+     * calado. Com um aviso já entregue, vale o critério de sempre: o que está marcado é a
+     * repetição seguinte, e ela só é entrega pendente se o último aviso ficou para trás.
+     *
+     * Vale até [janela] depois do horário marcado — o atraso real de entrega (Doze, alarme
+     * inexato, aparelho desligado) cabe aí. Passada a janela, o aviso não é ressuscitado: a
+     * ocorrência volta a ser encerrada pela virada do dia.
+     */
+    fun entregaPendente(
+        occurrence: TaskOccurrence,
+        now: Instant,
+        janela: Duration,
+    ): Boolean {
+        val marcado = occurrence.nextReminderAt ?: return false
+        if (marcado.isAfter(now)) return false
+        val ultimoAviso = occurrence.lastReminderAt
+        return (ultimoAviso == null || ultimoAviso.isBefore(marcado)) &&
+            now.isBefore(marcado.plus(janela))
+    }
+
+    /**
+     * O próximo instante em que a varredura da virada do dia toca: [DAY_SWEEP_AT] local, hoje
+     * se ainda não passou, senão amanhã.
+     *
+     * Existe porque o dia não vira sozinho: `android.intent.action.DATE_CHANGED` não está na
+     * lista de exceções do broadcast implícito do Android 8, então receiver de manifesto
+     * nunca o recebe. Quem acorda a varredura é este alarme, rearmado a cada varredura.
+     */
+    fun nextDaySweep(now: Instant, zoneId: ZoneId): Instant {
+        val zoned = now.atZone(zoneId)
+        val hoje = zoned.toLocalDate().atTime(DAY_SWEEP_AT).atZone(zoneId)
+        // `plusDays` é dia de calendário: na virada de horário de verão o alarme continua
+        // caindo em 00:05 local, e não 24 h depois.
+        return if (hoje.toInstant().isAfter(now)) hoje.toInstant() else hoje.plusDays(1).toInstant()
     }
 
     fun todayIn(zoneId: ZoneId, now: Instant): LocalDate = now.atZone(zoneId).toLocalDate()

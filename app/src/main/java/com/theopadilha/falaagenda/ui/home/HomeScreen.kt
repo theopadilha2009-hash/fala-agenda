@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material3.AlertDialog
@@ -77,6 +79,7 @@ import com.theopadilha.falaagenda.domain.insight.MonthInsights
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.platform.DeviceIntents
+import com.theopadilha.falaagenda.platform.ManufacturerHint
 import com.theopadilha.falaagenda.reminders.NotificationHelper
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
@@ -134,6 +137,9 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var widgetHelp by remember { mutableStateOf(false) }
+    // `rememberSaveable`: o guia tem cinco passos em fonte grande, e o giro do aparelho
+    // devolvia ela para a home no meio da leitura.
+    var batteryHelp by rememberSaveable { mutableStateOf(false) }
     // O erro e o rascunho da caixa somem juntos: os dois atravessam o giro (ver o
     // `quickDraft` abaixo).
     var quickSaveError by rememberSaveable { mutableStateOf<String?>(null) }
@@ -431,20 +437,9 @@ fun HomeScreen(
                     }
                 },
                 onShare = { closeAnd { shareApp = true } },
-                onBattery = {
-                    closeAnd {
-                        val opened = DeviceIntents.open(context, DeviceIntents.batterySettings(context))
-                        scope.launch {
-                            snackbar.showSnackbar(
-                                if (opened) {
-                                    "Se o aviso continuar falhando no Xiaomi/Samsung: Ajustes → Apps → Fala Agenda → bateria sem restrição e autostart."
-                                } else {
-                                    "Não consegui abrir os ajustes de bateria deste celular."
-                                },
-                            )
-                        }
-                    }
-                },
+                // O menu abria a tela de bateria e explicava o resto num aviso de 4 s que
+                // ela não dava tempo de ler. Agora abre o guia do aparelho dela.
+                onBattery = { closeAnd { batteryHelp = true } },
                 onWidget = { closeAnd { widgetHelp = true } },
                 onSettings = { closeAnd(onOpenSettings) },
                 onThemeMode = onThemeMode,
@@ -721,6 +716,86 @@ fun HomeScreen(
             },
             confirmButton = {
                 TextButton(onClick = { widgetHelp = false }, modifier = Modifier.heightIn(min = 56.dp)) {
+                    Text("Entendi")
+                }
+            },
+        )
+    }
+
+    if (batteryHelp) {
+        // O fabricante não muda enquanto a caixa está aberta, e reler o Build a cada
+        // recomposição não muda nada.
+        val guia = remember { ManufacturerHint.guide() }
+        // A tela do fabricante pode não existir neste aparelho. Aí os passos continuam na
+        // frente dela — fechar a caixa e mandar um aviso de 4 s deixaria ela sem nada.
+        var ajustesNaoAbriram by remember { mutableStateOf(false) }
+        // O autostart do fabricante não é a economia de bateria do sistema: sem este botão,
+        // quem tem tela própria (Xiaomi, Huawei, OnePlus, Asus, Vivo, Oppo, Realme) ficava
+        // sem nenhum caminho para o `isBatteryUnrestricted` virar verdadeiro.
+        val mostrarBateriaDoSistema = ManufacturerHint.needsSystemBatteryScreen(guia, batteryOk)
+        val marcaDoAtalho = guia.shortcutBrand
+
+        val abrir: (Intent) -> Unit = { intent ->
+            if (DeviceIntents.open(context, intent)) {
+                batteryHelp = false
+            } else {
+                ajustesNaoAbriram = true
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { batteryHelp = false },
+            title = { Text(if (batteryOk) "Avisos liberados" else "Não matar alarmes") },
+            text = {
+                // Fonte grande é o ajuste que ela mais usa: sem rolagem, o fim do guia
+                // ficaria cortado fora da caixa.
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(guia.title)
+                    guia.steps.forEachIndexed { indice, passo ->
+                        Text("${indice + 1}. $passo")
+                    }
+                    // O crédito é do dontkillmyapp: o texto genérico é do próprio app e não
+                    // pode vir assinado por eles.
+                    guia.credit?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+                    if (ajustesNaoAbriram) {
+                        Text("Não consegui abrir os ajustes deste celular. Faça os passos acima na mão.")
+                    }
+                    if (mostrarBateriaDoSistema) {
+                        TextButton(
+                            onClick = { abrir(DeviceIntents.batterySettings(context)) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 56.dp),
+                        ) {
+                            Text("Abrir os ajustes de bateria do celular")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        abrir(
+                            ManufacturerHint.shortcutIntent(guia.shortcut)
+                                ?: DeviceIntents.batterySettings(context),
+                        )
+                    },
+                    modifier = Modifier.heightIn(min = 56.dp),
+                ) {
+                    Text(
+                        if (marcaDoAtalho != null) {
+                            "Abrir ajustes do $marcaDoAtalho"
+                        } else {
+                            "Abrir ajustes de bateria"
+                        },
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { batteryHelp = false }, modifier = Modifier.heightIn(min = 56.dp)) {
                     Text("Entendi")
                 }
             },

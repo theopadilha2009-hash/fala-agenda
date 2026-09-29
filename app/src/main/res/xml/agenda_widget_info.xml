@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 2x3, e não 2x2: a parte fixa do layout (padding 12+12, kicker 12sp, "quando" 13sp, 6 de
+     margem e o botão "Falar" de 56dp) já pede ~117dp antes do título da próxima tarefa.
+     Em 2 células o widget recebe 110dp: o título, que é quem cede, encolhia até zero e a
+     base do botão era cortada — e toque fora dos limites do root não chega no widget, ou
+     seja, o alvo de 56dp voltava a ser menor. 180dp = 3 células na tabela oficial dá as
+     duas linhas do título e os 56dp inteiros do botão. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_description"
     android:initialLayout="@layout/widget_agenda"
     android:minWidth="110dp"
-    android:minHeight="110dp"
+    android:minHeight="180dp"
     android:previewLayout="@layout/widget_agenda"
     android:resizeMode="horizontal|vertical"
     android:targetCellWidth="2"
-    android:targetCellHeight="2"
+    android:targetCellHeight="3"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen" />

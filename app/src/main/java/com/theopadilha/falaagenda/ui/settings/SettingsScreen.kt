@@ -28,7 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -98,7 +98,11 @@ fun SettingsScreen(
                         "O aplicativo claro usa fundo creme. Você pode travar claro, escuro ou seguir o celular.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        // Sem isto, com a fonte grande do sistema as linhas quebradas ficam coladas.
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         listOf(
                             ThemeMode.SYSTEM to "Celular",
                             ThemeMode.LIGHT to "Claro",
@@ -107,6 +111,7 @@ fun SettingsScreen(
                             FilterChip(
                                 selected = themeMode == mode,
                                 onClick = { vm.setThemeMode(mode) },
+                                modifier = Modifier.heightIn(min = 48.dp),
                                 label = { Text(label) },
                             )
                         }
@@ -194,11 +199,13 @@ fun SettingsScreen(
                         picking = null
                         vm.setQuietHours(which, LocalTime.of(state.hour, state.minute))
                     },
-                    modifier = Modifier.height(48.dp),
+                    // Altura mínima, não altura fixa: com a fonte grande do sistema o
+                    // "OK" e o "Cancelar" eram cortados ao meio.
+                    modifier = Modifier.heightIn(min = 56.dp),
                 ) { Text("OK") }
             },
             dismissButton = {
-                TextButton(onClick = { picking = null }, modifier = Modifier.height(48.dp)) {
+                TextButton(onClick = { picking = null }, modifier = Modifier.heightIn(min = 56.dp)) {
                     Text("Cancelar")
                 }
             },

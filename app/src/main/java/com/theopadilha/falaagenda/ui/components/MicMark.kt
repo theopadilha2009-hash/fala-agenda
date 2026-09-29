@@ -37,12 +37,25 @@ import kotlinx.coroutines.delay
 @Composable
 fun PulsingMic(
     state: VoiceState,
-    contentDescription: String,
+    // Sem descrição este microfone é ilustração: fica fora da leitura de tela, em vez de
+    // virar uma parada de foco que anuncia e não responde ao toque duplo.
+    contentDescription: String?,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
 ) {
     val listening = state == VoiceState.LISTENING
     val idle = state == VoiceState.IDLE || state == VoiceState.PREPARING
+    val actionable = onClick != null
+    val description = contentDescription
+    // Sem ação o microfone não é o mesmo botão verde cheio: durante os ~20 s de
+    // "Entendendo o recado…" ele parecia clicável e o toque não devolvia nada. O disco fica
+    // no `outline` do tema: um cinza neutro, pouco acima ou abaixo do fundo (#E4DFD4 sobre
+    // o creme no claro, 1,2:1; #3A4742 sobre o verde-escuro no escuro, 1,7:1), então quem
+    // sustenta a leitura é o ícone — 5,9:1 no claro e 8,9:1 no escuro contra o fundo. O
+    // pulso para junto.
+    val fill = if (actionable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    val iconTint =
+        if (actionable) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     val pulse = rememberInfiniteTransition(label = "mic-pulse")
     val idleScale by pulse.animateFloat(
         initialValue = 1f,
@@ -74,7 +87,7 @@ fun PulsingMic(
             shake = 0f
         }
     }
-    val scale = if (idle) idleScale else 1f
+    val scale = if (idle && actionable) idleScale else 1f
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -92,14 +105,18 @@ fun PulsingMic(
                 scaleY = scale
             }
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.primary)
-            .semantics { this.contentDescription = contentDescription }
+            .background(fill)
+            .semantics {
+                if (description != null) {
+                    this.contentDescription = description
+                }
+            }
         if (onClick != null) {
             IconButton(onClick = onClick, modifier = buttonMod) {
                 Icon(
                     Icons.Outlined.Mic,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                    tint = iconTint,
                     modifier = Modifier.size(40.dp),
                 )
             }
@@ -108,7 +125,7 @@ fun PulsingMic(
                 Icon(
                     Icons.Outlined.Mic,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                    tint = iconTint,
                     modifier = Modifier.size(40.dp),
                 )
             }

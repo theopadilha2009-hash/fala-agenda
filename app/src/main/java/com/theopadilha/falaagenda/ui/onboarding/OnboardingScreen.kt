@@ -170,9 +170,11 @@ fun OnboardingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.weight(1f))
+            // Ilustração: aqui não há ação para descrever, e anunciar "Microfone" era uma
+            // parada de foco que não respondia ao toque duplo.
             PulsingMic(
                 state = VoiceState.IDLE,
-                contentDescription = "Microfone",
+                contentDescription = null,
             )
             Text(
                 "Fala Agenda",

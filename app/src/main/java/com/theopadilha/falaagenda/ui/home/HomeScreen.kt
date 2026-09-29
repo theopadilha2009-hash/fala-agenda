@@ -66,8 +66,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -932,7 +934,18 @@ private fun MicDock(
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(label, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+            // O anúncio da leitura de tela sai daqui, do texto que ela vê — e não da
+            // descrição do microfone, que descreve a *ação* do toque ("Falar uma tarefa" →
+            // "Parar de ouvir" já nasce em PREPARING). De PREPARING para LISTENING aquela
+            // descrição é a mesma string, e o "Pode falar agora" ficava mudo no momento em
+            // que ela precisa falar. Só a troca deste texto gera o anúncio, e ele muda nos
+            // três estados que interessam.
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        )
         if (state == VoiceState.ERROR) {
             Text("Toque de novo, ou escreva o recado.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
         }

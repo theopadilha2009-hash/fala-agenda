@@ -102,7 +102,16 @@ fun MonthSummaryScreen(
                     modifier = Modifier.size(48.dp),
                     enabled = month.isBefore(YearMonth.now()),
                 ) {
-                    Icon(Icons.Outlined.ChevronRight, contentDescription = "Próximo mês")
+                    // Sem mês seguinte, o tint apagado era o único aviso — e é só cor.
+                    // Quem não vê o cinza ouve o motivo em vez de tocar e não receber nada.
+                    Icon(
+                        Icons.Outlined.ChevronRight,
+                        contentDescription = if (month.isBefore(YearMonth.now())) {
+                            "Próximo mês"
+                        } else {
+                            "Próximo mês, indisponível: você está no mês atual"
+                        },
+                    )
                 }
             }
 

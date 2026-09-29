@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -394,11 +393,14 @@ fun ConfirmDraftScreen(
                         state.selectedDateMillis?.let { date = it.toLocalDateUtc() }
                         showDate = false
                     },
-                    modifier = Modifier.height(48.dp),
+                    // Altura mínima, não altura fixa: com a fonte grande do sistema o
+                    // "OK" era cortado ao meio — e este é o único caminho para escolher
+                    // a data quando o parser não entendeu a fala.
+                    modifier = Modifier.heightIn(min = 56.dp),
                 ) { Text("OK") }
             },
             dismissButton = {
-                TextButton(onClick = { showDate = false }, modifier = Modifier.height(48.dp)) {
+                TextButton(onClick = { showDate = false }, modifier = Modifier.heightIn(min = 56.dp)) {
                     Text("Cancelar")
                 }
             },
@@ -421,11 +423,11 @@ fun ConfirmDraftScreen(
                         time = LocalTime.of(state.hour, state.minute)
                         showTime = false
                     },
-                    modifier = Modifier.height(48.dp),
+                    modifier = Modifier.heightIn(min = 56.dp),
                 ) { Text("OK") }
             },
             dismissButton = {
-                TextButton(onClick = { showTime = false }, modifier = Modifier.height(48.dp)) {
+                TextButton(onClick = { showTime = false }, modifier = Modifier.heightIn(min = 56.dp)) {
                     Text("Cancelar")
                 }
             },

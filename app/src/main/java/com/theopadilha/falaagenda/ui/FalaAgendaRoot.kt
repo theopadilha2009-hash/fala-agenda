@@ -27,6 +27,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -51,6 +52,7 @@ import com.theopadilha.falaagenda.ui.home.DraftSaveOutcome
 import com.theopadilha.falaagenda.ui.home.HomeScreen
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
 import com.theopadilha.falaagenda.ui.home.NO_SAVE_REQUEST
+import com.theopadilha.falaagenda.ui.home.SpeechSession
 import com.theopadilha.falaagenda.ui.month.MonthSummaryScreen
 import com.theopadilha.falaagenda.ui.onboarding.OnboardingScreen
 import com.theopadilha.falaagenda.ui.settings.SettingsScreen
@@ -467,7 +469,7 @@ fun FalaAgendaRoot(
                 placeholder = "Ex.: tomar remédio amanhã às 9h",
                 confirmLabel = "Continuar",
                 understanding = speech.understanding,
-                onCancel = { nav.popBackStack() },
+                onCancel = { cancelWrite(nav, homeVm.speech) },
                 externalError = writeError,
                 onTextChanged = { writeError = null },
                 onConfirm = { text -> homeVm.speech.understand(text) },
@@ -656,6 +658,21 @@ internal sealed interface AgendaNotice {
 internal fun agendaNotice(agendaUi: AgendaUi, occurrenceId: String): AgendaNotice {
     agendaUi.sections.find(occurrenceId)?.let { return AgendaNotice.Open(it) }
     return if (agendaUi.loaded && !agendaUi.failed) AgendaNotice.Gone else AgendaNotice.Unreadable
+}
+
+/**
+ * O gesto de sair da tela de escrever — o "Cancelar" da rota `"write"`.
+ *
+ * Sair da tela é abandonar o entendimento: sem o descarte, o parse daquela fala voltava
+ * depois e publicava o rascunho com ela já na home. Ao abrir "Escrever tarefa" de novo, a
+ * rota encontrava `WriteStep.Ready` e ia para a confirmação do recado que ela abandonou,
+ * com o texto antigo na tela e sem ela ter digitado nada; a falha do parse abandonado
+ * reaparecia do mesmo jeito, como "Não consegui entender o recado" numa tela recém-aberta.
+ * A home já faz o mesmo nas duas saídas dela (ver `SpeechSession.discard`).
+ */
+internal fun cancelWrite(nav: NavController, speech: SpeechSession) {
+    speech.discard()
+    nav.popBackStack()
 }
 
 private const val NO_EPOCH_DAY = Long.MIN_VALUE

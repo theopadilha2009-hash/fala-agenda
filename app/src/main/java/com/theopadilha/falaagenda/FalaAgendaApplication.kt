@@ -32,16 +32,14 @@ class FalaAgendaApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        container = AppContainer(this)
+        container = AppContainer(this, background = appScope)
         NotificationHelper.ensureChannel(this)
         appScope.launch {
             runCatching { container.tasks.rescheduleAll() }
         }
-        // O modelo da fala offline chega em segundo plano, uma vez só. Enquanto não
-        // chega, quem ouve é o motor do sistema — por isso a falha aqui não é erro.
-        appScope.launch {
-            runCatching { container.offlineModel.installIfNeeded() }
-        }
+        // O modelo da fala offline não é mais pedido aqui. Abertura de app não é pedido
+        // de voz, e isto era 31 MB baixados em toda abertura — calados, na conta dela.
+        // Quem pede agora é o toque no microfone: ver `OfflineModelInstaller.request`.
         appScope.launch {
             collectWidgetUpdates(
                 agenda = container.tasks.observeAgenda(),

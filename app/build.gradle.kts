@@ -32,6 +32,15 @@ android {
         versionName = "0.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Só as duas ABIs de celular: arm64-v8a atende os aparelhos modernos e armeabi-v7a
+        // os antigos de 32 bits. Não sabemos qual é o dela, então as duas ficam — cortar
+        // qualquer uma delas é o único erro que faria o app não instalar. x86 e x86_64 só
+        // existem em emulador, e mips/mips64/armeabi não existem mais: juntas eram ~19 MiB
+        // de lib nativa que não serve a aparelho nenhum.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+
         buildConfigField("String", "SUPABASE_URL", "\"${localOrEnv("SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${localOrEnv("SUPABASE_ANON_KEY")}\"")
     }

@@ -113,6 +113,42 @@ class VoiceCaptureOfflineTest {
         assertThat(fake.started).isTrue()
     }
 
+    /**
+     * O modelo offline é pedido pelo toque no microfone — por onde passam o botão da
+     * home, o atalho, o "Falar" do widget e o ícone do lançador. Abrir o app não pede
+     * nada: era 31 MB por abertura.
+     */
+    @Test
+    fun pedirVozPedeOModeloOffline() {
+        var pedidos = 0
+        val controller = VoiceCaptureController(context, requestOfflineModel = { pedidos += 1 })
+
+        controller.start(context)
+        idle()
+
+        assertThat(pedidos).isEqualTo(1)
+    }
+
+    /** A troca de motor no meio da escuta não é um pedido novo — senão vira laço. */
+    @Test
+    fun trocarDeMotorDentroDaMesmaEscutaNaoPedeDeNovo() {
+        var pedidos = 0
+        val fake = FakeSource()
+        val controller = VoiceCaptureController(
+            context,
+            offline = { OfflineSpeech { fake } },
+            requestOfflineModel = { pedidos += 1 },
+        )
+
+        controller.start(context)
+        idle()
+        fake.listener?.onError(VoiceRetry.CLIENT)
+        idle()
+        advance(Duration.ofMillis(400))
+
+        assertThat(pedidos).isEqualTo(1)
+    }
+
     private class FakeSource : SpeechSource {
         var started = false
         var listener: SpeechSource.Listener? = null

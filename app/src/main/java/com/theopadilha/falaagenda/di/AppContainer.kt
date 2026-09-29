@@ -21,15 +21,26 @@ import com.theopadilha.falaagenda.reminders.ReminderScheduler
 import com.theopadilha.falaagenda.speech.OfflineModelInstaller
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoskModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 class AppContainer(
     context: Context,
     val clock: AppClock = SystemAppClock(),
+    background: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     private val appContext = context.applicationContext
     val db: AppDatabase = AppDatabase.create(appContext)
     val settings = SettingsStore(appContext)
-    val tokenStore = SecureTokenStore(appContext)
+
+    /**
+     * O keystore só é aberto quando alguém pede o token — e quem pede é a tela de
+     * ajustes, com o Supabase configurado. Antes disto a montagem do `MasterKey` e do
+     * `EncryptedSharedPreferences` acontecia em toda abertura do app, na thread
+     * principal, antes de qualquer tela, para um caminho que ela quase nunca usa.
+     */
+    val tokenStore by lazy { SecureTokenStore(appContext) }
     val supabase = SupabaseConfig(
         url = BuildConfig.SUPABASE_URL.trim(),
         anonKey = BuildConfig.SUPABASE_ANON_KEY.trim(),
@@ -56,10 +67,15 @@ class AppContainer(
         isAiEnabled = { supabase.isConfigured && !tokenStore.token().isNullOrBlank() },
     )
     val activation = ActivationClient(supabase)
+    val offlineModel = OfflineModelInstaller(appContext)
     // Sem o modelo baixado isto é null e a fala segue no motor do sistema, como antes.
     // A consulta é por escuta, não uma vez só: o download pode terminar com o app aberto.
     // O motor resolvido, esse, é um por processo — quem o guarda e o fecha é o VoskModel.
-    val voice = VoiceCaptureController(appContext, offline = { VoskModel.offlineSpeech(appContext) })
-    val offlineModel = OfflineModelInstaller(appContext)
+    // O download, esse, quem pede é a própria escuta: abrir o app não é pedido de voz.
+    val voice = VoiceCaptureController(
+        appContext,
+        offline = { VoskModel.offlineSpeech(appContext) },
+        requestOfflineModel = { offlineModel.request(background) },
+    )
     val updater = AppUpdater(appContext)
 }

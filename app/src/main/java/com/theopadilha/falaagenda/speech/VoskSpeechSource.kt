@@ -119,6 +119,13 @@ class VoskSpeechSource(
             // classe já marcada, como `NoClassDefFoundError`) — a família toda é
             // `LinkageError`. Sem pegar isto aqui, o erro sobe pela thread `vosk-escuta`,
             // que não tem handler, e em aparelho isso derruba o processo.
+            //
+            // E ele condena o motor offline pelo resto do processo: a classe que não
+            // ligou não liga depois, então tentar de novo a cada toque é só pagar a
+            // falha de novo e deixar o microfone lento. Microfone ocupado e modelo pela
+            // metade continuam sendo `Exception`, e esses o motor resolve sozinho — quem
+            // cai ali segue tentando o offline na escuta seguinte.
+            VoiceEngine.condemnOffline()
             emit { it.onError(VoiceRetry.CLIENT) }
         } finally {
             releaseRecord()

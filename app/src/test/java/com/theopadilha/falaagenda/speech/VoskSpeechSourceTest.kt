@@ -48,6 +48,9 @@ class VoskSpeechSourceTest {
     fun setUp() {
         // Sem a permissão o `start` nem abre a thread, e o teste passaria pelo motivo errado.
         shadowOf(context as Application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        // O motor condenado é estado do processo, e o sandbox dos testes é um só: quem
+        // condena num caso não pode decidir a escolha do caso seguinte.
+        VoiceEngine.forgetOfflineCondemnation()
     }
 
     @Test
@@ -65,6 +68,39 @@ class VoskSpeechSourceTest {
         }
 
         assertThat(erros).containsExactly(VoiceRetry.CLIENT)
+    }
+
+    /**
+     * A falha de ligação não é do momento: a classe nativa fica marcada e toda escuta
+     * seguinte falha igual, pagando a carga quebrada antes de cair no motor do sistema.
+     * Para ela isso é o microfone lento em todo toque. Uma vez condenado, o offline sai
+     * da escolha deste processo — o próximo toque já nasce no motor de sempre.
+     */
+    @Test
+    fun falhaDeLigacaoCondenaOMotorOfflinePeloRestoDoProcesso() {
+        escutar { throw UnsatisfiedLinkError("libvosk.so não carregou") }
+
+        assertThat(
+            VoiceEngine.initial(
+                recognitionAvailable = true,
+                onDeviceAvailable = true,
+                offlineAvailable = true,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.IN_APP_DEFAULT)
+    }
+
+    /** Microfone ocupado, modelo pela metade: a escuta seguinte pode dar certo. */
+    @Test
+    fun falhaQueNaoEhDeLigacaoNaoCondenaOMotorOffline() {
+        escutar { throw IllegalStateException("microfone ocupado") }
+
+        assertThat(
+            VoiceEngine.initial(
+                recognitionAvailable = true,
+                onDeviceAvailable = true,
+                offlineAvailable = true,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.OFFLINE_VOSK)
     }
 
     /** Escuta até o fim e devolve os erros que chegaram na tela, na ordem. */

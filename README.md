@@ -50,10 +50,11 @@ O parser local é determinístico. Só se o resultado ficar **ambíguo**, a IA e
 
 ## Privacidade
 
-- Tarefas, áudio e histórico **não** sobem para a nuvem.
+- Tarefas e histórico **não** sobem para servidor nosso, e o aplicativo **nunca envia áudio** a servidor nenhum. Antes do modelo de fala offline estar instalado, porém, quem ouve é o motor do celular — que pode usar a rede (ver abaixo).
 - Backup automático do Android está desligado para o banco e preferências.
-- Códigos de ativação são armazenados no servidor só como hash. O token do aparelho fica no Keystore (`EncryptedSharedPreferences`).
-- `parse-reminder` não grava transcript nem título. Logs mínimos, sem PII.
+- Códigos de ativação são armazenados no servidor só como hash. O token do aparelho fica no Keystore (`EncryptedSharedPreferences`). **Se o Keystore não puder ser montado**, ele cai para `SharedPreferences` comum, **sem cifra**, para o aplicativo não ficar sem falar com o servidor — não é o caminho normal, e não há aviso na tela.
+- **O texto do recado chega à OpenAI, e só por aí.** Quando o parse local fica **ambíguo**, a ajuda por IA está ativada e há rede, o aplicativo envia `transcript`, `now`, `timezone` e `locale` para a Edge Function `parse-reminder`, que repassa o mesmo texto a `api.openai.com` (`OPENAI_MODEL`, padrão `gpt-5-nano`) para virar rascunho. Nem o aplicativo nem a função guardam transcript ou título — mas **a OpenAI recebe o texto**, e a política de retenção dela é a que vale. Sem ativação, sem rede, ou com o parse local resolvido sozinho, nada sai do aparelho.
+- O aplicativo baixa **uma vez** o modelo de fala offline: no primeiro toque no microfone, 31 MB de `alphacephei.com` (`vosk-model-small-pt-0.3`, host fixo e SHA-256 conferido). É ele que transcreve no próprio aparelho, sem rede.
 - Sem URL/chave Supabase o aplicativo funciona normalmente e a ajuda extra aparece como **não ativada**.
 - **No APK de release as duas são obrigatórias**: o workflow lê os secrets `SUPABASE_URL` e `SUPABASE_ANON_KEY`, confere o **formato** dos dois e **falha o build** se faltarem, se a URL não for exatamente o host do projeto ou se a chave não for uma anon/public. Depois de compilar, o gate confere que os dois valores estão **dentro do dex**. Antes disso os releases saíam sem a ajuda extra — o gate existe para não repetir.
 

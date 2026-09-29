@@ -67,12 +67,7 @@ object NotificationHelper {
             Log.w(TAG, "Lembrete $occurrenceId não emitido: notificações bloqueadas para o app")
             return ReminderDelivery.BLOCKED
         }
-        val open = PendingIntent.getActivity(
-            context,
-            AlarmIds.requestCode(occurrenceId, AlarmIds.ACTION_OPEN),
-            AlarmIds.openIntent(context, occurrenceId),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val open = openPending(context, occurrenceId)
         val complete = actionPending(context, occurrenceId, seriesId, AlarmIds.ACTION_COMPLETE)
         val snooze = actionPending(context, occurrenceId, seriesId, AlarmIds.ACTION_SNOOZE)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -88,7 +83,7 @@ object NotificationHelper {
             .build()
         return try {
             NotificationManagerCompat.from(context)
-                .notify(AlarmIds.requestCode(occurrenceId, "notif"), notification)
+                .notify(AlarmIds.requestCode(occurrenceId, AlarmIds.NOTIF_REMINDER), notification)
             if (remindersWillBeSilent(context)) {
                 Log.w(TAG, "Lembrete $occurrenceId apareceu sem som: canal $CHANNEL_ID rebaixado")
             }
@@ -99,9 +94,73 @@ object NotificationHelper {
         }
     }
 
-    fun cancel(context: Context, occurrenceId: String) {
-        NotificationManagerCompat.from(context).cancel(AlarmIds.requestCode(occurrenceId, "notif"))
+    /**
+     * Ela tocou num botão da notificação e a ação não pegou: a ocorrência saiu da agenda entre o
+     * aviso e o toque. Sem isto o lembrete só desaparecia — e, no "adiar", ela ficava esperando
+     * um aviso que ninguém agendou. No remédio, o remédio que não toca.
+     *
+     * Sai no mesmo canal do lembrete, que é onde ela já sabe procurar; um canal novo não teria
+     * som nem permissão garantidos. Não leva botões: a ação que ela tocou é justamente a que
+     * não pegou, e oferecê-la de novo só repetiria a falha.
+     */
+    fun showActionNotApplied(context: Context, occurrenceId: String, action: String) {
+        ensureChannel(context)
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            Log.w(TAG, "Aviso de ação não aplicada $occurrenceId não emitido: notificações bloqueadas")
+            return
+        }
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(context.getString(actionNotAppliedTitle(action)))
+            .setContentText(context.getString(actionNotAppliedText(action)))
+            .setContentIntent(openPending(context, occurrenceId))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify(
+                AlarmIds.requestCode(occurrenceId, AlarmIds.NOTIF_NOT_APPLIED),
+                notification,
+            )
+            // Aqui ela precisa notar: um aviso mudo é quase tão ruim quanto nenhum.
+            if (remindersWillBeSilent(context)) {
+                Log.w(TAG, "Aviso de ação não aplicada $occurrenceId apareceu sem som: canal rebaixado")
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Aviso de ação não aplicada $occurrenceId recusado pelo sistema", e)
+        }
     }
+
+    /**
+     * O aviso muda com o que ela tentou fazer: "concluir" e "adiar" terminam em histórias
+     * diferentes na cabeça dela — no "adiar" o que não pode ficar por dizer é que outro aviso não
+     * vai tocar. Ação sem texto próprio cai no genérico: vago é melhor do que mudo.
+     */
+    fun actionNotAppliedTitle(action: String): Int = when (action) {
+        AlarmIds.ACTION_COMPLETE -> R.string.action_not_applied_title_complete
+        AlarmIds.ACTION_SNOOZE -> R.string.action_not_applied_title_snooze
+        else -> R.string.action_not_applied_title
+    }
+
+    fun actionNotAppliedText(action: String): Int = when (action) {
+        AlarmIds.ACTION_COMPLETE -> R.string.action_not_applied_text_complete
+        AlarmIds.ACTION_SNOOZE -> R.string.action_not_applied_text_snooze
+        else -> R.string.action_not_applied_text
+    }
+
+    fun cancel(context: Context, occurrenceId: String) {
+        NotificationManagerCompat.from(context)
+            .cancel(AlarmIds.requestCode(occurrenceId, AlarmIds.NOTIF_REMINDER))
+    }
+
+    private fun openPending(context: Context, occurrenceId: String): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            AlarmIds.requestCode(occurrenceId, AlarmIds.ACTION_OPEN),
+            AlarmIds.openIntent(context, occurrenceId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
     private fun actionPending(
         context: Context,

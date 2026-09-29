@@ -12,7 +12,8 @@ class AlarmIdsTest {
             AlarmIds.requestCode(id, AlarmIds.ACTION_COMPLETE),
             AlarmIds.requestCode(id, AlarmIds.ACTION_SNOOZE),
             AlarmIds.requestCode(id, AlarmIds.ACTION_OPEN),
-            AlarmIds.requestCode(id, "notif"),
+            AlarmIds.requestCode(id, AlarmIds.NOTIF_REMINDER),
+            AlarmIds.requestCode(id, AlarmIds.NOTIF_NOT_APPLIED),
         )
         assertThat(codes.toSet()).hasSize(codes.size)
     }

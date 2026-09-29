@@ -123,6 +123,69 @@ class NotificationHelperTest {
         assertThat(NotificationHelper.remindersWillBeSilent(contexto)).isTrue()
     }
 
+    @Test
+    fun avisoDeAcaoNaoAplicadaNaoTomaOIdDoLembrete() {
+        liberarNotificacoes()
+        NotificationHelper.showReminder(contexto, ocorrencia, "s1", "Vitamina")
+
+        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+
+        assertThat(shadowOf(gerente).size()).isEqualTo(2)
+        assertThat(shadowOf(gerente).getNotification(idDoLembrete())).isNotNull()
+        assertThat(shadowOf(gerente).getNotification(idDoAviso())).isNotNull()
+    }
+
+    @Test
+    fun avisoDeAcaoNaoAplicadaSaiNoCanalDoLembrete() {
+        liberarNotificacoes()
+
+        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+
+        assertThat(shadowOf(gerente).getNotification(idDoAviso())!!.channelId)
+            .isEqualTo(NotificationHelper.CHANNEL_ID)
+    }
+
+    @Test
+    fun semPermissaoOAvisoDeAcaoNaoAplicadaNaoEhPublicado() {
+        liberarNotificacoes()
+        shadowOf(gerente).setNotificationsEnabled(false)
+
+        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+
+        assertThat(shadowOf(gerente).size()).isEqualTo(0)
+    }
+
+    @Test
+    fun cadaAcaoQuePodeFalharTemTituloETextoProprios() {
+        val acoes = listOf(AlarmIds.ACTION_COMPLETE, AlarmIds.ACTION_SNOOZE, "acao-sem-texto-proprio")
+
+        assertThat(acoes.map { NotificationHelper.actionNotAppliedTitle(it) }.toSet()).hasSize(acoes.size)
+        assertThat(acoes.map { NotificationHelper.actionNotAppliedText(it) }.toSet()).hasSize(acoes.size)
+    }
+
+    @Test
+    fun oAvisoPublicadoUsaOTextoEscolhidoParaAAcao() {
+        liberarNotificacoes()
+
+        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val doAdiar = textoDoAviso()
+
+        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_COMPLETE)
+        val doConcluir = textoDoAviso()
+
+        assertThat(doAdiar).isEqualTo(
+            contexto.getString(NotificationHelper.actionNotAppliedText(AlarmIds.ACTION_SNOOZE)),
+        )
+        assertThat(doAdiar).isNotEqualTo(doConcluir)
+    }
+
+    private fun idDoLembrete() = AlarmIds.requestCode(ocorrencia, AlarmIds.NOTIF_REMINDER)
+
+    private fun idDoAviso() = AlarmIds.requestCode(ocorrencia, AlarmIds.NOTIF_NOT_APPLIED)
+
+    private fun textoDoAviso(): String =
+        shadowOf(gerente).getNotification(idDoAviso()).extras.getString(Notification.EXTRA_TEXT)!!
+
     private fun criarCanal(importancia: Int) {
         gerente.createNotificationChannel(
             NotificationChannel(NotificationHelper.CHANNEL_ID, "Lembretes", importancia),
@@ -136,11 +199,11 @@ class NotificationHelperTest {
     private class RecursosSemTextos(base: Resources) :
         Resources(base.assets, base.displayMetrics, base.configuration) {
 
-        override fun getString(id: Int): String = TEXTO
+        override fun getString(id: Int): String = TEXTO + id
 
-        override fun getString(id: Int, vararg formatArgs: Any?): String = TEXTO
+        override fun getString(id: Int, vararg formatArgs: Any?): String = TEXTO + id
 
-        override fun getText(id: Int): CharSequence = TEXTO
+        override fun getText(id: Int): CharSequence = TEXTO + id
     }
 
     private companion object {

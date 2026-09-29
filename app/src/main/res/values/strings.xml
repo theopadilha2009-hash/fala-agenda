@@ -45,6 +45,12 @@
     <string name="open_alarm_settings">Abrir ajustes de alarme</string>
     <string name="empty_today">Nada para hoje. Toque no microfone para falar um recado.</string>
     <string name="notification_channel">Lembretes</string>
+    <string name="action_not_applied_title">Não deu para fazer isso</string>
+    <string name="action_not_applied_text">Esta tarefa não está mais na agenda e nada foi gravado.</string>
+    <string name="action_not_applied_title_complete">Não deu para concluir</string>
+    <string name="action_not_applied_text_complete">Esta tarefa não está mais na agenda. Nada foi marcado como feito.</string>
+    <string name="action_not_applied_title_snooze">Não deu para adiar</string>
+    <string name="action_not_applied_text_snooze">Nada foi adiado e não vai tocar outro aviso.</string>
     <string name="missing_fields">Falta preencher: %1$s</string>
     <string name="recurrence_none">Só uma vez</string>
     <string name="recurrence_daily">Todos os dias</string>

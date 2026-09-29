@@ -181,15 +181,14 @@ fun HomeScreen(
             scope.launch { snackbar.showSnackbar(failure) }
         }
     }
-    // Ela tocou "Ligar avisos" e o sistema negou — ou nem mostrou o diálogo, quando a
-    // negativa já é definitiva. Nesse caso o pedido de permissão não tem mais como
-    // resolver, e só os Ajustes devolvem os avisos: sem esta saída o toque não fazia nada
-    // e o lembrete continuava mudo para sempre.
+    // O pedido de avisos voltou sem permissão, ou nem chegou a aparecer — negada de vez, ou
+    // permissão já dada e o que falta é o canal. Nos dois casos só os Ajustes devolvem os
+    // avisos: sem esta saída o toque não fazia nada e o lembrete continuava mudo para sempre.
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         alerts = NotificationHelper.reminderAlerts(context)
-        if (!granted && !canStillAskNotifications(context)) {
+        if (needsNotificationSettings(granted, alerts, canStillAskNotifications(context))) {
             openOrReport(
                 appNotificationSettings(context),
                 "Não consegui abrir os ajustes de aviso deste celular.",
@@ -581,16 +580,12 @@ fun HomeScreen(
                                 Text(card.text, style = MaterialTheme.typography.bodyMedium)
                                 TextButton(
                                     onClick = {
-                                        when (alertFix(alerts, canStillAskNotifications(context))) {
+                                        when (alertFix(alerts)) {
                                             AlertFix.ASK_NOTIFICATIONS -> notificationPermission.launch(
                                                 Manifest.permission.POST_NOTIFICATIONS,
                                             )
                                             AlertFix.OPEN_CHANNEL_SETTINGS -> openOrReport(
                                                 channelNotificationSettings(context),
-                                                "Não consegui abrir os ajustes de aviso deste celular.",
-                                            )
-                                            AlertFix.OPEN_APP_SETTINGS -> openOrReport(
-                                                appNotificationSettings(context),
                                                 "Não consegui abrir os ajustes de aviso deste celular.",
                                             )
                                             null -> Unit
@@ -795,8 +790,9 @@ private fun hasMicPermission(context: Context): Boolean =
 
 /**
  * O sistema ainda mostra o diálogo de permissão de avisos? Falso antes do primeiro pedido e
- * depois de uma negativa definitiva — e é o desfecho do pedido que separa os dois. Só quem
- * chama sabe em que momento está perguntando, por isso a resposta crua daqui.
+ * depois de uma negativa definitiva — e é o desfecho do pedido que separa os dois. Por isso
+ * esta resposta crua é consultada DEPOIS do pedido (ver [needsNotificationSettings]), nunca
+ * antes, para decidir se vale a pena pedir.
  */
 private fun canStillAskNotifications(context: Context): Boolean {
     // Antes do Android 13 a permissão de aviso não é pedida em diálogo: ou os avisos estão

@@ -5,7 +5,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -31,33 +30,31 @@ object NotificationHelper {
     /**
      * O que os avisos deste aplicativo estão valendo agora.
      *
-     * [OFF] é a permissão negada: nada é postado, e sem aviso não existe lembrete —
-     * [showReminder] devolve [ReminderDelivery.BLOCKED] e o degrau da escada fica sem
-     * entrega. [QUIET] é o canal rebaixado: a notificação sai, mas muda, e para quem
-     * depende dela ser lembrada isso é quase o mesmo que não sair.
+     * [OFF] é "nada aparece": a permissão negada ou o canal DESLIGADO nas configurações — os
+     * dois terminam em [ReminderDelivery.BLOCKED], e o degrau da escada fica sem entrega.
+     * [QUIET] é o canal rebaixado: a notificação sai, mas muda, e para quem depende dela ser
+     * lembrada isso é quase o mesmo que não sair.
      */
     enum class ReminderAlerts { OK, OFF, QUIET }
 
     fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = context.getSystemService(NotificationManager::class.java)
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                context.getString(R.string.notification_channel),
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                description = "Avisos de tarefas no horário combinado"
-                enableVibration(true)
-            }
-            manager.createNotificationChannel(channel)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            context.getString(R.string.notification_channel),
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "Avisos de tarefas no horário combinado"
+            enableVibration(true)
         }
+        manager.createNotificationChannel(channel)
     }
 
     /**
      * O próximo lembrete vai sair sem som, sem vibração e sem aparecer sobre a tela?
-     * Acontece quando o app está sem permissão de notificação ou quando o canal foi
-     * rebaixado nas configurações do aparelho. A resposta vem do canal gravado, não
-     * da constante: o sistema ignora uma criação que tente subir a importância de volta.
+     * Acontece quando o app está sem permissão de notificação, quando o canal foi desligado
+     * ou quando foi rebaixado nas configurações do aparelho. A resposta vem do canal gravado,
+     * não da constante: o sistema ignora uma criação que tente subir a importância de volta.
      *
      * O aplicativo NÃO toca som próprio quando esta resposta é `true`, e é de propósito. Uma
      * notificação bloqueada não sai de jeito nenhum, e um `MediaPlayer` não conserta isso —
@@ -82,10 +79,21 @@ object NotificationHelper {
      */
     fun reminderAlerts(context: Context): ReminderAlerts {
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return ReminderAlerts.OFF
+        if (channelDisabled(context)) return ReminderAlerts.OFF
         val importance = context.getSystemService(NotificationManager::class.java)
             ?.getNotificationChannel(CHANNEL_ID)?.importance ?: return ReminderAlerts.OK
         return if (importance < NotificationManager.IMPORTANCE_DEFAULT) ReminderAlerts.QUIET else ReminderAlerts.OK
     }
+
+    /**
+     * O canal foi DESLIGADO nas configurações — [NotificationManager.IMPORTANCE_NONE]. Não é o
+     * mesmo que rebaixado: um canal desligado não exibe notificação nenhuma, então quem o conta
+     * como "sem som" registra como entregue um aviso que ela nunca viu, gasta o degrau da escada
+     * e para de insistir.
+     */
+    private fun channelDisabled(context: Context): Boolean =
+        context.getSystemService(NotificationManager::class.java)
+            ?.getNotificationChannel(CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE
 
     fun showReminder(
         context: Context,
@@ -96,6 +104,13 @@ object NotificationHelper {
         ensureChannel(context)
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
             Log.w(TAG, "Lembrete $occurrenceId não emitido: notificações bloqueadas para o app")
+            return ReminderDelivery.BLOCKED
+        }
+        // Canal desligado também não emite nada. Sem esta saída o `notify` daqui de baixo não
+        // lançaria nada e a resposta seria POSTED: o degrau era gasto e a repetição seguinte
+        // armada — para o sistema descartar as duas, calado.
+        if (channelDisabled(context)) {
+            Log.w(TAG, "Lembrete $occurrenceId não emitido: canal $CHANNEL_ID desligado")
             return ReminderDelivery.BLOCKED
         }
         val open = openPending(context, occurrenceId)

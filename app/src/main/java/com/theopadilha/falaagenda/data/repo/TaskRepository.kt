@@ -468,59 +468,69 @@ class TaskRepository(
     /**
      * [deliver] é quem mostra o aviso para ela — o repositório não conhece notificação, mas
      * precisa do desfecho para saber se o degrau da escada foi gasto. A chamada acontece
-     * dentro do mesmo `writer`: a decisão de avançar e a entrega têm de ser o mesmo ato, ou
-     * uma varredura de ciclo de vida no meio arquiva como não realizada a ocorrência cujo
-     * aviso acabou de tocar. Devolve `true` quando o aviso chegou até ela.
+     * dentro do mesmo `writer` de quem decide o degrau: decidir e entregar são o mesmo ato,
+     * sem um estado intermediário que outra escrita possa ler entre um e outro.
      */
     suspend fun onAlarmFired(
         occurrenceId: String,
-        deliver: suspend (title: String, seriesId: String) -> Boolean,
-    ): AlarmFireResult = writer.withLock {
+        deliver: suspend (title: String, seriesId: String) -> Delivery,
+    ) = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return@withLock AlarmFireResult(false)
-        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock AlarmFireResult(false)
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock
         val occurrence = row.toDomain()
         // O disparo é resolvido antes da varredura de ciclo de vida: a varredura marcaria
         // como não realizada a ocorrência de ontem cujo aviso está tocando neste instante
         // (adiado pela noite, ele só chega no fim do silêncio) e o lembrete morreria
         // exatamente quando devia soar.
-        val result = if (occurrence.status == OccurrenceStatus.PENDING && !series.isEnded) {
+        if (occurrence.status == OccurrenceStatus.PENDING && !series.isEnded) {
             fire(occurrence, series, now, deliver)
         } else {
             scheduler.cancel(occurrenceId)
-            AlarmFireResult(false)
         }
         applyLifecycle(series, now)
-        result
     }
 
     private suspend fun fire(
         occurrence: TaskOccurrence,
         series: TaskSeries,
         now: Instant,
-        deliver: suspend (title: String, seriesId: String) -> Boolean,
-    ): AlarmFireResult {
+        deliver: suspend (title: String, seriesId: String) -> Delivery,
+    ) {
         val quiet = scheduler.quietHours()
         if (occurrence.reminderStep > 0 && ReminderPolicy.isInQuietHours(now, series.zoneId, quiet)) {
             val resume = ReminderPolicy.shiftOutOfQuietHours(now, series.zoneId, quiet)
             val deferred = occurrence.copy(nextReminderAt = resume)
             val scheduled = scheduler.schedule(deferred, series, first = false)
             occurrenceDao.upsert(deferred.copy(inexactAlarm = scheduled.inexact).toEntity())
-            return AlarmFireResult(false)
+            return
         }
         // O degrau só é gasto quando o aviso chega até ela. Antes a escada avançava aqui e só
         // depois o receiver tentava mostrar a notificação: com o aviso bloqueado (permissão
         // negada, canal desligado, sistema recusando), ela perdia a hora marcada E o degrau
         // seguinte — calada, e sem chance de o próximo tocar.
         //
-        // Não avançar deixaria o lembrete parado para sempre, porque o alarme já disparou e a
-        // escada não tem passo seguinte a armar: por isso a mesma ocorrência volta à fila pela
-        // recuperação, com o mesmo degrau. O custo é a tentativa insistir enquanto a
-        // notificação estiver bloqueada; quem encerra é a virada do dia (a ocorrência nunca
-        // entregue vira não realizada), que também cancela o alarme.
-        if (!deliver(series.title, series.id)) {
-            scheduler.scheduleRecovery(occurrence.id, now.plusSeconds(DELIVERY_RETRY_DELAY_SECONDS))
-            return AlarmFireResult(false)
+        // O que fazer sem entrega depende do desfecho, e quem traduz notificação para [Delivery]
+        // é o receiver: aqui não se conhece canal nem permissão.
+        when (deliver(series.title, series.id)) {
+            Delivery.ARRIVED -> Unit
+            // Transitório: o sistema recusou agora, pode aceitar daqui a cinco minutos. A
+            // ocorrência volta à fila com o mesmo degrau; quem encerra a insistência é a virada
+            // do dia, que a marca como não realizada e cancela o alarme.
+            Delivery.FAILED -> {
+                scheduler.scheduleRecovery(occurrence.id, now.plusSeconds(DELIVERY_RETRY_DELAY_SECONDS))
+                return
+            }
+            // Permanente: permissão negada ou canal desligado. Insistir de cinco em cinco
+            // minutos até a meia-noite não muda nada disso — só acorda o processo e gasta
+            // binder no aparelho dela, ~250 vezes por dia, por causa de uma chave que ela
+            // desligou sem querer. Nada é reagendado: a ocorrência fica pendente com a hora
+            // marcada e a varredura da virada do dia a marca como não realizada (o terminador).
+            //
+            // Se ela religar os avisos depois, o aviso perdido NÃO volta — foi o preço de não
+            // insistir. Quem conta isso para ela é o cartão de avisos da home, que existe
+            // justamente enquanto os avisos estiverem desligados.
+            Delivery.BLOCKED -> return
         }
         val nextStep = ReminderPolicy.nextStep(occurrence.reminderStep)
         val interval = ReminderPolicy.intervalAfterStep(occurrence.reminderStep)
@@ -539,7 +549,6 @@ class TaskRepository(
         )
         val scheduled = scheduler.schedule(updated, series, first = false)
         occurrenceDao.upsert(updated.copy(inexactAlarm = scheduled.inexact).toEntity())
-        return AlarmFireResult(delivered = true)
     }
 
     /**
@@ -643,10 +652,11 @@ class TaskRepository(
         const val RECOVERY_DELAY_SECONDS = 60L
 
         /**
-         * Quanto esperar antes de tentar de novo o aviso que não chegou até ela. Curto o
-         * bastante para o lembrete do horário ainda valer como lembrete; longo o bastante
-         * para uma notificação bloqueada não virar tempestade de disparos — a janela de
-         * entrega pendente limita a insistência ao dia da ocorrência.
+         * Quanto esperar antes de tentar de novo o aviso que não chegou até ela por uma falha
+         * transitória — o sistema recusando a notificação agora. Curto o bastante para o
+         * lembrete do horário ainda valer como lembrete; longo o bastante para a insistência
+         * não virar tempestade de disparos, e a janela de entrega pendente a limita ao dia da
+         * ocorrência. O aviso [Delivery.BLOCKED] nem chega aqui: ver [TaskRepository.fire].
          */
         const val DELIVERY_RETRY_DELAY_SECONDS = 300L
 
@@ -671,13 +681,25 @@ data class SchedulerOutcome(
 )
 
 /**
- * Ver [TaskRepository.onAlarmFired]: o aviso chegou até ela, e por isso o degrau foi gasto.
- * O título e a série vão para quem entrega o aviso pelo `deliver`, não por aqui — quem lê
- * este resultado é quem precisa saber se a escada andou.
+ * Como terminou a tentativa de mostrar o aviso, do ponto de vista de quem decide a escada.
+ * Quem traduz notificação para isto é o receiver — ver [TaskRepository.onAlarmFired]: o
+ * repositório não conhece canal nem permissão, e é o desfecho que diz o que fazer com o
+ * degrau.
  */
-data class AlarmFireResult(
-    val delivered: Boolean,
-)
+enum class Delivery {
+    /** O aviso chegou até ela: o degrau é gasto e a repetição seguinte é armada. */
+    ARRIVED,
+
+    /**
+     * Bloqueio permanente: permissão negada ou canal desligado. Não é uma tentativa que possa
+     * dar certo daqui a cinco minutos, então nada é reagendado — a ocorrência fica pendente com
+     * a hora marcada e a varredura da virada do dia a marca como não realizada.
+     */
+    BLOCKED,
+
+    /** Falha transitória (o sistema recusou a notificação agora): a ocorrência volta à fila. */
+    FAILED,
+}
 
 data class RetryResult(
     val date: java.time.LocalDate,

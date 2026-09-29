@@ -32,29 +32,50 @@ internal fun reminderAlertCard(alerts: ReminderAlerts): ReminderAlertCard? = whe
 
 /** O que o toque no cartão precisa abrir. */
 internal enum class AlertFix {
-    /** O sistema ainda mostra o pedido de permissão: é ele que resolve. */
+    /** O sistema ainda pode mostrar o pedido de permissão: é ele que resolve. */
     ASK_NOTIFICATIONS,
 
-    /** O sistema não mostra mais o pedido (negada de vez): só os Ajustes do aplicativo. */
-    OPEN_APP_SETTINGS,
-
-    /** O canal foi rebaixado: os Ajustes do canal, que é onde o som mora. */
+    /** O canal foi rebaixado ou desligado: os Ajustes do canal, que é onde o som mora. */
     OPEN_CHANNEL_SETTINGS,
 }
 
 /**
- * O caminho que devolve os avisos. [canAskAgain] diz se o sistema ainda mostra o diálogo de
- * permissão.
+ * O caminho que devolve os avisos.
  *
  * Canal rebaixado vai direto aos Ajustes DO CANAL: é lá que está o som, e mandá-la aos
  * Ajustes gerais do aplicativo a deixaria procurando numa tela onde não há nada para ligar.
- * Sem permissão o pedido vem primeiro; só quando ele não é mais possível é que os Ajustes
- * passam a ser o caminho — sem isso o toque não fazia nada e não havia como voltar atrás
- * dentro do aplicativo.
+ *
+ * Com os avisos DESLIGADOS o pedido de permissão vem primeiro, sempre, sem adivinhar antes.
+ * `shouldShowRequestPermissionRationale` devolve `false` tanto para "negou de vez" quanto para
+ * "nunca perguntamos" — e o aparelho dela, com `targetSdk` novo, nasce no segundo caso: a
+ * permissão é negada de partida e nunca houve pedido. Adivinhar antes mandava direto aos
+ * Ajustes, e o diálogo do sistema nunca aparecia. Quem não tem mais diálogo para mostrar
+ * responde na hora, e é [needsNotificationSettings] que decide o resto.
  */
-internal fun alertFix(alerts: ReminderAlerts, canAskAgain: Boolean): AlertFix? = when (alerts) {
+internal fun alertFix(alerts: ReminderAlerts): AlertFix? = when (alerts) {
     ReminderAlerts.OK -> null
-    ReminderAlerts.OFF ->
-        if (canAskAgain) AlertFix.ASK_NOTIFICATIONS else AlertFix.OPEN_APP_SETTINGS
+    ReminderAlerts.OFF -> AlertFix.ASK_NOTIFICATIONS
     ReminderAlerts.QUIET -> AlertFix.OPEN_CHANNEL_SETTINGS
+}
+
+/**
+ * O pedido de permissão já voltou (`granted`) e ainda é preciso abrir os Ajustes?
+ *
+ * Falso quando o pedido resolveu — e também quando ela recusou AGORA com o sistema ainda
+ * disposto a mostrar o diálogo: aí o cartão fica e o próximo toque pergunta de novo, e
+ * mandá-la aos Ajustes seria pular o pedido.
+ *
+ * Verdadeiro nos dois desfechos em que o diálogo não veio, que significam a mesma coisa: ela
+ * negou de vez ([canAskAgain] falso), ou o sistema nem abriu o diálogo porque a permissão já
+ * estava dada — e o que falta, então, é o canal ou o interruptor geral do aplicativo. A tela de
+ * avisos do aplicativo lista os dois, que é onde se liga de volta.
+ */
+internal fun needsNotificationSettings(
+    granted: Boolean,
+    alerts: ReminderAlerts,
+    canAskAgain: Boolean,
+): Boolean = when {
+    alerts != ReminderAlerts.OFF -> false
+    !granted && canAskAgain -> false
+    else -> true
 }

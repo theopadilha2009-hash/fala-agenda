@@ -61,7 +61,7 @@ class FalaAnunciadaTest {
         state.value = VoiceState.LISTENING
         // Antes: nenhum nó era região viva e a descrição do microfone continuava "Parar de
         // ouvir" nos dois estados — este segundo assert não tinha o que encontrar.
-        compose.onNode(anunciado).assertTextEquals("ASSERCAO QUEBRADA DE PROPOSITO")
+        compose.onNode(anunciado).assertTextEquals("Pode falar agora")
     }
 
     @Test

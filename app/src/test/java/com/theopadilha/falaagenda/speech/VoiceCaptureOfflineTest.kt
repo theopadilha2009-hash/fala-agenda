@@ -31,6 +31,9 @@ class VoiceCaptureOfflineTest {
     @Before
     fun setUp() {
         ShadowSpeechRecognizer.setIsOnDeviceRecognitionAvailable(true)
+        // O motor condenado é estado do processo, e o sandbox dos testes é um só: quem
+        // condena num caso não pode decidir a escolha do caso seguinte.
+        VoiceEngine.forgetOfflineCondemnation()
     }
 
     @Test
@@ -111,6 +114,24 @@ class VoiceCaptureOfflineTest {
         idle()
 
         assertThat(fake.started).isTrue()
+    }
+
+    /**
+     * O toque seguinte ao que descobriu a lib quebrada não paga a tentativa de novo: o
+     * offline já está fora da escolha deste processo, e o microfone abre no motor de
+     * sempre. Era isto que ela sentia como "o microfone demora toda vez".
+     */
+    @Test
+    fun depoisDaLibQuebradaAProximaEscutaNemTentaOMotorOffline() {
+        VoiceEngine.condemnOffline()
+        val fake = FakeSource()
+        val controller = VoiceCaptureController(context, offline = { OfflineSpeech { fake } })
+
+        controller.start(context)
+        idle()
+
+        assertThat(fake.started).isFalse()
+        assertThat(ShadowSpeechRecognizer.getLatestSpeechRecognizer()).isNotNull()
     }
 
     /**

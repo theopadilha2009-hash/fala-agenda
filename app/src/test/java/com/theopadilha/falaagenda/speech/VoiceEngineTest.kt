@@ -1,9 +1,17 @@
 package com.theopadilha.falaagenda.speech
 
 import com.google.common.truth.Truth.assertThat
+import org.junit.Before
 import org.junit.Test
 
 class VoiceEngineTest {
+    @Before
+    fun setUp() {
+        // O motor condenado é estado do processo, e a JVM dos testes é uma só: quem
+        // condena num caso não pode decidir a escolha do caso seguinte.
+        VoiceEngine.forgetOfflineCondemnation()
+    }
+
     @Test
     fun motorPadraoQuandoReconhecimentoExiste() {
         assertThat(VoiceEngine.initial(recognitionAvailable = true, onDeviceAvailable = false))
@@ -152,5 +160,47 @@ class VoiceEngineTest {
                 onDeviceAvailable = true,
             ),
         ).isEqualTo(VoiceEngine.Capture.SYSTEM_UI)
+    }
+
+    /** Com a lib condenada o modelo instalado deixa de contar: o toque já nasce no sistema. */
+    @Test
+    fun offlineCondenadoNaoEhMaisEscolhidoNesteProcesso() {
+        VoiceEngine.condemnOffline()
+
+        assertThat(
+            VoiceEngine.initial(
+                recognitionAvailable = true,
+                onDeviceAvailable = true,
+                offlineAvailable = true,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.IN_APP_DEFAULT)
+    }
+
+    @Test
+    fun offlineCondenadoSemReconhecimentoVaiParaTelaDoCelular() {
+        VoiceEngine.condemnOffline()
+
+        assertThat(
+            VoiceEngine.initial(
+                recognitionAvailable = false,
+                onDeviceAvailable = false,
+                offlineAvailable = true,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.SYSTEM_UI)
+    }
+
+    /** A condenação é do processo inteiro, não de uma escuta: só o teste a esquece. */
+    @Test
+    fun esquecerACondenacaoDevolveOMotorOfflineAEscolha() {
+        VoiceEngine.condemnOffline()
+        VoiceEngine.forgetOfflineCondemnation()
+
+        assertThat(
+            VoiceEngine.initial(
+                recognitionAvailable = true,
+                onDeviceAvailable = true,
+                offlineAvailable = true,
+            ),
+        ).isEqualTo(VoiceEngine.Capture.OFFLINE_VOSK)
     }
 }

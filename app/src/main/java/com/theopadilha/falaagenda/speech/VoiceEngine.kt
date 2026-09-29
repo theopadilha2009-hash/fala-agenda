@@ -14,12 +14,37 @@ object VoiceEngine {
     const val NETWORK = 2
     const val INSUFFICIENT_PERMISSIONS = 9
 
+    /**
+     * A lib nativa não liga neste processo. `LinkageError` não é falha do momento: a
+     * classe fica marcada e toda tentativa seguinte falha igual, sempre depois de pagar
+     * a carga quebrada antes de cair no motor do sistema. Era isto o que deixava o
+     * microfone lento em *todo* toque — o offline era escolhido, falhava, e a escuta
+     * seguinte o escolhia de novo. Condenado uma vez, ele sai da escolha até o processo
+     * morrer; o modelo instalado não é tocado, e o motor do sistema assume.
+     */
+    @Volatile
+    private var offlineCondemned = false
+
+    /** Quem viu o `LinkageError` condena: hoje, o [VoskSpeechSource]. */
+    fun condemnOffline() {
+        offlineCondemned = true
+    }
+
+    /**
+     * Devolve o offline à escolha. É do teste: no aparelho a falha de ligação vale para
+     * o processo inteiro, mas a JVM dos testes é uma só para todos os métodos — sem isto
+     * um caso que condena decide a escolha do caso seguinte.
+     */
+    fun forgetOfflineCondemnation() {
+        offlineCondemned = false
+    }
+
     fun initial(
         recognitionAvailable: Boolean,
         onDeviceAvailable: Boolean,
         offlineAvailable: Boolean = false,
     ): Capture = when {
-        offlineAvailable -> Capture.OFFLINE_VOSK
+        offlineAvailable && !offlineCondemned -> Capture.OFFLINE_VOSK
         recognitionAvailable -> Capture.IN_APP_DEFAULT
         onDeviceAvailable -> Capture.IN_APP_ON_DEVICE
         else -> Capture.SYSTEM_UI

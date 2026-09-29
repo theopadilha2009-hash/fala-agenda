@@ -31,6 +31,7 @@ data class VoiceUiState(
 class VoiceCaptureController(
     private val context: Context,
     private val offline: () -> OfflineSpeech? = { null },
+    private val requestOfflineModel: () -> Unit = {},
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var source: SpeechSource? = null
@@ -77,6 +78,11 @@ class VoiceCaptureController(
     fun start(host: Context = context) {
         if (session) stopInternal()
         hostContext = host
+        // Por aqui passam todos os pedidos de voz — o botão da home, o atalho ACTION_SPEAK,
+        // o "Falar" do widget e o ícone do lançador. É o pedido dela que pede o modelo
+        // offline; abrir o app não pede nada. E não segura: `requestOfflineModel` só
+        // enfileira o download, enquanto a escuta começa no motor do sistema.
+        requestOfflineModel()
         val speechHost = unwrapActivity(host)
         offlineSpeech = offline()
         backend = VoiceEngine.initial(

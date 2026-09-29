@@ -36,16 +36,25 @@ motor melhor depois.
 
 ## Como liga
 
-O app baixa o modelo sozinho, em segundo plano, na primeira abertura em que houver
-rede (`OfflineModelInstaller`, disparado pelo `FalaAgendaApplication`). Enquanto não
-chega, quem ouve é o motor do sistema — a fala funciona desde o primeiro segundo, e a
-escuta seguinte já usa o offline. A consulta é feita a cada escuta, não uma vez só, para
-o modelo que chega com o app aberto não ficar esperando a próxima abertura.
+O app baixa o modelo sozinho, em segundo plano, quando ela pede voz — o toque no
+microfone (`OfflineModelInstaller.request`, chamado pelo `VoiceCaptureController.start`,
+por onde passam o botão da home, o `ACTION_SPEAK`, o "Falar" do widget e o atalho do
+lançador). Abrir o app não pede nada: era 31 MB baixados em toda abertura, calados, na
+conta dela. Enquanto o modelo não chega, quem ouve é o motor do sistema — a fala funciona
+desde o primeiro segundo, e a escuta seguinte já usa o offline. A consulta é feita a cada
+escuta, não uma vez só, para o modelo que chega com o app aberto não ficar esperando o
+próximo toque.
+
+Regras do pedido: uma tentativa por pedido de voz (sem laço — quem decide insistir é ela,
+ao pedir voz de novo), uma de cada vez (dois toques seguidos não baixam 62 MB) e nada em
+rede medida (`isActiveNetworkMetered`), onde os 31 MB esperam uma rede sem custo. A falha
+vai para o log com o motivo: o modelo que não chega tem que contar por quê, senão a fala
+fica no motor do sistema sem ninguém saber que era para ser offline.
 
 O download segue as mesmas regras do instalador de APK: host em allowlist
 (`alphacephei.com`, a fonte oficial dos modelos do Vosk), sha256 fixo no código,
 teto de tamanho, extração que recusa caminho para fora da pasta, e nada pela metade
-ficando no lugar — falhou, apaga e tenta de novo na próxima abertura.
+ficando no lugar — falhou, apaga e tenta de novo no próximo pedido de voz.
 
 Para quem preferir provisionar antes, sem depender do primeiro uso:
 
@@ -76,9 +85,11 @@ motor do sistema.
   contra servidor local (MockWebServer) e prova allowlist, soma, extração e instalação;
   o que falta provar é o download real de 31 MB com a rede do aparelho, incluindo o
   que acontece se ela cair no meio.
-- **Tamanho do APK**: as .so do Vosk somam ~17 MB nas duas ABIs de celular (mais ~19 MB
-  em x86/x86_64, que só servem a emulador). APK debug: 32,4 MB. Vale decidir sobre
-  ABI splits antes de distribuir.
+- **Tamanho do APK**: o `abiFilters` cortou x86, x86_64, mips, mips64 e armeabi — ~20 MB
+  de lib nativa que só existia para emulador ou para arquitetura morta (os 20 MB são o
+  tamanho em disco; no APK as `.so` vão comprimidas, a 36% do original). Ficaram
+  arm64-v8a e armeabi-v7a, porque não se sabe qual é a do aparelho dela. APK debug:
+  32,41 MB → 25,20 MB.
 - **WER não medido.** A escolha do Vosk small-pt foi por encaixe (31 MB, streaming
   nativo, Apache-2.0), não por precisão medida. Antes de virar o motor padrão, vale
   comparar com o motor do sistema em áudios reais dela.

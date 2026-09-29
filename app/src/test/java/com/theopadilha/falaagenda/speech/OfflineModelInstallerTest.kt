@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.speech
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import java.io.ByteArrayOutputStream
@@ -10,6 +11,11 @@ import java.net.InetAddress
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -21,6 +27,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 
 /**
  * O modelo chega pela rede e passa a ser o ouvido do app: arquivo trocado no caminho
@@ -37,9 +44,13 @@ import org.robolectric.annotation.Config
     packageName = "com.theopadilha.falaagenda",
     application = Application::class,
 )
+@OptIn(ExperimentalCoroutinesApi::class)
 class OfflineModelInstallerTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private lateinit var server: MockWebServer
+
+    /** A etiqueta com que o instalador conta o que deu errado. */
+    private val TAG = "FalaAgendaOffline"
 
     @Before
     fun subirServidor() {
@@ -128,12 +139,77 @@ class OfflineModelInstallerTest {
         ).isFalse()
     }
 
+    /**
+     * O gatilho é o pedido de voz, não a abertura do app: cada toque no microfone pede
+     * o modelo uma vez, e nada desce em rede medida — o mesmo download custaria 31 MB
+     * na conta dela, calado, e o motor do sistema atende enquanto isso.
+     */
+    @Test
+    fun redeMedidaNaoPedeOModelo() {
+        val zip = modeloZip()
+        server.enqueue(MockResponse().setBody(Buffer().write(zip)))
+
+        val pedido = installer(metered = true)
+            .request(CoroutineScope(Dispatchers.Unconfined), url(), sha256(zip))
+
+        assertThat(server.requestCount).isEqualTo(0)
+        assertThat(pedido).isNull()
+        assertThat(VoskModel.isInstalled(context)).isFalse()
+    }
+
+    @Test
+    fun pedidoComDownloadEmCursoNaoBaixaDeNovo() {
+        val scheduler = TestCoroutineScheduler()
+        val escopo = CoroutineScope(StandardTestDispatcher(scheduler))
+        val zip = modeloZip()
+        server.enqueue(MockResponse().setBody(Buffer().write(zip)))
+        val instalador = installer()
+
+        val primeiro = instalador.request(escopo, url(), sha256(zip))
+        val segundo = instalador.request(escopo, url(), sha256(zip))
+
+        assertThat(segundo).isNull()
+        assertThat(primeiro).isNotNull()
+
+        scheduler.advanceUntilIdle()
+        assertThat(VoskModel.isInstalled(context)).isTrue()
+        assertThat(server.requestCount).isEqualTo(1)
+    }
+
+    @Test
+    fun pedidoBaixaOModeloQuandoNaoTemNadaInstalado() {
+        val zip = modeloZip()
+        server.enqueue(MockResponse().setBody(Buffer().write(zip)))
+
+        val pedido = installer()
+            .request(CoroutineScope(Dispatchers.Unconfined), url(), sha256(zip))
+
+        assertThat(pedido).isNotNull()
+        assertThat(server.requestCount).isEqualTo(1)
+        assertThat(VoskModel.isInstalled(context)).isTrue()
+    }
+
+    /** O modelo que nunca chega tem que contar por quê: sem log, ninguém sabe. */
+    @Test
+    fun falhaDoDownloadFicaNoLogComOMotivo() {
+        val zip = modeloZip()
+        server.enqueue(MockResponse().setBody(Buffer().write(zip)))
+        ShadowLog.clear()
+
+        val instalou = installer().installIfNeeded(url(), "0".repeat(64))
+
+        assertThat(instalou).isFalse()
+        val avisos = ShadowLog.getLogs().filter { it.type == Log.WARN && it.tag == TAG }
+        assertThat(avisos).hasSize(1)
+        assertThat(avisos.first().throwable).isNotNull()
+    }
+
     private fun url(): String = "http://alphacephei.com:${server.port}/modelo.zip"
 
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private fun installer(): OfflineModelInstaller = OfflineModelInstaller(
+    private fun installer(metered: Boolean = false): OfflineModelInstaller = OfflineModelInstaller(
         context = context,
         http = OkHttpClient.Builder()
             .dns(
@@ -143,6 +219,7 @@ class OfflineModelInstallerTest {
                 },
             )
             .build(),
+        isMetered = { metered },
     )
 
     private fun modeloZip(

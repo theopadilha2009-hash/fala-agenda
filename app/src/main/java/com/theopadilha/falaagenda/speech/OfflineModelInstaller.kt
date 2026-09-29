@@ -1,14 +1,21 @@
 package com.theopadilha.falaagenda.speech
 
 import android.content.Context
+import android.util.Log
 import com.theopadilha.falaagenda.BuildConfig
 import com.theopadilha.falaagenda.platform.AppUpdater
 import java.io.File
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipInputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
+
+private const val TAG = "FalaAgendaOffline"
 
 /**
  * Baixa o modelo do Vosk e instala em `filesDir`. Mesmo molde do AppUpdater: host
@@ -19,6 +26,10 @@ import okhttp3.Request
  * A soma é do arquivo publicado em alphacephei.com, a fonte oficial dos modelos do
  * Vosk. Ela é o que separa o modelo de um arquivo trocado no caminho: sem bater, o
  * download é descartado inteiro.
+ *
+ * Quem pede é [request], e quem chama é o toque no microfone. O download não é
+ * disparado pela abertura do app: 31 MB por abertura, calados, é caro demais para
+ * um pedido de voz que ela não fez.
  */
 class OfflineModelInstaller(
     private val context: Context,
@@ -27,7 +38,49 @@ class OfflineModelInstaller(
         .followRedirects(true)
         .followSslRedirects(true)
         .build(),
+    private val isMetered: () -> Boolean = { false },
 ) {
+    /** Um download de cada vez: dois pedidos de voz seguidos não baixam 62 MB. */
+    private val emCurso = AtomicBoolean(false)
+
+    /**
+     * Pede o modelo sem segurar quem chamou, e devolve o trabalho iniciado — ou `null`
+     * quando não é para baixar agora.
+     *
+     * Aqui não se espera nada: quem chama é a escuta, no toque do microfone, e a fala
+     * não depende deste download. Ela começa no motor do sistema, como sempre, e a
+     * escuta seguinte já encontra o offline.
+     *
+     * Sem laço e sem retentativa própria: uma tentativa por pedido de voz. O download é
+     * caro, então quem decide tentar de novo é ela, ao pedir voz outra vez — e não um
+     * relógio nosso batendo num servidor de 31 MB. Rede medida fica de fora: o mesmo
+     * download sairia na conta dela, calado.
+     */
+    fun request(
+        scope: CoroutineScope,
+        source: String = SOURCE_URL,
+        sha256: String = SHA256,
+    ): Job? {
+        if (VoskModel.isInstalled(context)) return null
+        if (isMetered()) {
+            // O motor do sistema atende enquanto isso, então o download pode esperar
+            // uma rede que não cobre por byte.
+            Log.i(TAG, "rede medida: o modelo da fala offline espera uma rede sem custo")
+            return null
+        }
+        if (!emCurso.compareAndSet(false, true)) return null
+        return scope.launch {
+            try {
+                installIfNeeded(source, sha256)
+            } finally {
+                // Uma tentativa por pedido de voz, e sem laço: falhou, a próxima tentativa
+                // é o próximo toque no microfone — o único momento em que este download
+                // caro se justifica.
+                emCurso.set(false)
+            }
+        }
+    }
+
     /** `true` quando o modelo está instalado ao fim — inclusive se já estava. */
     fun installIfNeeded(
         source: String = SOURCE_URL,
@@ -49,8 +102,12 @@ class OfflineModelInstaller(
             destino.deleteRecursively()
             if (!baixado.renameTo(destino)) error("não deu para guardar o modelo")
             true
-        } catch (_: Exception) {
-            // Modelo pela metade nunca fica passando por bom: a próxima abertura tenta de novo.
+        } catch (erro: Exception) {
+            // Modelo pela metade nunca fica passando por bom: o próximo pedido de voz
+            // tenta de novo. E o motivo vai para o log — sem ele, o modelo que nunca
+            // chegou não conta a ninguém por quê, e a fala fica no motor do sistema
+            // sem que ninguém saiba que era para ser offline.
+            Log.w(TAG, "o modelo da fala offline não chegou; a escuta segue no motor do sistema", erro)
             false
         } finally {
             zip.delete()

@@ -147,6 +147,14 @@ object AgendaFormat {
         return "Hoje no Fala Agenda:\n$body"
     }
 
+    /**
+     * `leituraFalhou` é a leitura da agenda que não voltou. Ela não diz "não há nada": diz
+     * "não deu para ler" — e a seção que a falha carrega é a da última leitura boa, então
+     * uma agenda vazia por falha é indistinguível de uma agenda vazia de verdade. Havendo
+     * próximo, ele continua na frase (pode estar velho, e é o cartão da home que avisa
+     * isso); não havendo, a frase do vazio vira a de falha — a saudação fica, que o relógio
+     * não depende da leitura.
+     */
     fun headline(
         nowTime: LocalTime,
         today: LocalDate,
@@ -154,6 +162,7 @@ object AgendaFormat {
         nextDate: LocalDate?,
         nextTime: LocalTime?,
         missedCount: Int,
+        leituraFalhou: Boolean = false,
     ): String {
         val greet = greeting(nowTime)
         val next = if (nextTitle != null && nextDate != null && nextTime != null) {
@@ -164,10 +173,19 @@ object AgendaFormat {
             // [lateMark]); o cabeçalho diz o mesmo.
             val lead = if (lateMark(nextDate, today) != null) "Atrasada" else "Próximo"
             " $lead: $nextTitle, $whenLabel às ${time(nextTime)}."
+        } else if (leituraFalhou) {
+            // Sem próximo não há o que mostrar, e afirmar ausência é justamente o que a
+            // falha não pode fazer: é a mentira que o cartão da home existe para matar,
+            // saindo do lugar mais visível da tela.
+            " Não consegui ler a sua agenda agora."
         } else {
             " Nada marcado agora."
         }
-        val missed = when (missedCount) {
+        // O contador fala do que se leu: ao lado da frase de falha ele se contradiz ("Não
+        // consegui ler a sua agenda agora. 2 recados ficaram para trás."). Com próximo a
+        // frase é a de sempre e ele fica — ali o dado veio de uma leitura real.
+        val semProximo = nextTitle == null || nextDate == null || nextTime == null
+        val missed = if (leituraFalhou && semProximo) "" else when (missedCount) {
             0 -> ""
             1 -> " 1 recado ficou para trás."
             else -> " $missedCount recados ficaram para trás."

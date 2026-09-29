@@ -476,15 +476,12 @@ fun HomeScreen(
                     .padding(top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
                 Text(
-                    AgendaFormat.headline(
+                    homeHeadline(
+                        agenda = agenda,
+                        failed = agendaUi.failed,
                         nowTime = LocalTime.now(),
                         today = LocalDate.now(),
-                        nextTitle = next?.series?.title,
-                        nextDate = next?.occurrence?.localDate,
-                        nextTime = next?.series?.localTime,
-                        missedCount = agenda.missed.size,
                     ),
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier
@@ -865,6 +862,32 @@ private suspend fun SnackbarHostState.say(
  */
 internal fun showsSpeakInvite(agenda: AgendaSections, failed: Boolean): Boolean =
     !failed && agenda.today.isEmpty() && agenda.upcoming.isEmpty()
+
+/**
+ * A manchete do topo, montada fora do composable para o teste poder perguntar por ela.
+ *
+ * É ela que o `heading()` marca na semântica, o marco por onde o TalkBack navega — e era ela
+ * que ficava de fora do `failed`: com a leitura falhando e sem próximo, a home dizia "Nada
+ * marcado agora" em cima do cartão "Não consegui ler a sua agenda" logo abaixo. O horário
+ * entra por parâmetro para a decisão ser pura; quem lê o relógio é o composable.
+ */
+internal fun homeHeadline(
+    agenda: AgendaSections,
+    failed: Boolean,
+    nowTime: LocalTime,
+    today: LocalDate,
+): String {
+    val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
+    return AgendaFormat.headline(
+        nowTime = nowTime,
+        today = today,
+        nextTitle = next?.series?.title,
+        nextDate = next?.occurrence?.localDate,
+        nextTime = next?.series?.localTime,
+        missedCount = agenda.missed.size,
+        leituraFalhou = failed,
+    )
+}
 
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==

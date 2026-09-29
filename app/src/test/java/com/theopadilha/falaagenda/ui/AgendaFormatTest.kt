@@ -160,4 +160,75 @@ class AgendaFormatTest {
         )
         assertThat(text).isEqualTo("Bom dia. Atrasada: Tomar remédio, ontem às 08:00.")
     }
+
+    /**
+     * A leitura que falhou não é uma agenda sem nada: é uma agenda que não foi lida, e a
+     * seção que ela carrega é a da última leitura boa. Sem próximo, o "Nada marcado agora"
+     * saía do topo da tela dizendo o contrário do cartão logo abaixo — a mesma mentira que
+     * o cartão existe para matar. O contador de recados sai junto: ele fala do que se leu.
+     */
+    @Test
+    fun headlineSemProximoComALeituraFalhando() {
+        val text = AgendaFormat.headline(
+            nowTime = LocalTime.of(19, 0),
+            today = today,
+            nextTitle = null,
+            nextDate = null,
+            nextTime = null,
+            missedCount = 2,
+            leituraFalhou = true,
+        )
+
+        assertThat(text).isEqualTo("Boa noite. Não consegui ler a sua agenda agora.")
+        assertThat(text).doesNotContain("Nada marcado agora")
+        assertThat(text).doesNotContain("recado")
+    }
+
+    /**
+     * Com próximo, o que existe continua na tela: a falha devolve o dado da última leitura
+     * boa, e uma leitura que falhou não pode afirmar ausência — mas a presença veio de uma
+     * leitura real. Trocá-la por uma frase de falha apagaria da tela uma tarefa que existe.
+     * Quem diz que a lista pode estar velha é o cartão da home, por escrito.
+     */
+    @Test
+    fun headlineComProximoComALeituraFalhandoMantemOProximo() {
+        val text = AgendaFormat.headline(
+            nowTime = LocalTime.of(8, 0),
+            today = today,
+            nextTitle = "Tomar remédio",
+            nextDate = today,
+            nextTime = LocalTime.of(9, 0),
+            missedCount = 2,
+            leituraFalhou = true,
+        )
+        assertThat(text)
+            .isEqualTo("Bom dia. Próximo: Tomar remédio, hoje às 09:00. 2 recados ficaram para trás.")
+        assertThat(text).doesNotContain("Não consegui ler")
+
+        val atrasada = AgendaFormat.headline(
+            nowTime = LocalTime.of(8, 0),
+            today = today,
+            nextTitle = "Tomar remédio",
+            nextDate = today.minusDays(1),
+            nextTime = LocalTime.of(8, 0),
+            missedCount = 0,
+            leituraFalhou = true,
+        )
+        assertThat(atrasada).isEqualTo("Bom dia. Atrasada: Tomar remédio, ontem às 08:00.")
+    }
+
+    /** Sem falha o vazio continua sendo o vazio: o parâmetro novo não mexeu no de sempre. */
+    @Test
+    fun headlineVazioSemFalhaContinuaONadaMarcado() {
+        val text = AgendaFormat.headline(
+            nowTime = LocalTime.of(19, 0),
+            today = today,
+            nextTitle = null,
+            nextDate = null,
+            nextTime = null,
+            missedCount = 0,
+            leituraFalhou = false,
+        )
+        assertThat(text).isEqualTo("Boa noite. Nada marcado agora.")
+    }
 }

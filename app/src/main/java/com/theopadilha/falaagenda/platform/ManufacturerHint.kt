@@ -17,6 +17,17 @@ import com.theopadilha.falaagenda.domain.reminder.VendorSettings
 object ManufacturerHint {
     fun guide(): ManufacturerGuide = ManufacturerGuide.forManufacturer(Build.MANUFACTURER)
 
+    /**
+     * O guia tem dois caminhos e um não pode engolir o outro: o autostart do fabricante não
+     * é a economia de bateria do sistema, que é o que faz o `isBatteryUnrestricted` virar
+     * verdadeiro e o app sair do Doze. Quando o fabricante tem tela própria, a tela de
+     * bateria continua sendo oferecida à parte enquanto ela não estiver liberada.
+     *
+     * (Sem tela própria o botão principal já é a de bateria, e aí não há o que duplicar.)
+     */
+    fun needsSystemBatteryScreen(guide: ManufacturerGuide, bateriaLiberada: Boolean): Boolean =
+        !bateriaLiberada && guide.shortcut != VendorSettings.NONE
+
     fun shortcutIntent(settings: VendorSettings): Intent? {
         val tela = when (settings) {
             VendorSettings.NONE -> return null

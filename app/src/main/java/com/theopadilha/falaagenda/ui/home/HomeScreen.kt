@@ -137,7 +137,9 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var widgetHelp by remember { mutableStateOf(false) }
-    var batteryHelp by remember { mutableStateOf(false) }
+    // `rememberSaveable`: o guia tem cinco passos em fonte grande, e o giro do aparelho
+    // devolvia ela para a home no meio da leitura.
+    var batteryHelp by rememberSaveable { mutableStateOf(false) }
     // O erro e o rascunho da caixa somem juntos: os dois atravessam o giro (ver o
     // `quickDraft` abaixo).
     var quickSaveError by rememberSaveable { mutableStateOf<String?>(null) }
@@ -722,8 +724,19 @@ fun HomeScreen(
         // A tela do fabricante pode não existir neste aparelho. Aí os passos continuam na
         // frente dela — fechar a caixa e mandar um aviso de 4 s deixaria ela sem nada.
         var ajustesNaoAbriram by remember { mutableStateOf(false) }
-        val nomeDaMarca = guia.manufacturer?.displayName
-        val telaDoFabricante = ManufacturerHint.shortcutIntent(guia.shortcut) != null
+        // O autostart do fabricante não é a economia de bateria do sistema: sem este botão,
+        // quem tem tela própria (Xiaomi, Huawei, OnePlus, Asus, Vivo, Oppo, Realme) ficava
+        // sem nenhum caminho para o `isBatteryUnrestricted` virar verdadeiro.
+        val mostrarBateriaDoSistema = ManufacturerHint.needsSystemBatteryScreen(guia, batteryOk)
+        val marcaDoAtalho = guia.shortcutBrand
+
+        val abrir: (Intent) -> Unit = { intent ->
+            if (DeviceIntents.open(context, intent)) {
+                batteryHelp = false
+            } else {
+                ajustesNaoAbriram = true
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { batteryHelp = false },
@@ -739,28 +752,37 @@ fun HomeScreen(
                     guia.steps.forEachIndexed { indice, passo ->
                         Text("${indice + 1}. $passo")
                     }
-                    Text(guia.credit, style = MaterialTheme.typography.labelSmall)
+                    // O crédito é do dontkillmyapp: o texto genérico é do próprio app e não
+                    // pode vir assinado por eles.
+                    guia.credit?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
                     if (ajustesNaoAbriram) {
                         Text("Não consegui abrir os ajustes deste celular. Faça os passos acima na mão.")
+                    }
+                    if (mostrarBateriaDoSistema) {
+                        TextButton(
+                            onClick = { abrir(DeviceIntents.batterySettings(context)) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 56.dp),
+                        ) {
+                            Text("Abrir os ajustes de bateria do celular")
+                        }
                     }
                 }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val atalho = ManufacturerHint.shortcutIntent(guia.shortcut)
-                            ?: DeviceIntents.batterySettings(context)
-                        if (DeviceIntents.open(context, atalho)) {
-                            batteryHelp = false
-                        } else {
-                            ajustesNaoAbriram = true
-                        }
+                        abrir(
+                            ManufacturerHint.shortcutIntent(guia.shortcut)
+                                ?: DeviceIntents.batterySettings(context),
+                        )
                     },
                     modifier = Modifier.heightIn(min = 56.dp),
                 ) {
                     Text(
-                        if (telaDoFabricante && nomeDaMarca != null) {
-                            "Abrir ajustes do $nomeDaMarca"
+                        if (marcaDoAtalho != null) {
+                            "Abrir ajustes do $marcaDoAtalho"
                         } else {
                             "Abrir ajustes de bateria"
                         },

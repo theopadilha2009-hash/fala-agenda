@@ -9,8 +9,12 @@ import java.util.Locale
  * "Redmi", "HUAWEI TECHNOLOGIES CO., LTD."): [of] normaliza antes de comparar, e o que
  * não é reconhecido cai no guia genérico — nunca fica sem instrução.
  *
- * Os passos vêm do dontkillmyapp.com (urbandroid-team/dont-kill-my-app, CC-BY-4.0),
- * traduzidos e encurtados para uma tela só. Ver `third_party/dontkillmyapp/NOTICE.md`.
+ * Os passos das marcas com página no dontkillmyapp.com (urbandroid-team/dont-kill-my-app,
+ * CC-BY-4.0) vêm de lá, traduzidos e encurtados para uma tela só; o crédito acompanha
+ * esses guias e só eles. Os do Honor são adaptados da página da Huawei (não existe página
+ * de Honor) e os de LG e TCL são o caminho padrão do Android, escrito aqui — nenhum dos
+ * três se apresenta como conteúdo do dontkillmyapp.
+ * Ver `third_party/dontkillmyapp/NOTICE.md`.
  */
 enum class Manufacturer(val displayName: String, private val aliases: List<String>) {
     XIAOMI("Xiaomi", listOf("xiaomi", "redmi", "poco")),
@@ -20,7 +24,10 @@ enum class Manufacturer(val displayName: String, private val aliases: List<Strin
     HONOR("Honor", listOf("honor")),
     ONEPLUS("OnePlus", listOf("oneplus")),
     ASUS("Asus", listOf("asus", "asustek")),
-    NOKIA("Nokia", listOf("nokia", "hmd")),
+    // "hmd global" fica de fora de propósito: é o que os Nokia antigos respondiam, mas
+    // desde 2024 também é o que respondem os aparelhos da própria HMD, que não são Nokia e
+    // não têm a tela que este guia descreve.
+    NOKIA("Nokia", listOf("nokia")),
     VIVO("Vivo", listOf("vivo")),
     OPPO("Oppo", listOf("oppo")),
     REALME("Realme", listOf("realme")),
@@ -30,6 +37,8 @@ enum class Manufacturer(val displayName: String, private val aliases: List<Strin
     ;
 
     companion object {
+        private val SEPARADOR = Regex("[^\\p{L}\\p{N}]+")
+
         fun of(raw: String?): Manufacturer? {
             val nome = normalize(raw)
             if (nome.isEmpty()) return null
@@ -40,16 +49,19 @@ enum class Manufacturer(val displayName: String, private val aliases: List<Strin
         internal fun normalize(raw: String?): String =
             raw.orEmpty()
                 .lowercase(Locale.ROOT)
-                .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+                .replace(SEPARADOR, " ")
                 .trim()
 
         /**
-         * O nome pode vir inteiro ("motorola mobility llc") ou já curto ("redmi"): o apelido
-         * vale no começo ou como palavra solta, nunca no meio de outra palavra — "vivo" não
-         * pode casar com "vivobook".
+         * O nome pode vir inteiro ("motorola mobility llc", "Beijing Xiaomi") ou já curto
+         * ("redmi"): o apelido vale no começo ou no fim, ou como palavra solta no meio,
+         * nunca dentro de outra palavra — "vivo" não pode casar com "vivobook".
          */
         private fun bate(nome: String, apelido: String): Boolean =
-            nome == apelido || nome.startsWith("$apelido ") || nome.contains(" $apelido ")
+            nome == apelido ||
+                nome.startsWith("$apelido ") ||
+                nome.endsWith(" $apelido") ||
+                nome.contains(" $apelido ")
     }
 }
 
@@ -67,35 +79,50 @@ class ManufacturerGuide private constructor(
     val title: String,
     val steps: List<String>,
     val shortcut: VendorSettings,
+    /** Só nos guias que saem do dontkillmyapp: o texto genérico é do próprio app. */
+    val credit: String?,
 ) {
-    /** Exigência do CC-BY-4.0 do dontkillmyapp: o crédito acompanha o conteúdo. */
-    val credit: String = CREDIT
+    /**
+     * Nome da marca quando existe tela do fabricante para abrir — é o rótulo do botão.
+     * Nulo quer dizer "sem tela própria": aí quem atende é a tela de bateria do sistema.
+     */
+    val shortcutBrand: String? =
+        if (shortcut == VendorSettings.NONE) null else manufacturer?.displayName
 
     companion object {
         const val CREDIT = "Instruções baseadas em dontkillmyapp.com"
 
+        private val GENERIC_STEPS = listOf(
+            "Toque em Ajustes e depois em Aplicativos.",
+            "Toque em Fala Agenda e depois em Bateria (ou Economia de bateria).",
+            "Escolha Sem restrições.",
+            "Se o aviso continuar falhando, procure nos Ajustes por início automático " +
+                "(ou autostart) e ligue o Fala Agenda lá.",
+        )
+
         val GENERIC = ManufacturerGuide(
             manufacturer = null,
             title = "No seu celular, deixe o Fala Agenda assim:",
-            steps = listOf(
-                "Toque em Ajustes e depois em Aplicativos.",
-                "Toque em Fala Agenda e depois em Bateria (ou Economia de bateria).",
-                "Escolha Sem restrições.",
-                "Se o aviso continuar falhando, procure nos Ajustes por início automático " +
-                    "(ou autostart) e ligue o Fala Agenda lá.",
-            ),
+            steps = GENERIC_STEPS,
             shortcut = VendorSettings.NONE,
+            credit = null,
         )
 
         fun forManufacturer(raw: String?): ManufacturerGuide {
             val marca = Manufacturer.of(raw) ?: return GENERIC
+            val passos = stepsOf(marca)
             return ManufacturerGuide(
                 manufacturer = marca,
-                title = "No seu ${marca.displayName}, deixe o Fala Agenda assim:",
-                // Marca conhecida que o dontkillmyapp não cobre (LG, TCL) fica com o caminho
-                // padrão — o nome dela no título já diz que o guia olhou para este aparelho.
-                steps = stepsOf(marca) ?: GENERIC.steps,
+                title = if (passos == null) {
+                    // Prometer "no seu LG" e entregar o caminho do Android seria dizer que
+                    // existe ajuste de LG para fazer — não existe, e é isso que ela precisa ler.
+                    "No seu ${marca.displayName}, não há ajuste extra do fabricante. Faça assim:"
+                } else {
+                    "No seu ${marca.displayName}, deixe o Fala Agenda assim:"
+                },
+                steps = passos ?: GENERIC_STEPS,
                 shortcut = shortcutOf(marca),
+                credit = if (passos == null) null else CREDIT,
             )
         }
 
@@ -138,6 +165,7 @@ class ManufacturerGuide private constructor(
                 "Volte em Aplicativos, em Fala Agenda, em Consumo de energia e ligue Executar em segundo plano.",
             )
 
+            // Adaptado da página da Huawei: o dontkillmyapp não tem página de Honor.
             Manufacturer.HONOR -> listOf(
                 "Toque em Ajustes e depois em Aplicativos, em Fala Agenda.",
                 "Toque em Consumo de energia e escolha Gerenciar manualmente.",
@@ -160,10 +188,12 @@ class ManufacturerGuide private constructor(
             )
 
             Manufacturer.NOKIA -> listOf(
-                "Toque em Ajustes e depois em Aplicativos, em Ver todos os aplicativos.",
-                "Toque no menu do canto de cima e ligue Mostrar sistema.",
-                "Procure Power saver (Economia de energia), abra e toque em Forçar parada.",
-                "Confira em Aplicativos, em Fala Agenda, em Bateria que está Sem restrições.",
+                "Toque em Ajustes e depois em Aplicativos, em Fala Agenda.",
+                "Toque em Bateria e escolha Sem restrições.",
+                "Se aparecer Power saver (Economia de energia) na lista de aplicativos, abra e " +
+                    "toque em Forçar parada. Nos Nokia de 2019 para cá a HMD já desligou ele, " +
+                    "e aí não há nada para fazer aqui.",
+                "Volte em Ajustes, entre em Bateria e desligue a Bateria adaptativa.",
             )
 
             Manufacturer.VIVO -> listOf(
@@ -193,7 +223,8 @@ class ManufacturerGuide private constructor(
                 "Toque em Aplicativos, em Fala Agenda, em Bateria e escolha Sem restrições.",
             )
 
-            // O dontkillmyapp não tem página destas duas: vale o caminho padrão.
+            // O dontkillmyapp não tem página destas duas: vale o caminho padrão, e o título
+            // diz isso em vez de prometer um ajuste que não existe.
             Manufacturer.TCL, Manufacturer.LG -> null
         }
     }

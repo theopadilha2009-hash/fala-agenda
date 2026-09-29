@@ -44,7 +44,6 @@ class ManufacturerGuideTest {
             "ONEPLUS" to Manufacturer.ONEPLUS,
             "ASUS" to Manufacturer.ASUS,
             "Nokia" to Manufacturer.NOKIA,
-            "HMD Global" to Manufacturer.NOKIA,
             "vivo" to Manufacturer.VIVO,
             "VIVO" to Manufacturer.VIVO,
             "OPPO" to Manufacturer.OPPO,
@@ -104,14 +103,73 @@ class ManufacturerGuideTest {
     }
 
     @Test
-    fun todoGuiaDizDeOndeVemAInstrucao() {
-        // CC-BY-4.0 do dontkillmyapp: sem o crédito a licença não é respeitada.
-        val guias = listOf(ManufacturerGuide.GENERIC) +
-            Manufacturer.entries.map { ManufacturerGuide.forManufacturer(it.name) }
+    fun todoGuiaComPassosDoUpstreamDizDeOndeVem() {
+        // CC-BY-4.0 do dontkillmyapp: sem o crédito a licença não é respeitada — e o
+        // crédito não pode aparecer sobre texto que não é de lá (o genérico é do app).
+        Manufacturer.entries.forEach { marca ->
+            val guia = ManufacturerGuide.forManufacturer(marca.name)
+            val doUpstream = guia.steps != ManufacturerGuide.GENERIC.steps
 
-        guias.forEach { guia ->
-            assertThat(guia.credit).isEqualTo("Instruções baseadas em dontkillmyapp.com")
+            assertThat(guia.credit != null).isEqualTo(doUpstream)
         }
+        assertThat(ManufacturerGuide.GENERIC.credit).isNull()
+    }
+
+    @Test
+    fun soOCreditoDoDontkillmyappValeParaOsGuiasQueVemDeLa() {
+        assertThat(ManufacturerGuide.forManufacturer("Xiaomi").credit)
+            .isEqualTo("Instruções baseadas em dontkillmyapp.com")
+        // Honor não tem página no upstream: os passos são adaptados da página da Huawei,
+        // que é do dontkillmyapp, e o crédito segue valendo.
+        assertThat(ManufacturerGuide.forManufacturer("Honor").credit)
+            .isEqualTo("Instruções baseadas em dontkillmyapp.com")
+        assertThat(ManufacturerGuide.forManufacturer("LG").credit).isNull()
+        assertThat(ManufacturerGuide.forManufacturer("Zebra").credit).isNull()
+    }
+
+    @Test
+    fun apelidoValeNoComecoNoFimENoMeio() {
+        assertThat(fabricante("Beijing Xiaomi")).isEqualTo(Manufacturer.XIAOMI)
+        assertThat(fabricante("BBK vivo")).isEqualTo(Manufacturer.VIVO)
+        // Dentro de outra palavra não é apelido: "vivobook" não é um Vivo.
+        assertThat(fabricante("vivobook")).isNull()
+    }
+
+    @Test
+    fun aparelhoDaPropriaHMDSemSerNokiaNaoEntraNoGuiaNokia() {
+        // "HMD Global" era o que os Nokia antigos respondiam, e desde 2024 é o que respondem
+        // os aparelhos da própria HMD, que não têm a tela que o guia do Nokia descreve.
+        assertThat(fabricante("HMD Global")).isNull()
+        assertThat(fabricante("Nokia")).isEqualTo(Manufacturer.NOKIA)
+    }
+
+    @Test
+    fun oGuiaDoNokiaCarregaARessalvaDoPowerSaver() {
+        // A HMD desligou o Power saver nos aparelhos com Pie ou mais novo (8/2019): mandar
+        // ela procurar um aplicativo que não existe mais é caminho sem saída.
+        val passos = ManufacturerGuide.forManufacturer("Nokia").steps
+        val ressalva = passos.filter { it.contains("Power saver") }
+
+        assertThat(ressalva).hasSize(1)
+        assertThat(ressalva.first()).contains("2019")
+    }
+
+    @Test
+    fun oRotuloDoAtalhoSoExisteQuandoHaTelaParaAbrir() {
+        assertThat(ManufacturerGuide.forManufacturer("Xiaomi").shortcutBrand).isEqualTo("Xiaomi")
+        // Marca reconhecida sem tela própria: quem atende é a tela de bateria do sistema.
+        assertThat(ManufacturerGuide.forManufacturer("Samsung").shortcutBrand).isNull()
+        assertThat(ManufacturerGuide.forManufacturer("LG").shortcutBrand).isNull()
+        assertThat(ManufacturerGuide.GENERIC.shortcutBrand).isNull()
+    }
+
+    @Test
+    fun marcaSemPaginaNoUpstreamNaoPrometeUmAjusteQueNaoExiste() {
+        val lg = ManufacturerGuide.forManufacturer("LG")
+
+        assertThat(lg.manufacturer).isEqualTo(Manufacturer.LG)
+        assertThat(lg.title).contains("não há ajuste extra")
+        assertThat(lg.steps).isEqualTo(ManufacturerGuide.GENERIC.steps)
     }
 
     @Test

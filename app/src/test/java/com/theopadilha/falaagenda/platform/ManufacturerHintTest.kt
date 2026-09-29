@@ -33,6 +33,13 @@ class ManufacturerHintTest {
     }
 
     @Test
+    fun aparelhoDaHMDSemSerNokiaNaoRecebeOGuiaDoNokia() {
+        ShadowBuild.setManufacturer("HMD Global")
+
+        assertThat(ManufacturerHint.guide().manufacturer).isNull()
+    }
+
+    @Test
     fun aparelhoDeMarcaQueAListaNaoCobreFicaComOTextoGenerico() {
         ShadowBuild.setManufacturer("Zebra")
 
@@ -51,6 +58,24 @@ class ManufacturerHintTest {
         assertThat(intent!!.component?.packageName).isEqualTo("com.miui.securitycenter")
         assertThat(intent.component?.className)
             .isEqualTo("com.miui.permcenter.autostart.AutoStartManagementActivity")
+    }
+
+    @Test
+    fun oAtalhoDoFabricanteNaoEngoleATelaDeBateriaDoSistema() {
+        // O autostart do fabricante não desliga a otimização de bateria: com o botão único,
+        // `isBatteryUnrestricted` (e o `batteryOk` da home) ficava falso para sempre nessas
+        // marcas, e a tela do sistema não era alcançável por lugar nenhum.
+        val xiaomi = ManufacturerGuide.forManufacturer("Xiaomi")
+
+        assertThat(ManufacturerHint.needsSystemBatteryScreen(xiaomi, bateriaLiberada = false))
+            .isTrue()
+        // Já liberada: o caminho do sistema não tem mais o que fazer.
+        assertThat(ManufacturerHint.needsSystemBatteryScreen(xiaomi, bateriaLiberada = true))
+            .isFalse()
+        // Sem tela própria o botão principal já é a de bateria: não há o que duplicar.
+        val samsung = ManufacturerGuide.forManufacturer("Samsung")
+        assertThat(ManufacturerHint.needsSystemBatteryScreen(samsung, bateriaLiberada = false))
+            .isFalse()
     }
 
     @Test

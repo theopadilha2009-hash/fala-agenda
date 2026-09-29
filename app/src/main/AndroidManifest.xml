@@ -20,8 +20,10 @@
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
-        <!-- As telas de ajuste dos fabricantes que matam o app (ManufacturerHint): sem
-             declará-las, o Android 11+ esconde o pacote e o atalho não abre. -->
+        <!-- As telas de ajuste dos fabricantes que matam o app (ManufacturerHint). O Android
+             11+ filtra a visibilidade entre pacotes, e ninguém confirmou em aparelho se isso
+             alcança um startActivity com ComponentName explícito: o bloco fica por precaução,
+             que é barato, e não como requisito verificado. -->
         <package android:name="com.miui.securitycenter" />
         <package android:name="com.huawei.systemmanager" />
         <package android:name="com.oneplus.security" />

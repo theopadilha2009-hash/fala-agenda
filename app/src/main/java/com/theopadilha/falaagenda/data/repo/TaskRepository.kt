@@ -523,9 +523,9 @@ class TaskRepository(
             }
             // Permanente: permissão negada ou canal desligado. Insistir não muda nada disso — a
             // chave é dela, e o estado só volta se ela mexer. Repetir de cinco em cinco minutos
-            // (DELIVERY_RETRY_DELAY_SECONDS) até a janela de entrega pendente fechar só acordaria
-            // o processo e gastaria binder no aparelho dela. Nada é reagendado aqui: a ocorrência
-            // fica pendente com a hora marcada.
+            // não teria como dar certo e só acordaria o processo e gastaria binder no aparelho
+            // dela, por causa de um botão que ela desligou sem querer. Nada é reagendado aqui: a
+            // ocorrência fica pendente com a hora marcada.
             //
             // O aviso não morreu, porém. Enquanto a janela estiver aberta, o `rescheduleAll` de
             // todo start rearma a ocorrência no primeiro degrau — `reminderStep` zerado e
@@ -658,8 +658,9 @@ class TaskRepository(
          * Quanto esperar antes de tentar de novo o aviso que não chegou até ela por uma falha
          * transitória — o sistema recusando a notificação agora. Curto o bastante para o
          * lembrete do horário ainda valer como lembrete; longo o bastante para a insistência
-         * não virar tempestade de disparos, e a janela de entrega pendente a limita ao dia da
-         * ocorrência. O aviso [Delivery.BLOCKED] nem chega aqui: ver [TaskRepository.fire].
+         * não virar tempestade de disparos. Quem a encerra é a virada do dia, quando a
+         * varredura marca a ocorrência como não realizada. O aviso [Delivery.BLOCKED] nem
+         * chega aqui: ver [TaskRepository.fire].
          */
         const val DELIVERY_RETRY_DELAY_SECONDS = 300L
 

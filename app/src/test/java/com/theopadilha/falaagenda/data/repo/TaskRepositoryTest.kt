@@ -681,14 +681,15 @@ class TaskRepositoryTest {
     /**
      * O aviso bloqueado (permissão negada, canal desligado) não é uma tentativa que possa dar
      * certo daqui a cinco minutos: o estado não muda sozinho. Reagendar aqui seria repetir a
-     * cada DELIVERY_RETRY_DELAY_SECONDS enquanto a janela de entrega pendente estivesse aberta,
-     * cada repetição acordando o processo e chamando o binder para nada — no aparelho dela, por
-     * causa de uma chave que ela desligou sem querer.
+     * cada DELIVERY_RETRY_DELAY_SECONDS até o dia virar, cada repetição acordando o processo e
+     * chamando o binder para nada — no aparelho dela, por causa de uma chave que ela desligou
+     * sem querer.
      *
      * Nada é reagendado, o degrau não é gasto e a ocorrência fica pendente com a hora marcada.
      * O aviso não morre nisso: dentro da janela o start seguinte o rearma e ele toca atrasado
-     * (ver o teste seguinte); passada a janela, a varredura a marca como não realizada. É o
-     * cartão da home que conta a ela que os avisos estavam desligados.
+     * (ver o teste seguinte); depois, quem a encerra é a virada do dia, quando a varredura a
+     * marca como não realizada. É o cartão da home que conta a ela que os avisos estavam
+     * desligados.
      */
     @Test
     fun avisoBloqueadoNaoReagendaNada() {
@@ -756,8 +757,9 @@ class TaskRepositoryTest {
     }
 
     /**
-     * O terminador de quem nunca foi entregue: passada a janela de entrega pendente, a
-     * varredura do dia seguinte marca a ocorrência como não realizada. Sem isto a ocorrência
+     * O terminador de quem nunca foi entregue: a varredura do dia seguinte marca a ocorrência
+     * como não realizada — a virada do dia é o que a `expirou` exige, e a janela de entrega
+     * pendente só pode adiar isso por até 6 h depois do horário marcado. Sem isto a ocorrência
      * bloqueada ficaria pendente para sempre, e a agenda dela mostraria como "vai tocar" um
      * aviso que já morreu.
      */

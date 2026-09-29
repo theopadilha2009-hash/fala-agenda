@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.theopadilha.falaagenda.FalaAgendaApplication
+import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -71,8 +72,16 @@ class ReminderActionReceiver : BroadcastReceiver() {
             try {
                 withTimeout(WORK_TIMEOUT_MS) {
                     when (intent.action) {
-                        AlarmIds.ACTION_COMPLETE -> app.container.tasks.complete(occurrenceId)
-                        AlarmIds.ACTION_SNOOZE -> app.container.tasks.snooze(occurrenceId, 30)
+                        AlarmIds.ACTION_COMPLETE -> registrarSeNaoPegou(
+                            "concluir",
+                            occurrenceId,
+                            app.container.tasks.complete(occurrenceId),
+                        )
+                        AlarmIds.ACTION_SNOOZE -> registrarSeNaoPegou(
+                            "adiar",
+                            occurrenceId,
+                            app.container.tasks.snooze(occurrenceId, 30),
+                        )
                     }
                     NotificationHelper.cancel(context, occurrenceId)
                 }
@@ -83,6 +92,21 @@ class ReminderActionReceiver : BroadcastReceiver() {
             } finally {
                 pending.finish()
             }
+        }
+    }
+
+    /**
+     * A ocorrência saiu da agenda (ou já não aceita mais aquela ação) e o toque no botão da
+     * notificação não pegou. Um receiver não tem tela: quem fala com ela é a notificação, e
+     * esta já vai embora daqui. Fica o registro — e vale saber que, no "adiar", nada foi
+     * agendado, então o aviso que ela esperava não vem.
+     *
+     * [ActionOutcome.UNCHANGED] não entra aqui de propósito: concluir o que já estava
+     * concluído é no-op legítimo, não falha.
+     */
+    private fun registrarSeNaoPegou(acao: String, occurrenceId: String, desfecho: ActionOutcome) {
+        if (desfecho == ActionOutcome.GONE) {
+            Log.w(TAG, "O \"$acao\" da notificação não pegou: $occurrenceId não está mais na agenda")
         }
     }
 }

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.data.repo.AgendaSections
+import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import com.theopadilha.falaagenda.data.repo.EditOutcome
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
@@ -512,34 +513,66 @@ class HomeViewModel(
         action = "Não consegui marcar como feito.",
         // O item vai dentro do recado: é ele que o desfazer devolve, e não "o último que
         // foi tocado" — que já pode ser outro.
-        onSuccess = { publishStatus("Feito.", StatusMessage.Undo.Complete(item)) },
+        onSuccess = { desfecho ->
+            when (desfecho) {
+                ActionOutcome.APPLIED ->
+                    publishStatus("Feito.", StatusMessage.Undo.Complete(item))
+                // Já estava feito: no-op legítimo. Um recado aqui seria alarme falso.
+                ActionOutcome.UNCHANGED -> Unit
+                ActionOutcome.GONE ->
+                    publishStatus("Esta tarefa não está mais na agenda. Nada foi marcado.")
+            }
+        },
     ) { container.tasks.complete(item.occurrence.id) }
 
     fun undoComplete(item: AgendaItem) = write("Não consegui desfazer.") { container.tasks.uncomplete(item) }
 
     fun delete(item: AgendaItem) = write(
         action = "Não consegui excluir.",
-        onSuccess = { publishStatus("Tarefa excluída.", StatusMessage.Undo.Delete(item)) },
+        onSuccess = { desfecho ->
+            when (desfecho) {
+                ActionOutcome.APPLIED ->
+                    publishStatus("Tarefa excluída.", StatusMessage.Undo.Delete(item))
+                ActionOutcome.UNCHANGED -> Unit
+                ActionOutcome.GONE ->
+                    publishStatus("Esta tarefa não está mais na agenda. Nada foi excluído.")
+            }
+        },
     ) { container.tasks.deleteOccurrence(item.occurrence.id) }
 
     fun undoDelete(item: AgendaItem) = write("Não consegui desfazer.") { container.tasks.restore(item) }
 
     fun endSeries(seriesId: String) = write(
         action = "Não consegui encerrar a série.",
-        onSuccess = { publishStatus("Série encerrada.") },
+        onSuccess = { desfecho ->
+            when (desfecho) {
+                ActionOutcome.APPLIED -> publishStatus("Série encerrada.")
+                ActionOutcome.UNCHANGED -> Unit
+                ActionOutcome.GONE ->
+                    publishStatus("Esta série não está mais na agenda. Nada foi encerrado.")
+            }
+        },
     ) { container.tasks.endSeries(seriesId) }
 
     fun snooze(id: String, minutes: Long = 30) = write(
         action = "Não consegui adiar.",
-        onSuccess = {
-            val at = java.time.ZonedDateTime.now().plusMinutes(minutes)
-            publishStatus(
-                AgendaFormat.announce(
-                    at.toLocalDate(),
-                    at.toLocalTime().withSecond(0).withNano(0),
-                    LocalDate.now(),
-                ),
-            )
+        onSuccess = { desfecho ->
+            when (desfecho) {
+                ActionOutcome.APPLIED -> {
+                    val at = java.time.ZonedDateTime.now().plusMinutes(minutes)
+                    publishStatus(
+                        AgendaFormat.announce(
+                            at.toLocalDate(),
+                            at.toLocalTime().withSecond(0).withNano(0),
+                            LocalDate.now(),
+                        ),
+                    )
+                }
+                ActionOutcome.UNCHANGED -> Unit
+                // Nada foi agendado: anunciar para quando o aviso ia tocar é a promessa de um
+                // aviso que não existe — e no remédio isso é o remédio que não toca.
+                ActionOutcome.GONE -> publishStatus("Não deu para adiar esta tarefa.")
+            }
         },
     ) { container.tasks.snooze(id, minutes) }
 

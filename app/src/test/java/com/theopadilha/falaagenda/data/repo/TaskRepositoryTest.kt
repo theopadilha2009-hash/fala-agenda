@@ -1076,6 +1076,102 @@ class TaskRepositoryTest {
         }
     }
 
+    /**
+     * Concluir, excluir, encerrar e adiar dizem o que aconteceu. Quando a linha (ou a série
+     * dela) sai do banco entre a lista e o toque, a gravação era no-op **sem aviso**: a tela
+     * anunciava "Feito." / "Tarefa excluída." / "Vai avisar amanhã às 8h" para uma tarefa que
+     * não está mais lá, e o toque dela sumia em silêncio. No adiamento a mentira é a pior de
+     * todas: nada é agendado e o remédio não toca.
+     */
+    @Test
+    fun concluirOcorrenciaSumidaReportaQueNaoGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.deleteOccurrence(saved.occurrence.id)
+
+        assertThat(repo.complete(saved.occurrence.id)).isEqualTo(ActionOutcome.GONE)
+    }
+
+    /**
+     * Já estava concluída: é no-op legítimo, e o desfecho precisa dizer isso. Devolver
+     * `GONE` aqui trocaria a mentira pelo alarme falso — "não deu" para uma tarefa que
+     * está feita.
+     */
+    @Test
+    fun concluirOcorrenciaJaConcluidaNaoEhFalha() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.complete(saved.occurrence.id)
+
+        assertThat(repo.complete(saved.occurrence.id)).isEqualTo(ActionOutcome.UNCHANGED)
+    }
+
+    @Test
+    fun concluirOcorrenciaVivaReportaQueGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+
+        assertThat(repo.complete(saved.occurrence.id)).isEqualTo(ActionOutcome.APPLIED)
+    }
+
+    @Test
+    fun excluirOcorrenciaSumidaReportaQueNaoGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.deleteOccurrence(saved.occurrence.id)
+
+        assertThat(repo.deleteOccurrence(saved.occurrence.id)).isEqualTo(ActionOutcome.GONE)
+    }
+
+    @Test
+    fun excluirOcorrenciaVivaReportaQueGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+
+        assertThat(repo.deleteOccurrence(saved.occurrence.id)).isEqualTo(ActionOutcome.APPLIED)
+    }
+
+    @Test
+    fun encerrarSerieSumidaReportaQueNaoGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        seriesDao.delete(saved.series.id)
+
+        assertThat(repo.endSeries(saved.series.id)).isEqualTo(ActionOutcome.GONE)
+    }
+
+    @Test
+    fun encerrarSerieVivaReportaQueGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+
+        assertThat(repo.endSeries(saved.series.id)).isEqualTo(ActionOutcome.APPLIED)
+    }
+
+    @Test
+    fun adiarOcorrenciaSumidaReportaQueNaoGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.deleteOccurrence(saved.occurrence.id)
+
+        assertThat(repo.snooze(saved.occurrence.id, 30)).isEqualTo(ActionOutcome.GONE)
+    }
+
+    /**
+     * Adiar uma ocorrência que já não está pendente não agenda nada — e a tela, sem este
+     * desfecho, dizia para quando o aviso ia tocar. O que ela não pode é ficar esperando por
+     * um aviso que não existe.
+     */
+    @Test
+    fun adiarOcorrenciaJaConcluidaReportaQueNaoGravouENaoAgenda() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+        repo.complete(saved.occurrence.id)
+        scheduler.scheduled.clear()
+
+        assertThat(repo.snooze(saved.occurrence.id, 30)).isEqualTo(ActionOutcome.GONE)
+        assertThat(scheduler.scheduled).isEmpty()
+    }
+
+    @Test
+    fun adiarOcorrenciaVivaReportaQueGravou() = runBlocking {
+        val saved = repo.saveDraft(completeDraft("Cabelo", LocalDate.of(2026, 8, 21), LocalTime.of(9, 0)))
+
+        assertThat(repo.snooze(saved.occurrence.id, 30)).isEqualTo(ActionOutcome.APPLIED)
+        assertThat(scheduler.scheduled).contains(saved.occurrence.id)
+    }
+
     private fun completeDraft(title: String, date: LocalDate, time: LocalTime) = ParsedTaskDraft(
         title = title,
         localDate = date,

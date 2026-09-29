@@ -153,15 +153,18 @@ class TaskRepository(
         SaveResult(series = series, occurrence = stored, usedInexactAlarm = scheduled.inexact)
     }
 
-    suspend fun complete(occurrenceId: String) = writer.withLock {
+    suspend fun complete(occurrenceId: String): ActionOutcome = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
-        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock ActionOutcome.GONE
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock ActionOutcome.GONE
         val occurrence = row.toDomain()
         if (occurrence.status != OccurrenceStatus.PENDING &&
             occurrence.status != OccurrenceStatus.MISSED
         ) {
-            return@withLock
+            // Já estava concluída (ou cancelada): não há o que gravar e nada se perdeu. Quem
+            // chamou tem que calar — anunciar falha aqui seria trocar a mentira pelo alarme
+            // falso.
+            return@withLock ActionOutcome.UNCHANGED
         }
         scheduler.cancel(occurrence.id)
         val done = occurrence.copy(
@@ -171,6 +174,7 @@ class TaskRepository(
         )
         occurrenceDao.upsert(done.toEntity())
         spawnNextIfNeeded(series, done.localDate, now)
+        ActionOutcome.APPLIED
     }
 
     suspend fun uncomplete(item: AgendaItem) = writer.withLock {
@@ -218,8 +222,8 @@ class TaskRepository(
         }
     }
 
-    suspend fun deleteOccurrence(occurrenceId: String) = writer.withLock {
-        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
+    suspend fun deleteOccurrence(occurrenceId: String): ActionOutcome = writer.withLock {
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock ActionOutcome.GONE
         scheduler.cancel(occurrenceId)
         val series = seriesDao.get(row.seriesId)?.toTaskSeries()
         val leftover = occurrenceDao.forSeries(row.seriesId).filterNot { it.id == occurrenceId }
@@ -233,7 +237,7 @@ class TaskRepository(
                 series = series?.toEntity(),
                 deleteSeriesRow = series != null,
             )
-            return@withLock
+            return@withLock ActionOutcome.APPLIED
         }
         // Sem o tombstone a rotina de avanço rematerializa a data apagada no próximo start —
         // e isso vale também para a tarefa única: `RecurrenceEngine.firstOnOrAfter` a
@@ -248,7 +252,7 @@ class TaskRepository(
                 series = null,
                 deleteSeriesRow = false,
             )
-            return@withLock
+            return@withLock ActionOutcome.APPLIED
         }
         val now = clock.instant()
         val skipped = OccurrenceLifecycle.skipDate(
@@ -266,6 +270,7 @@ class TaskRepository(
             series = series.copy(skippedDates = skipped, updatedAt = now).toEntity(),
             deleteSeriesRow = false,
         )
+        ActionOutcome.APPLIED
     }
 
     suspend fun restore(item: AgendaItem) = writer.withLock {
@@ -307,9 +312,9 @@ class TaskRepository(
         )
     }
 
-    suspend fun endSeries(seriesId: String) = writer.withLock {
+    suspend fun endSeries(seriesId: String): ActionOutcome = writer.withLock {
         val now = clock.instant()
-        val series = seriesDao.get(seriesId)?.toTaskSeries() ?: return@withLock
+        val series = seriesDao.get(seriesId)?.toTaskSeries() ?: return@withLock ActionOutcome.GONE
         val ended = series.copy(endedAt = now, updatedAt = now)
         val pending = occurrenceDao.forSeries(seriesId)
             .map { it.toDomain() }
@@ -324,6 +329,7 @@ class TaskRepository(
             series = ended.toEntity(),
             deleteSeriesRow = false,
         )
+        ActionOutcome.APPLIED
     }
 
     /**
@@ -438,12 +444,15 @@ class TaskRepository(
         RetryResult(date = date, time = series.localTime)
     }
 
-    suspend fun snooze(occurrenceId: String, minutes: Long = 30) = writer.withLock {
+    suspend fun snooze(occurrenceId: String, minutes: Long = 30): ActionOutcome = writer.withLock {
         val now = clock.instant()
-        val row = occurrenceDao.get(occurrenceId) ?: return@withLock
-        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock
+        val row = occurrenceDao.get(occurrenceId) ?: return@withLock ActionOutcome.GONE
+        val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock ActionOutcome.GONE
         val occurrence = row.toDomain()
-        if (occurrence.status != OccurrenceStatus.PENDING) return@withLock
+        // Não é o "já estava nesse estado" do [ActionOutcome.UNCHANGED]: nada é agendado aqui,
+        // e a tela anuncia para quando o aviso vai tocar. Calar deixaria ela esperando por um
+        // aviso que não existe — e, no caso do remédio, sem o remédio.
+        if (occurrence.status != OccurrenceStatus.PENDING) return@withLock ActionOutcome.GONE
         val quiet = scheduler.quietHours()
         val plan = ReminderPolicy.snooze(now, minutes, series.zoneId, quiet, respectQuietHours = false)
         val updated = occurrence.copy(
@@ -453,6 +462,7 @@ class TaskRepository(
         )
         val scheduled = scheduler.schedule(updated, series, first = false)
         occurrenceDao.upsert(updated.copy(inexactAlarm = scheduled.inexact).toEntity())
+        ActionOutcome.APPLIED
     }
 
     suspend fun onAlarmFired(occurrenceId: String): AlarmFireResult = writer.withLock {
@@ -644,5 +654,29 @@ enum class EditOutcome {
     SAVED,
 
     /** A ocorrência (ou a série dela) não está mais no banco: nada foi gravado. */
+    GONE,
+}
+
+/**
+ * O desfecho de uma ação sobre uma ocorrência — concluir, excluir, encerrar a série, adiar.
+ * [EditOutcome] não serve aqui porque só tem dois casos, e o do meio é justamente o que
+ * separa a mentira do alarme falso.
+ *
+ * [UNCHANGED] é o que já estava no estado pedido (concluir uma ocorrência já concluída, por
+ * exemplo): no-op legítimo, e quem chamou não anuncia nada. Repetir "Feito." é ruído; dizer
+ * "não deu" seria falso.
+ *
+ * [GONE] é quando não havia o que gravar — a linha (ou a série) saiu do banco, ou a
+ * ocorrência não aceita mais a ação. Aí a tela precisa dizer que não deu: o que ela tocou não
+ * pegou, e no adiamento isso significa que nenhum aviso foi agendado.
+ */
+enum class ActionOutcome {
+    /** A ocorrência estava lá e a ação foi gravada. */
+    APPLIED,
+
+    /** Já estava no estado pedido: não há o que gravar nem o que anunciar. */
+    UNCHANGED,
+
+    /** Não havia o que gravar: nada foi feito, e quem chamou precisa dizer isso a ela. */
     GONE,
 }

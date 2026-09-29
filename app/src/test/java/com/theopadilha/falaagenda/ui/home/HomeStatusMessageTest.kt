@@ -201,6 +201,103 @@ class HomeStatusMessageTest {
         runBlocking { container.tasks.snapshotAgenda().find(salvo.occurrence.id)?.occurrence?.status }
 
     /**
+     * A ocorrência saiu do banco entre a lista e o toque (o "Excluir" de outra tela, a
+     * varredura do start): concluir vira no-op e a tela anunciava "Feito." para uma tarefa
+     * que não está mais lá. O que ela fez não pode se perder em silêncio.
+     */
+    @Test
+    fun concluirTarefaQueSaiuDaAgendaDizQueNaoDeu() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+        runBlocking { container.tasks.deleteOccurrence(salvo.occurrence.id) }
+
+        viewModel.complete(itemDe(salvo))
+        esperaAGravacaoTerminar()
+
+        val recado = viewModel.statusMessage.value
+        assertThat(recado).isNotNull()
+        assertThat(recado!!.text).isEqualTo("Esta tarefa não está mais na agenda. Nada foi marcado.")
+        assertThat(recado.undo).isNull()
+    }
+
+    /**
+     * Concluir o que já estava concluído é no-op legítimo: trocar a mentira ("Feito." de novo)
+     * por um alarme falso ("não deu") seria pior. Silêncio — nada a anunciar e nada a
+     * desfazer.
+     */
+    @Test
+    fun concluirTarefaJaConcluidaNaoViraAlarmeFalso() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+        viewModel.complete(itemDe(salvo))
+        esperaAGravacaoTerminar()
+        viewModel.consumeStatusMessage()
+
+        viewModel.complete(itemDe(salvo))
+        esperaAGravacaoTerminar()
+
+        assertThat(viewModel.statusMessage.value).isNull()
+        assertThat(viewModel.writeError.value).isNull()
+    }
+
+    @Test
+    fun excluirTarefaQueSaiuDaAgendaDizQueNaoDeu() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+        runBlocking { container.tasks.deleteOccurrence(salvo.occurrence.id) }
+
+        viewModel.delete(itemDe(salvo))
+        esperaAGravacaoTerminar()
+
+        val recado = viewModel.statusMessage.value
+        assertThat(recado).isNotNull()
+        assertThat(recado!!.text).isEqualTo("Esta tarefa não está mais na agenda. Nada foi excluído.")
+        assertThat(recado.undo).isNull()
+    }
+
+    /**
+     * O buraco que a mensagem de sucesso abria: a lista velha ainda mostrava "Daqui N min"
+     * para uma ocorrência que o ciclo de vida já tinha virado "não realizada". Adiar era
+     * no-op, nada era agendado, e a tela dizia "Vai avisar amanhã às 8h" — o remédio não
+     * tocava e ela ficava esperando por um aviso que não existia.
+     */
+    @Test
+    fun adiarTarefaQueNaoEstaMaisPendenteNaoPrometeAviso() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+        viewModel.complete(itemDe(salvo))
+        esperaAGravacaoTerminar()
+        viewModel.consumeStatusMessage()
+
+        viewModel.snooze(salvo.occurrence.id, 30)
+        esperaAGravacaoTerminar()
+
+        val recado = viewModel.statusMessage.value
+        assertThat(recado).isNotNull()
+        assertThat(recado!!.text).isEqualTo("Não deu para adiar esta tarefa.")
+    }
+
+    @Test
+    fun adiarTarefaQueSaiuDaAgendaDizQueNaoDeu() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+        runBlocking { container.tasks.deleteOccurrence(salvo.occurrence.id) }
+
+        viewModel.snooze(salvo.occurrence.id, 30)
+        esperaAGravacaoTerminar()
+
+        assertThat(viewModel.statusMessage.value!!.text).isEqualTo("Não deu para adiar esta tarefa.")
+    }
+
+    @Test
+    fun encerrarSerieQueSaiuDaAgendaNaoDizSerieEncerrada() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+        runBlocking { container.db.seriesDao().delete(salvo.series.id) }
+
+        viewModel.endSeries(salvo.series.id)
+        esperaAGravacaoTerminar()
+
+        val recado = viewModel.statusMessage.value
+        assertThat(recado).isNotNull()
+        assertThat(recado!!.text).isEqualTo("Esta série não está mais na agenda. Nada foi encerrado.")
+    }
+
+    /**
      * Adiar: a frase diz para quando o aviso foi empurrado e é montada no ViewModel, que é
      * quem sabe o resultado da gravação — não a tela que a pediu.
      */

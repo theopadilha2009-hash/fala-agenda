@@ -175,11 +175,15 @@ jobs:
             *-*) PRERELEASE=1; ESPERADO="${TAG%%-*}" ;;
             *) PRERELEASE=0; ESPERADO="$TAG" ;;
           esac
+          # `|| true` nas leituras de versao: o shell padrao do runner (`bash -e`, sem
+          # `pipefail`) tolera um `grep` sem resultado, mas com `shell: bash` o passo roda com
+          # `-o pipefail` e ai o `grep` vazio derruba o passo inteiro em silencio -- levando
+          # junto o fallback abaixo e os avisos que este gate existe para dar.
           ATUAL=$("$BT/aapt2" dump badging "$APK" 2>/dev/null | grep -m1 "^package:" \
-            | grep -oE "versionName='[^']*'" | head -n 1 | cut -d"'" -f2)
+            | grep -oE "versionName='[^']*'" | head -n 1 | cut -d"'" -f2 || true)
           if [ -z "$ATUAL" ]; then
             ATUAL=$(grep -oE '"versionName": *"[^"]+"' app/build/outputs/apk/release/output-metadata.json \
-              | head -n 1 | cut -d'"' -f4)
+              | head -n 1 | cut -d'"' -f4 || true)
           fi
           if [ "$ATUAL" != "$ESPERADO" ]; then
             echo "::error::versionName do APK e '$ATUAL' e a tag e '$GITHUB_REF_NAME' (esperado '$ESPERADO'). Bumpe versionName/versionCode em app/build.gradle.kts antes de taguear."
@@ -196,13 +200,29 @@ jobs:
             echo "::error::Nao consegui ler a impressao digital do APK novo."
             exit 1
           fi
+          # O versionCode sai do proprio APK; o output-metadata.json e o mesmo fallback que o
+          # versionName usa quando o aapt2 nao responde. O major (versionCodeMajor) fica de
+          # fora: app/build.gradle.kts nunca o define, e nada aqui depende dele.
+          # Leitura vazia chega ao `inteiro` abaixo e vira aviso: e o caminho de fail-open.
+          VC_ATUAL=$("$BT/aapt2" dump badging "$APK" 2>/dev/null | grep -m1 "^package:" \
+            | grep -oE "versionCode='[^']*'" | head -n 1 | cut -d"'" -f2 || true)
+          if [ -z "$VC_ATUAL" ]; then
+            VC_ATUAL=$(grep -oE '"versionCode": *[0-9]+' app/build/outputs/apk/release/output-metadata.json \
+              | head -n 1 | grep -oE '[0-9]+$' || true)
+          fi
           ANTERIOR=$(gh release list --exclude-drafts --limit 10 --json tagName --jq '.[].tagName' 2>/dev/null \
             | grep -vx -- "$GITHUB_REF_NAME" | head -n 1 || true)
+          # Fail-open so quando a release anterior nao pode ser determinada (nao existe, ou a
+          # listagem falhou): o gate segue e o aviso fica no log. Travar a publicacao por causa
+          # de uma chamada de API e pior que a deriva que ele previne, e a deriva e rara -- o
+          # historico tem 15 pares versionCode/versionName em dia (9/0.3.0 ... 15/0.6.0). Se a
+          # release anterior existe mas o APK dela nao baixa, continua sendo erro: sem o
+          # arquivo nao ha como comparar nada.
           if [ -z "$ANTERIOR" ]; then
-            echo "::warning::Nenhuma release anterior para comparar assinatura; comparacao ignorada."
+            echo "::warning::Nenhuma release anterior: assinatura e versionCode nao comparados; publicacao segue."
           else
             if ! gh release download "$ANTERIOR" --pattern "app-release.apk" --dir "$RUNNER_TEMP/anterior" --clobber; then
-              echo "::error::Falha ao baixar o app-release.apk da release $ANTERIOR para comparar a assinatura."
+              echo "::error::Falha ao baixar o app-release.apk da release $ANTERIOR para comparar a assinatura e o versionCode."
               exit 1
             fi
             CERT_ANTERIOR=$("$BT/apksigner" verify --print-certs "$RUNNER_TEMP/anterior/app-release.apk" \
@@ -214,6 +234,24 @@ jobs:
             if [ "$CERT_ATUAL" != "$CERT_ANTERIOR" ]; then
               echo "::error::Assinatura diferente da release $ANTERIOR: $CERT_ATUAL != $CERT_ANTERIOR. Use o mesmo keystore, senao o app instalado nao aceita a atualizacao."
               falhou=1
+            fi
+
+            # (d) versionCode estritamente maior que o da release anterior. O versionName sozinho
+            # deixa passar um APK que ninguem consegue instalar: com o versionCode repetido (ou
+            # menor), o aplicativo instalado recusa a atualizacao como rebaixamento e ela para de
+            # chegar justamente em quem ja tem aquele numero -- calado, porque a release esta
+            # publicada e a tela continua dizendo "Tem versao nova".
+            VC_ANTERIOR=$("$BT/aapt2" dump badging "$RUNNER_TEMP/anterior/app-release.apk" 2>/dev/null | grep -m1 "^package:" \
+              | grep -oE "versionCode='[^']*'" | head -n 1 | cut -d"'" -f2 || true)
+            inteiro() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
+            if ! inteiro "$VC_ATUAL" || ! inteiro "$VC_ANTERIOR"; then
+              echo "::warning::Nao consegui ler o versionCode do APK novo ('$VC_ATUAL') ou do de $ANTERIOR ('$VC_ANTERIOR'); comparacao de versao ignorada."
+            else
+              echo "versionCode: $VC_ANTERIOR na release $ANTERIOR, $VC_ATUAL agora."
+              if [ "$VC_ATUAL" -le "$VC_ANTERIOR" ]; then
+                echo "::error::versionCode do APK e $VC_ATUAL e o da release $ANTERIOR e $VC_ANTERIOR: o novo nao e maior, e o aplicativo instalado recusa a atualizacao como rebaixamento. Bumpe versionCode e versionName em app/build.gradle.kts antes de taguear."
+                falhou=1
+              fi
             fi
           fi
 

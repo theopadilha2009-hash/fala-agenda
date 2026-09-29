@@ -30,6 +30,29 @@ interface SigningCertificates {
     fun archive(apk: File): Set<String>
 }
 
+/**
+ * De onde saem os números de versão para comparar o APK baixado com o aplicativo instalado.
+ * A assinatura prova autoria; quem prova que o arquivo é mais novo é este número.
+ */
+interface PackageVersions {
+    /** `versionCode` do aplicativo instalado; `null` quando o sistema não deu. */
+    fun installed(): Long?
+
+    /** `versionCode` do arquivo no disco; `null` quando não deu para ler. */
+    fun archive(apk: File): Long?
+}
+
+class AndroidPackageVersions(private val context: Context) : PackageVersions {
+    override fun installed(): Long? =
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }
+            .getOrNull()
+            .let(ApkSignature::versionCode)
+
+    override fun archive(apk: File): Long? =
+        context.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
+            .let(ApkSignature::versionCode)
+}
+
 class AndroidSigningCertificates(private val context: Context) : SigningCertificates {
     override fun installed(): Set<String> =
         runCatching { context.packageManager.getPackageInfo(context.packageName, flags()) }
@@ -81,6 +104,24 @@ internal object ApkSignature {
     /** API 26/27: o único retrato de assinatura que aquelas versões entregam. */
     @Suppress("DEPRECATION")
     private fun legacySigners(info: PackageInfo): Array<Signature>? = info.signatures
+
+    /**
+     * `longVersionCode` só existe da API 28 em diante; a 26/27 — piso do app — só tem o
+     * `versionCode` antigo, que naquelas versões ainda é o número inteiro que vale.
+     * Ler o campo errado não devolve `null`: derruba a chamada.
+     */
+    fun versionCode(info: PackageInfo?): Long? {
+        if (info == null) return null
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            longVersionCode(info)
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun longVersionCode(info: PackageInfo): Long = info.longVersionCode
 
     fun fingerprint(certificate: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256")

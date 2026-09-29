@@ -167,6 +167,63 @@ class ApkSignatureTest {
             .containsExactly(ApkSignature.fingerprint(CERTIDAO))
     }
 
+    @Test
+    fun versaoDoAppInstaladoVemDoPacoteAtual() {
+        val versoes = AndroidPackageVersions(context)
+        shadowOf(context.packageManager)
+            .getInternalMutablePackageInfo(context.packageName)
+            .apply { longVersionCode = 7L }
+
+        assertThat(versoes.installed()).isEqualTo(7L)
+    }
+
+    @Test
+    fun versaoDoArquivoBaixadoVemDoPackageManager() {
+        val arquivo = File(context.cacheDir, "baixado.apk").apply { writeBytes(ByteArray(16)) }
+        val versoes = AndroidPackageVersions(context)
+
+        assertThat(versoes.archive(arquivo)).isNull()
+
+        shadowOf(context.packageManager).setPackageArchiveInfo(
+            arquivo.absolutePath,
+            PackageInfo().apply { longVersionCode = 6L },
+        )
+
+        assertThat(versoes.archive(arquivo)).isEqualTo(6L)
+    }
+
+    @Test
+    fun semPacoteNaoInventaVersao() {
+        assertThat(ApkSignature.versionCode(null)).isNull()
+    }
+
+    /**
+     * A 26/27 — piso do app — não tem `longVersionCode`: lá quem responde é o campo antigo.
+     */
+    @Test
+    @Config(sdk = [27])
+    fun versaoNaApi27SaiDoCampoAntigo() {
+        val pacote = PackageInfo().apply {
+            @Suppress("DEPRECATION")
+            versionCode = 5
+        }
+
+        assertThat(ApkSignature.versionCode(pacote)).isEqualTo(5L)
+    }
+
+    /**
+     * Na 28+ o número da versão é composto por dois inteiros (`versionCode` e o major dele):
+     * a versão 4294967298 é o major 1 com o código 2, e o campo antigo — só os 32 bits de
+     * baixo — devolveria 2. Comparar versões pelo número truncado recusaria atualização boa.
+     * (No app daqui o versionCode é 15 e cresce de um em um, então o major é sempre zero.)
+     */
+    @Test
+    fun versaoNaApi28SaiDoNumeroComposto() {
+        val pacote = PackageInfo().apply { longVersionCode = 4294967298L }
+
+        assertThat(ApkSignature.versionCode(pacote)).isEqualTo(4294967298L)
+    }
+
     private fun signingInfoCom(certidao: ByteArray): SigningInfo =
         SigningInfo().also { Shadow.extract<ShadowSigningInfo>(it).setSignatures(arrayOf(Signature(certidao))) }
 

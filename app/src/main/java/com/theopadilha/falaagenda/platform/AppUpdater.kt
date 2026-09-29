@@ -22,14 +22,36 @@ data class UpdateCheck(
 
 class AppUpdater(
     private val context: Context,
-    private val http: OkHttpClient = OkHttpClient.Builder()
+    http: OkHttpClient = OkHttpClient.Builder()
         .callTimeout(90, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build(),
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val certificates: SigningCertificates = AndroidSigningCertificates(context),
+    private val versions: PackageVersions = AndroidPackageVersions(context),
 ) {
+    /**
+     * Cada salto do download passa por aqui, e não só a URL inicial: `followRedirects(true)`
+     * resolve o 302 sozinho, então a allowlist aplicada uma vez só valeria para o endereço de
+     * partida e o de chegada ficaria livre. Quem controla a rede poderia apontar o redirect
+     * para o próprio servidor e escolher o que o aplicativo baixa.
+     *
+     * O GitHub **usa** redirect no download de asset (302 de `github.com` para
+     * `release-assets.githubusercontent.com`, conferido em 29/09/2026): proibir redirect
+     * quebraria toda atualização. Proibir *sair do GitHub* não quebra nada.
+     *
+     * O interceptor de rede roda depois do `ConnectInterceptor`, então a conexão com o
+     * destino ainda chega a ser aberta antes da recusa — o pedido, não: nada é enviado,
+     * e nenhum byte do arquivo vem de lá.
+     */
+    private val http: OkHttpClient = http.newBuilder()
+        .addNetworkInterceptor { chain ->
+            if (!allowedDownloadUrl(chain.request().url.toString())) error(DESTINO_NAO_CONFIAVEL)
+            chain.proceed(chain.request())
+        }
+        .build()
+
     fun check(apiUrl: String = LATEST_API): UpdateCheck {
         val request = Request.Builder()
             .url(apiUrl)
@@ -56,7 +78,12 @@ class AppUpdater(
     }
 
     fun download(url: String, sha256Url: String? = null): File {
-        if (!allowedDownloadUrl(url)) error("Fonte de atualização inválida.")
+        if (!allowedDownloadUrl(url)) error(FONTE_INVALIDA)
+        // Integridade não é opcional: uma release sem o `.sha256` publicado não pode virar uma
+        // instalação silenciosamente mais fraca. Recusar antes de baixar 20 MB também é mais
+        // barato para quem paga os dados do aparelho.
+        val soma = sha256Url?.takeIf { it.isNotBlank() } ?: error(SOMA_AUSENTE)
+        if (!allowedDownloadUrl(soma)) error(FONTE_INVALIDA)
         val dest = File(updatesDir(context), "Fala-Agenda-update.apk")
         val origem = File(updatesDir(context), "Fala-Agenda-update.source")
         if (jaBaixado(dest, origem, url)) return dest
@@ -64,18 +91,16 @@ class AppUpdater(
             dest.delete()
             origem.delete()
             fetchTo(url, dest, MAX_APK_BYTES)
-            if (!sha256Url.isNullOrBlank()) {
-                if (!allowedDownloadUrl(sha256Url)) error("Fonte de atualização inválida.")
-                val sumFile = File(updatesDir(context), "apk.sha256")
-                fetchTo(sha256Url, sumFile, 8 * 1024)
-                val expected = parseSha256Sum(sumFile.readText())
-                    ?: error("Não deu para ler a assinatura do instalador.")
-                val actual = sha256(dest)
-                if (!expected.equals(actual, ignoreCase = true)) {
-                    error("O arquivo veio diferente do publicado. Não instalei.")
-                }
+            val sumFile = File(updatesDir(context), "apk.sha256")
+            fetchTo(soma, sumFile, 8 * 1024)
+            val expected = parseSha256Sum(sumFile.readText())
+                ?: error("Não deu para ler a assinatura do instalador.")
+            val actual = sha256(dest)
+            if (!expected.equals(actual, ignoreCase = true)) {
+                error("O arquivo veio diferente do publicado. Não instalei.")
             }
             requireTrustedSignature(dest)
+            requireNotOlder(dest)
             origem.writeText(url)
             dest
         } catch (e: Exception) {
@@ -99,9 +124,14 @@ class AppUpdater(
 
     /**
      * O APK só chega ao instalador se for assinado pela mesma chave do aplicativo já instalado.
-     * É o que separa uma release legítima de um APK trocado no caminho: o `.sha256` publicado
-     * junto do arquivo prova integridade, não autoria — quem troca o APK troca a soma também.
-     * Sem como ler as certidões, não instala: falhar fechado é o certo para quem usa o app.
+     * É a barreira que separa uma release legítima de um APK trocado no caminho: quem troca o
+     * arquivo na rede não tem a chave.
+     *
+     * O `.sha256` publicado ao lado do arquivo não substitui isso, e nem chega perto: ele sai
+     * da mesma release e trafega pelo mesmo caminho, então quem troca o APK troca a soma
+     * junto. O que ele denuncia é outra coisa — arquivo corrompido na entrega ou asset trocado
+     * por engano na publicação. Vale a pena, mas é a assinatura que decide: sem como ler as
+     * certidões, não instala. Falhar fechado é o certo para quem usa o app.
      */
     private fun requireTrustedSignature(apk: File) {
         val verdict = ApkSignature.verdict(certificates.installed(), certificates.archive(apk))
@@ -112,6 +142,20 @@ class AppUpdater(
                 else -> ASSINATURA_ILEGIVEL
             },
         )
+    }
+
+    /**
+     * A assinatura prova autoria, não versão: um APK antigo, legitimamente assinado pela mesma
+     * chave, empacotado numa release nova, passaria na assinatura e na soma — e o aplicativo
+     * "atualizaria" para trás. Por isso o número da versão só é lido **depois** da assinatura:
+     * antes dela, o número não merece confiança.
+     *
+     * Os dois lados saem do mesmo PackageManager que a assinatura acabou de consultar; se
+     * algum não vier legível, não há como afirmar rebaixamento, e a assinatura segue barrando.
+     */
+    private fun requireNotOlder(apk: File) {
+        if (!isDowngrade(versions.archive(apk), versions.installed())) return
+        error(VERSAO_NAO_E_MAIS_NOVA)
     }
 
     private fun fetchTo(url: String, dest: File, maxBytes: Long) {
@@ -163,6 +207,28 @@ class AppUpdater(
         const val ASSINATURA_ILEGIVEL =
             "Não consegui conferir a assinatura do instalador. Por segurança, não instalei nada."
 
+        const val FONTE_INVALIDA = "Fonte de atualização inválida."
+
+        const val DESTINO_NAO_CONFIAVEL =
+            "O download tentou ir para outro endereço e eu não deixei. Apaguei o arquivo e não instalei nada."
+
+        const val SOMA_AUSENTE =
+            "A versão nova não veio com o arquivo que confere o download, então não baixei nada. " +
+                "Avise quem instalou o aplicativo para você."
+
+        const val VERSAO_NAO_E_MAIS_NOVA =
+            "A versão que veio não é mais nova que a que já está no aparelho. Apaguei o arquivo " +
+                "e não instalei nada. Avise quem instalou o aplicativo para você."
+
+        /**
+         * O rebaixamento é o que a assinatura **não** pega: um APK antigo, legitimamente
+         * assinado pela mesma chave, empacotado numa release nova, passaria em toda a
+         * conferência de autoria. Só o número da versão separa "atualização" de "volta".
+         * Sem os dois números não há como afirmar rebaixamento — e quem barra aí é a assinatura.
+         */
+        fun isDowngrade(remote: Long?, installed: Long?): Boolean =
+            remote != null && installed != null && remote <= installed
+
         fun allowedDownloadUrl(url: String): Boolean {
             val host = runCatching { URI(url).host }.getOrNull()?.lowercase() ?: return false
             return host == "github.com" ||
@@ -188,15 +254,19 @@ class AppUpdater(
             val newer = isNewer(remote, local)
             val message = when {
                 apk == null -> "A versão $remote saiu, mas ainda não tem instalador."
-                newer -> "Tem versão nova: $remote. A sua é $local."
-                else -> "Você já está na última versão ($local)."
+                !newer -> "Você já está na última versão ($local)."
+                // Sem a soma publicada o arquivo não tem como ser conferido; oferecer o botão
+                // só levaria a uma recusa depois de 20 MB baixados.
+                sha == null -> "A versão $remote saiu, mas veio sem o arquivo de conferência " +
+                    "do instalador. Avise quem instalou o aplicativo para você."
+                else -> "Tem versão nova: $remote. A sua é $local."
             }
             return UpdateCheck(
                 local = local,
                 remote = remote,
                 apkUrl = apk?.url,
                 sha256Url = sha?.url,
-                newer = newer && apk != null,
+                newer = newer && apk != null && sha != null,
                 message = message,
             )
         }

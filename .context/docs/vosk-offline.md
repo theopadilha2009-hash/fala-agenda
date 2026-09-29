@@ -46,10 +46,11 @@ escuta, não uma vez só, para o modelo que chega com o app aberto não ficar es
 próximo toque.
 
 Regras do pedido: uma tentativa por pedido de voz (sem laço — quem decide insistir é ela,
-ao pedir voz de novo), uma de cada vez (dois toques seguidos não baixam 62 MB) e nada em
-rede medida (`isActiveNetworkMetered`), onde os 31 MB esperam uma rede sem custo. A falha
-vai para o log com o motivo: o modelo que não chega tem que contar por quê, senão a fala
-fica no motor do sistema sem ninguém saber que era para ser offline.
+ao pedir voz de novo) e uma de cada vez (dois toques seguidos não baixam 62 MB). O tipo de
+rede não entra na conta: barrar a rede medida deixaria um celular só com dados móveis sem
+a fala offline para sempre, e a fala é o motivo de o app existir. A falha vai para o log
+com o motivo: o modelo que não chega tem que contar por quê, senão a fala fica no motor do
+sistema sem ninguém saber que era para ser offline.
 
 O download segue as mesmas regras do instalador de APK: host em allowlist
 (`alphacephei.com`, a fonte oficial dos modelos do Vosk), sha256 fixo no código,

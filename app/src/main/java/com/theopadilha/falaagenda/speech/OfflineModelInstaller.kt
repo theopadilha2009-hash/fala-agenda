@@ -38,7 +38,6 @@ class OfflineModelInstaller(
         .followRedirects(true)
         .followSslRedirects(true)
         .build(),
-    private val isMetered: () -> Boolean = { false },
 ) {
     /** Um download de cada vez: dois pedidos de voz seguidos não baixam 62 MB. */
     private val emCurso = AtomicBoolean(false)
@@ -53,8 +52,11 @@ class OfflineModelInstaller(
      *
      * Sem laço e sem retentativa própria: uma tentativa por pedido de voz. O download é
      * caro, então quem decide tentar de novo é ela, ao pedir voz outra vez — e não um
-     * relógio nosso batendo num servidor de 31 MB. Rede medida fica de fora: o mesmo
-     * download sairia na conta dela, calado.
+     * relógio nosso batendo num servidor de 31 MB.
+     *
+     * O tipo de rede não entra na conta. O que faltava aqui era o gatilho, não um filtro:
+     * recusar o download em rede medida deixaria um celular só com dados móveis sem a
+     * fala offline para sempre, e a fala é o motivo de o app existir.
      */
     fun request(
         scope: CoroutineScope,
@@ -62,12 +64,6 @@ class OfflineModelInstaller(
         sha256: String = SHA256,
     ): Job? {
         if (VoskModel.isInstalled(context)) return null
-        if (isMetered()) {
-            // O motor do sistema atende enquanto isso, então o download pode esperar
-            // uma rede que não cobre por byte.
-            Log.i(TAG, "rede medida: o modelo da fala offline espera uma rede sem custo")
-            return null
-        }
         if (!emCurso.compareAndSet(false, true)) return null
         return scope.launch {
             try {

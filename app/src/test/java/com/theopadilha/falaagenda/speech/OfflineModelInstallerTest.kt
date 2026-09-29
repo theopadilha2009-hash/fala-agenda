@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.speech
 
 import android.app.Application
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
@@ -140,21 +141,22 @@ class OfflineModelInstallerTest {
     }
 
     /**
-     * O gatilho é o pedido de voz, não a abertura do app: cada toque no microfone pede
-     * o modelo uma vez, e nada desce em rede medida — o mesmo download custaria 31 MB
-     * na conta dela, calado, e o motor do sistema atende enquanto isso.
+     * O download não olha o tipo de rede. O desperdício que ele tinha era outro — 31 MB
+     * a cada abertura do app —, e esse o gatilho por pedido de voz resolveu. Barrar a
+     * rede medida custaria o recurso inteiro num celular que só tem dados móveis: a fala
+     * offline nunca chegaria no aparelho dela.
      */
     @Test
-    fun redeMedidaNaoPedeOModelo() {
+    fun oPedidoNaoConsultaARede() {
         val zip = modeloZip()
         server.enqueue(MockResponse().setBody(Buffer().write(zip)))
 
-        val pedido = installer(metered = true)
+        val pedido = installer(contextoQueNaoTemRede())
             .request(CoroutineScope(Dispatchers.Unconfined), url(), sha256(zip))
 
-        assertThat(server.requestCount).isEqualTo(0)
-        assertThat(pedido).isNull()
-        assertThat(VoskModel.isInstalled(context)).isFalse()
+        assertThat(pedido).isNotNull()
+        assertThat(server.requestCount).isEqualTo(1)
+        assertThat(VoskModel.isInstalled(context)).isTrue()
     }
 
     @Test
@@ -209,18 +211,29 @@ class OfflineModelInstallerTest {
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private fun installer(metered: Boolean = false): OfflineModelInstaller = OfflineModelInstaller(
-        context = context,
-        http = OkHttpClient.Builder()
-            .dns(
-                object : Dns {
-                    override fun lookup(hostname: String): List<InetAddress> =
-                        listOf(InetAddress.getByName("127.0.0.1"))
-                },
-            )
-            .build(),
-        isMetered = { metered },
-    )
+    private fun installer(paraOnde: Context = context): OfflineModelInstaller =
+        OfflineModelInstaller(
+            context = paraOnde,
+            http = OkHttpClient.Builder()
+                .dns(
+                    object : Dns {
+                        override fun lookup(hostname: String): List<InetAddress> =
+                            listOf(InetAddress.getByName("127.0.0.1"))
+                    },
+                )
+                .build(),
+        )
+
+    /**
+     * Um contexto que estoura se alguém perguntar à rede. O download não pergunta: o
+     * único critério dele é o pedido de voz, e é isso que este contexto prova.
+     */
+    private fun contextoQueNaoTemRede(): Context = object : ContextWrapper(context) {
+        override fun getSystemService(name: String): Any? {
+            if (name == Context.CONNECTIVITY_SERVICE) error("o download consultou a rede")
+            return super.getSystemService(name)
+        }
+    }
 
     private fun modeloZip(
         sem: String? = null,

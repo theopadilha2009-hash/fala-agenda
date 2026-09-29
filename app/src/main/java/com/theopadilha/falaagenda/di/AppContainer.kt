@@ -67,10 +67,7 @@ class AppContainer(
         isAiEnabled = { supabase.isConfigured && !tokenStore.token().isNullOrBlank() },
     )
     val activation = ActivationClient(supabase)
-    val offlineModel = OfflineModelInstaller(
-        appContext,
-        isMetered = { isMeteredNetwork(appContext) },
-    )
+    val offlineModel = OfflineModelInstaller(appContext)
     // Sem o modelo baixado isto é null e a fala segue no motor do sistema, como antes.
     // A consulta é por escuta, não uma vez só: o download pode terminar com o app aberto.
     // O motor resolvido, esse, é um por processo — quem o guarda e o fecha é o VoskModel.
@@ -81,10 +78,4 @@ class AppContainer(
         requestOfflineModel = { offlineModel.request(background) },
     )
     val updater = AppUpdater(appContext)
-}
-
-/** Rede medida é a que cobra por byte: os 31 MB do modelo esperam uma rede sem custo. */
-private fun isMeteredNetwork(context: Context): Boolean {
-    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-    return cm?.isActiveNetworkMetered ?: false
 }

@@ -198,6 +198,25 @@ class TaskRepositoryTest {
         assertThat(scheduler.scheduled).contains(saved.occurrence.id)
     }
 
+    /**
+     * O "Desfazer" do Excluir devolve a ocorrência com o que ela viveu, não zerada.
+     *
+     * A linha é recriada por `materialize` e, com a data no passado e sem repetição, gravada
+     * direto como não realizada. Sem o `lastReminderAt` da ocorrência apagada, o aviso que
+     * tocou às 08:00 deixa de ter tocado: o cartão migra para "Não consegui avisar" e o
+     * aplicativo assume uma falha que não houve — a falta foi dela, que não tomou.
+     */
+    @Test
+    fun desfazerExclusaoDeNaoRealizadaPreservaOUltimoAviso() = runBlocking {
+        val (series, vencida, aviso) = naoRealizadaComAviso()
+        repo.deleteOccurrence(vencida.id)
+        repo.restore(AgendaItem(vencida, series))
+
+        val stored = occurrenceDao.get(vencida.id)!!.toDomain()
+        assertThat(stored.status).isEqualTo(OccurrenceStatus.MISSED)
+        assertThat(stored.lastReminderAt).isEqualTo(aviso)
+    }
+
     @Test
     fun completeNaoMexemJaConcluida() = runBlocking {
         val saved = repo.saveDraft(completeDraft("Remédio", LocalDate.of(2026, 8, 21), LocalTime.of(8, 0)))
@@ -560,6 +579,30 @@ class TaskRepositoryTest {
         status = status,
         missedAt = missedAt,
     )
+
+    /**
+     * Uma não realizada com aviso entregue — o caso que a home mostra em "Não realizadas".
+     * A série é única e a data é de ontem: é o que faz a linha regravada (pelo "Desfazer" ou
+     * por uma edição) cair de novo em `MISSED`, onde o `lastReminderAt` perdido trocaria a
+     * história contada a ela.
+     */
+    private suspend fun naoRealizadaComAviso(): Triple<TaskSeries, TaskOccurrence, Instant> {
+        val series = serieDe("s-rem", "Remédio").copy(
+            startLocalDate = LocalDate.of(2026, 8, 19),
+            recurrence = RecurrenceRule(),
+        )
+        seriesDao.upsert(series.toEntity())
+        val aviso = LocalDateTime.of(2026, 8, 19, 8, 0).atZone(zone).toInstant()
+        val vencida = ocorrenciaDe(
+            series.id,
+            LocalDate.of(2026, 8, 19),
+            LocalTime.of(8, 0),
+            OccurrenceStatus.MISSED,
+            missedAt = clock.instant(),
+        ).copy(lastReminderAt = aviso)
+        occurrenceDao.upsert(vencida.toEntity())
+        return Triple(series, vencida, aviso)
+    }
 
     /**
      * O lembrete adiado pelo horário de silêncio só toca às 08:00 do dia seguinte — quando
@@ -1133,6 +1176,52 @@ class TaskRepositoryTest {
         )
 
         assertThat(gravou).isEqualTo(EditOutcome.SAVED)
+    }
+
+    /**
+     * Corrigir o horário de uma não realizada não apaga o aviso que já saiu.
+     *
+     * A data é a mesma, então a linha regravada tem o mesmo id e substitui a antiga: sem o
+     * `lastReminderAt` dela, o aviso que tocou às 08:00 deixa de ter tocado e o cartão passa
+     * a dizer "O aviso não tocou." — o aplicativo se acusando de uma falha que foi dela.
+     */
+    @Test
+    fun editarNaoRealizadaDeMesmaDataPreservaOUltimoAviso() = runBlocking {
+        val (_, vencida, aviso) = naoRealizadaComAviso()
+
+        val gravou = repo.editOccurrence(
+            vencida.id,
+            "Remédio",
+            LocalDate.of(2026, 8, 19),
+            LocalTime.of(9, 0),
+            RecurrenceRule(),
+        )
+
+        assertThat(gravou).isEqualTo(EditOutcome.SAVED)
+        val stored = occurrenceDao.get(vencida.id)!!.toDomain()
+        assertThat(stored.status).isEqualTo(OccurrenceStatus.MISSED)
+        assertThat(stored.lastReminderAt).isEqualTo(aviso)
+    }
+
+    /**
+     * Data nova, id novo: a ocorrência que nasce aqui não herda o aviso da que ficou para
+     * trás — para esta data nenhum aviso saiu, e `null` é a verdade.
+     */
+    @Test
+    fun editarParaOutraDataNaoHerdaOUltimoAvisoDaAntiga() = runBlocking {
+        val (_, vencida, _) = naoRealizadaComAviso()
+
+        repo.editOccurrence(
+            vencida.id,
+            "Remédio",
+            LocalDate.of(2026, 8, 20),
+            LocalTime.of(9, 0),
+            RecurrenceRule(),
+        )
+
+        val nova = occurrenceDao.get(OccurrenceIds.of("s-rem", LocalDate.of(2026, 8, 20)))!!.toDomain()
+        assertThat(nova.status).isEqualTo(OccurrenceStatus.MISSED)
+        assertThat(nova.lastReminderAt).isNull()
     }
 
     /**

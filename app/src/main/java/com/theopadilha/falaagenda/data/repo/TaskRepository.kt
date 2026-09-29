@@ -285,7 +285,12 @@ class TaskRepository(
             ),
             updatedAt = now,
         )
+        // Desfazer não zera o aviso que já saiu: a linha que volta é a MESMA
+        // (`seriesId:localDate`), e `materialize` nasce com `lastReminderAt` nulo. Zerado, o
+        // cartão migrava para "Não consegui avisar" — o aplicativo assumindo uma falha que
+        // foi dela, que foi avisada e não fez (ver `missedSections`).
         val fresh = OccurrenceLifecycle.materialize(series, item.occurrence.localDate, now)
+            .copy(lastReminderAt = item.occurrence.lastReminderAt)
         if (fresh.scheduledAt.isBefore(now) && !series.recurrence.isRecurring) {
             occurrenceDao.applyBatch(
                 seriesDao = seriesDao,
@@ -384,7 +389,14 @@ class TaskRepository(
             // materialização futura.
             skippedDates = OccurrenceLifecycle.unskipDate(series.skippedDates, date),
         )
-        val refreshed = OccurrenceLifecycle.materialize(updatedSeries, date, now)
+        // Mesma data é a MESMA linha (`seriesId:localDate`): a ocorrência editada substitui a
+        // antiga, e o aviso que já saiu não deixa de ter saído porque ela corrigiu o horário.
+        // Zerado, o cartão migrava para "Não consegui avisar" e dizia "O aviso não tocou."
+        // para quem foi avisada (ver `missedSections`). Data nova é id novo: aí não há aviso
+        // nenhum para herdar.
+        val refreshed = OccurrenceLifecycle.materialize(updatedSeries, date, now).let { nova ->
+            if (original.localDate == date) nova.copy(lastReminderAt = original.lastReminderAt) else nova
+        }
         val serieRow = updatedSeries.toEntity()
         val substituidas = pending.map { it.id }
         if (refreshed.scheduledAt.isBefore(now) && !updatedSeries.recurrence.isRecurring) {

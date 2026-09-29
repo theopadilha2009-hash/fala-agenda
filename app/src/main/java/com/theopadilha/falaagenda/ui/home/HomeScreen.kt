@@ -903,7 +903,7 @@ private fun channelNotificationSettings(context: Context): Intent =
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun MicDock(
+internal fun MicDock(
     state: VoiceState,
     partial: String,
     error: String?,

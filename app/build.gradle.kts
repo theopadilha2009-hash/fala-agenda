@@ -85,7 +85,11 @@ android {
 
     testOptions {
         unitTests {
-            isIncludeAndroidResources = false
+            // Ligado para o `FalaAnunciadaTest`: sem o manifesto mesclado o
+            // `createComposeRule` não sobe no Robolectric ("Unable to resolve activity for
+            // Intent { cmp=org.robolectric.default/... }"). Custa tempo em TODAS as classes
+            // Robolectric, não só na nova — é o número que este PR mede no CI.
+            isIncludeAndroidResources = true
             isReturnDefaultValues = true
         }
     }

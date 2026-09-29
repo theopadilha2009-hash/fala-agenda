@@ -632,6 +632,57 @@ class TaskRepositoryTest {
         }
     }
 
+    /**
+     * O alarme da virada é o único gatilho do dia — o `DATE_CHANGED` que o manifesto declarava
+     * era morto. Armá-lo depois das leituras deixava o aplicativo sem o dia seguinte quando uma
+     * delas falhava: `SQLiteDiskIOException` é condição conhecida desta base (ver
+     * `AgendaWidgetSync`), e tanto o start do processo quanto o próprio receiver engolem a
+     * exceção com log. O dia não viraria até ela abrir o aplicativo — o defeito original, de
+     * volta pela porta dos fundos.
+     */
+    @Test
+    fun falhaNaLeituraNaoImpedeOArmarDaVirada() {
+        runBlocking {
+            occurrenceDao.throwOnByStatus = true
+
+            val resultado = runCatching { repo.rescheduleAll() }
+
+            assertThat(resultado.isFailure).isTrue()
+            assertThat(scheduler.dailySweeps)
+                .containsExactly(OccurrenceLifecycle.nextDaySweep(clock.instant(), zone))
+        }
+    }
+
+    /**
+     * O widget repinta em boot, na troca de hora e em toda virada do dia, e só mostra o que
+     * ainda está de pé: as concluídas e as não realizadas não precisam nem sair do banco. O que
+     * ele exibe — `today` e `upcoming` — sai exclusivamente das pendentes, então o retrato é o
+     * mesmo que o da tela sem pagar o histórico inteiro.
+     */
+    @Test
+    fun retratoDoWidgetNaoLeOHistoricoInteiro() {
+        runBlocking {
+            val daTarde = repo.saveDraft(
+                completeDraft("Vitamina", LocalDate.of(2026, 8, 20), LocalTime.of(18, 0)),
+            )
+            val concluida = repo.saveDraft(
+                completeDraft("Cabelo", LocalDate.of(2026, 8, 20), LocalTime.of(19, 0)),
+            )
+            repo.complete(concluida.occurrence.id)
+            occurrenceDao.getAllCalls = 0
+
+            val doWidget = repo.snapshotPendentes()
+            val chamadasAoHistorico = occurrenceDao.getAllCalls
+            val daTela = repo.snapshotAgenda()
+
+            assertThat(chamadasAoHistorico).isEqualTo(0)
+            assertThat(doWidget.today).isEqualTo(daTela.today)
+            assertThat(doWidget.upcoming).isEqualTo(daTela.upcoming)
+            assertThat(doWidget.today.map { it.occurrence.id })
+                .containsExactly(daTarde.occurrence.id)
+        }
+    }
+
     private fun serieDe(id: String, title: String) = TaskSeries(
         id = id,
         title = title,
@@ -1602,6 +1653,10 @@ private class FakeOccurrenceDao : OccurrenceDao {
 
     /** Quantas vezes o histórico inteiro foi lido — a varredura não deve precisar dele. */
     var getAllCalls = 0
+
+    /** Falha de leitura no meio do caminho, como o disco cheio que a base já trata. */
+    var throwOnByStatus = false
+
     private fun emit() { flow.value = rows.values.toList() }
     override suspend fun get(id: String): OccurrenceEntity? {
         onFirstGet?.let { hook ->
@@ -1611,7 +1666,10 @@ private class FakeOccurrenceDao : OccurrenceDao {
         return rows[id]
     }
     override suspend fun forSeries(seriesId: String) = rows.values.filter { it.seriesId == seriesId }
-    override suspend fun byStatus(status: String) = rows.values.filter { it.status == status }
+    override suspend fun byStatus(status: String): List<OccurrenceEntity> {
+        if (throwOnByStatus) throw java.io.IOException("SQLiteDiskIOException")
+        return rows.values.filter { it.status == status }
+    }
     override suspend fun getAll(): List<OccurrenceEntity> {
         getAllCalls += 1
         return rows.values.toList()

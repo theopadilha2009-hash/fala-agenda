@@ -35,7 +35,7 @@ class AgendaWidgetProvider : AppWidgetProvider() {
         if (app is FalaAgendaApplication) {
             app.appScope.launch {
                 try {
-                    val snapshot = snapshotOrFallback { app.container.tasks.snapshotAgenda() }
+                    val snapshot = snapshotOrFallback { app.container.tasks.snapshotPendentes() }
                     val mode = themeModeOf(app)
                     val remote = views(app, snapshot, widgetColors(app, mode))
                     appWidgetIds.forEach { appWidgetManager.updateAppWidget(it, remote) }
@@ -72,7 +72,7 @@ class AgendaWidgetProvider : AppWidgetProvider() {
          */
         suspend fun refreshNow(context: Context) {
             val app = context.applicationContext as? FalaAgendaApplication ?: return
-            val snapshot = snapshotOrFallback { app.container.tasks.snapshotAgenda() }
+            val snapshot = snapshotOrFallback { app.container.tasks.snapshotPendentes() }
             val mode = themeModeOf(app)
             withContext(Dispatchers.Main) { paint(context, snapshot, mode) }
         }
@@ -113,8 +113,13 @@ class AgendaWidgetProvider : AppWidgetProvider() {
                     title = next.series.title,
                     whenLabel = "${AgendaFormat.dateLabel(next.occurrence.localDate, today)} · ${AgendaFormat.time(next.series.localTime)}",
                     empty = false,
-                    // Sem nada à frente, o que sobrou é o que já passou — e o rótulo diz isso,
-                    // como o cabeçalho da home já faz (ver `AgendaFormat.headline`).
+                    // Sem nada à frente, o que sobrou é o que já passou — e o rótulo diz isso.
+                    // O critério aqui é a HORA (`scheduledAt`), e o da home é o DIA
+                    // (`AgendaFormat.headline` reserva "Atrasada" para a data vencida e mostra
+                    // a tarefa de hoje com horário passado como "há 7 h"): às 15:00, com o
+                    // remédio das 08:00 pendente e nada à frente, o widget diz
+                    // "Atrasada — Hoje · 08:00" e a home diz "há 7 h". A divergência é
+                    // decisão de produto e está registrada no PR.
                     late = next.occurrence.scheduledAt.isBefore(now),
                 )
             }

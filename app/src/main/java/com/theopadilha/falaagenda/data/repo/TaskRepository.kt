@@ -67,6 +67,17 @@ class TaskRepository(
         sectionsOf(seriesDao.getAll(), occurrenceDao.getAll())
 
     /**
+     * O retrato que o widget mostra: só o que ainda está de pé.
+     *
+     * Igual a [snapshotAgenda] no que o widget lê — `today` e `upcoming` saem exclusivamente das
+     * pendentes, em [sectionsOf] como aqui —, mas sem puxar o histórico: as concluídas e as não
+     * realizadas ficam de fora da leitura, não só do filtro. Ele repinta no boot, na troca de
+     * hora e em toda virada do dia, e o que cresce sem poda é justamente o que ele não mostra.
+     */
+    suspend fun snapshotPendentes(): AgendaSections =
+        sectionsOf(seriesDao.getAll(), occurrenceDao.byStatus(OccurrenceStatus.PENDING.name))
+
+    /**
      * A série entra no cálculo de disparo com o fuso do relógio AGORA, nunca com o que ficou
      * gravado no dia do cadastro. Aqui é uma pessoa, um celular, um app: o horário que ela lê
      * na tela é o horário local dela hoje, e o aviso tem que tocar nele. Com o fuso velho,
@@ -577,6 +588,15 @@ class TaskRepository(
 
     suspend fun rescheduleAll() = writer.withLock {
         val now = clock.instant()
+        // Primeiro de tudo, e antes de qualquer leitura, porque é o único gatilho da virada do
+        // dia: `DATE_CHANGED` não é exceção do broadcast implícito desde o Android 8 (o app tem
+        // targetSdk 36) e só `TIME_SET`, `TIMEZONE_CHANGED` e `NEXT_ALARM_CLOCK_CHANGED` chegam,
+        // então quem vira o dia é este alarme — rearmado aqui, no start do processo, no boot, na
+        // troca de hora e pela própria virada. Não depende de ocorrência nenhuma, e uma leitura
+        // que estoure no meio do caminho (`SQLiteDiskIOException` é condição conhecida desta
+        // base) não pode deixar o dia seguinte sem varredura: os dois chamadores engolem a
+        // exceção com log, e o dia não viraria até ela abrir o aplicativo.
+        scheduler.scheduleDailySweep(OccurrenceLifecycle.nextDaySweep(now, clock.zoneId()))
         val seriesList = seriesDao.getAll().map { it.toTaskSeries() }
         seriesList.forEach { series ->
             applyLifecycle(series, now)
@@ -601,12 +621,6 @@ class TaskRepository(
                 )
                 occurrenceDao.upsert(occ.copy(inexactAlarm = scheduled.inexact).toEntity())
             }
-        // A varredura da virada do dia não tem broadcast que a acorde: `DATE_CHANGED` não é
-        // exceção do broadcast implícito desde o Android 8 (o app tem targetSdk 36), e só
-        // `TIME_SET`, `TIMEZONE_CHANGED` e `NEXT_ALARM_CLOCK_CHANGED` chegam. Quem vira o dia
-        // é este alarme — rearmado aqui, no start do processo, no boot, na troca de hora e
-        // pela própria virada.
-        scheduler.scheduleDailySweep(OccurrenceLifecycle.nextDaySweep(now, clock.zoneId()))
     }
 
     private suspend fun applyLifecycle(series: TaskSeries, now: Instant) {

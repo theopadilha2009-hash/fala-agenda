@@ -7,6 +7,7 @@ import android.content.Intent
 import android.util.Log
 import com.theopadilha.falaagenda.FalaAgendaApplication
 import com.theopadilha.falaagenda.data.repo.ActionOutcome
+import com.theopadilha.falaagenda.data.repo.Delivery
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -24,16 +25,14 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
         app.appScope.launch {
             try {
                 withTimeout(WORK_TIMEOUT_MS) {
-                    val result = app.container.tasks.onAlarmFired(occurrenceId)
-                    if (result.notify) {
-                        val delivery = NotificationHelper.showReminder(
-                            context,
-                            occurrenceId,
-                            result.seriesId,
-                            result.title,
-                        )
-                        if (delivery != NotificationHelper.ReminderDelivery.POSTED) {
-                            Log.w(TAG, "Lembrete $occurrenceId não apareceu: $delivery")
+                    app.container.tasks.onAlarmFired(occurrenceId) { title, seriesId ->
+                        // O motivo do aviso não sair (permissão negada, canal desligado, sistema
+                        // recusando) mora no NotificationHelper, e é lá que ele entra no log —
+                        // junto do occurrenceId. Logar de novo aqui só repetiria a linha.
+                        when (NotificationHelper.showReminder(context, occurrenceId, seriesId, title)) {
+                            NotificationHelper.ReminderDelivery.POSTED -> Delivery.ARRIVED
+                            NotificationHelper.ReminderDelivery.BLOCKED -> Delivery.BLOCKED
+                            NotificationHelper.ReminderDelivery.FAILED -> Delivery.FAILED
                         }
                     }
                 }

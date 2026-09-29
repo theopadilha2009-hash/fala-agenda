@@ -1,7 +1,7 @@
 package com.theopadilha.falaagenda.ui.home
 
 import android.Manifest
-import android.app.NotificationManager
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,7 +11,7 @@ import android.provider.Settings
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -80,6 +80,7 @@ import com.theopadilha.falaagenda.platform.DeviceIntents
 import com.theopadilha.falaagenda.reminders.NotificationHelper
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
+import com.theopadilha.falaagenda.speech.unwrapActivity
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.DraftSaver
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
@@ -146,12 +147,12 @@ fun HomeScreen(
     var batteryOk by remember { mutableStateOf(DeviceIntents.isBatteryUnrestricted(context)) }
     var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
     var micRefused by rememberSaveable { mutableStateOf(false) }
-    var alerts by remember { mutableStateOf(reminderAlerts(context)) }
+    var alerts by remember { mutableStateOf(NotificationHelper.reminderAlerts(context)) }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         // Voltou dos Ajustes: o cartão some sozinho quando o que faltava foi ligado.
         micGranted = hasMicPermission(context)
-        alerts = reminderAlerts(context)
+        alerts = NotificationHelper.reminderAlerts(context)
         batteryOk = DeviceIntents.isBatteryUnrestricted(context)
     }
 
@@ -178,6 +179,20 @@ fun HomeScreen(
     val openOrReport: (Intent, String) -> Unit = { intent, failure ->
         if (!DeviceIntents.open(context, intent)) {
             scope.launch { snackbar.showSnackbar(failure) }
+        }
+    }
+    // O pedido de avisos voltou sem permissão, ou nem chegou a aparecer — negada de vez, ou
+    // permissão já dada e o que falta é o canal. Nos dois casos só os Ajustes devolvem os
+    // avisos: sem esta saída o toque não fazia nada e o lembrete continuava mudo para sempre.
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        alerts = NotificationHelper.reminderAlerts(context)
+        if (needsNotificationSettings(granted, alerts, canStillAskNotifications(context))) {
+            openOrReport(
+                appNotificationSettings(context),
+                "Não consegui abrir os ajustes de aviso deste celular.",
+            )
         }
     }
     // "Enviar o aplicativo" copia o APK instalado inteiro (segundos) antes de abrir o
@@ -557,36 +572,27 @@ fun HomeScreen(
                         }
                     }
                 }
-                if (alerts != ReminderAlerts.OK) {
+                reminderAlertCard(alerts)?.let { card ->
                     item {
                         QuietCard {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    when (alerts) {
-                                        ReminderAlerts.OFF -> "Os avisos estão desligados"
-                                        else -> "Os avisos estão sem som"
-                                    },
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
-                                Text(
-                                    when (alerts) {
-                                        ReminderAlerts.OFF ->
-                                            "Assim o lembrete não aparece na hora marcada. Toque em Abrir ajustes de aviso e ligue os avisos do Fala Agenda."
-                                        else ->
-                                            "Assim o lembrete pode passar despercebido. Toque em Abrir ajustes de aviso e deixe os avisos com som."
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
+                                Text(card.title, style = MaterialTheme.typography.titleMedium)
+                                Text(card.text, style = MaterialTheme.typography.bodyMedium)
                                 TextButton(
                                     onClick = {
-                                        openOrReport(
-                                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
-                                            "Não consegui abrir os ajustes de aviso deste celular.",
-                                        )
+                                        when (alertFix(alerts)) {
+                                            AlertFix.ASK_NOTIFICATIONS -> notificationPermission.launch(
+                                                Manifest.permission.POST_NOTIFICATIONS,
+                                            )
+                                            AlertFix.OPEN_CHANNEL_SETTINGS -> openOrReport(
+                                                channelNotificationSettings(context),
+                                                "Não consegui abrir os ajustes de aviso deste celular.",
+                                            )
+                                            null -> Unit
+                                        }
                                     },
                                     modifier = Modifier.heightIn(min = 56.dp),
-                                ) { Text("Abrir ajustes de aviso", style = MaterialTheme.typography.labelLarge) }
+                                ) { Text(card.button, style = MaterialTheme.typography.labelLarge) }
                             }
                         }
                     }
@@ -782,17 +788,36 @@ private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
 
-private enum class ReminderAlerts { OK, OFF, QUIET }
-
-/** Mesma checagem do NotificationHelper; dá para unificar lá quando os dois lados mexerem juntos. */
-private fun reminderAlerts(context: Context): ReminderAlerts {
-    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return ReminderAlerts.OFF
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return ReminderAlerts.OK
-    val manager = context.getSystemService(NotificationManager::class.java) ?: return ReminderAlerts.OK
-    val importance = manager.getNotificationChannel(NotificationHelper.CHANNEL_ID)?.importance
-        ?: return ReminderAlerts.OK
-    return if (importance < NotificationManager.IMPORTANCE_DEFAULT) ReminderAlerts.QUIET else ReminderAlerts.OK
+/**
+ * O sistema ainda mostra o diálogo de permissão de avisos? Falso antes do primeiro pedido e
+ * depois de uma negativa definitiva — e é o desfecho do pedido que separa os dois. Por isso
+ * esta resposta crua é consultada DEPOIS do pedido (ver [needsNotificationSettings]), nunca
+ * antes, para decidir se vale a pena pedir.
+ */
+private fun canStillAskNotifications(context: Context): Boolean {
+    // Antes do Android 13 a permissão de aviso não é pedida em diálogo: ou os avisos estão
+    // ligados, ou foi ela quem os desligou nos Ajustes — e aí é lá que se volta atrás.
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+    val activity = unwrapActivity(context) as? Activity ?: return false
+    return ActivityCompat.shouldShowRequestPermissionRationale(
+        activity,
+        Manifest.permission.POST_NOTIFICATIONS,
+    )
 }
+
+private fun appNotificationSettings(context: Context): Intent =
+    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+
+/**
+ * Os Ajustes DO CANAL: é onde ficam o som e a vibração do lembrete. Mandá-la aos Ajustes
+ * gerais do aplicativo deixaria o "sem som" sem conserto — a permissão está dada, e o que
+ * falta não se liga naquela tela.
+ */
+private fun channelNotificationSettings(context: Context): Intent =
+    Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        .putExtra(Settings.EXTRA_CHANNEL_ID, NotificationHelper.CHANNEL_ID)
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable

@@ -115,6 +115,80 @@ class NotificationHelperTest {
     }
 
     @Test
+    fun semPermissaoOsAvisosEstaoDesligados() {
+        liberarNotificacoes()
+        shadowOf(gerente).setNotificationsEnabled(false)
+
+        assertThat(NotificationHelper.reminderAlerts(contexto))
+            .isEqualTo(NotificationHelper.ReminderAlerts.OFF)
+    }
+
+    /**
+     * Canal DESLIGADO não é canal quieto: com `IMPORTANCE_NONE` a notificação não é exibida de
+     * forma nenhuma. Contado como "sem som", o botão do próprio cartão de avisos abria os
+     * Ajustes do canal, ela desligava o canal em vez de só baixar o som, e daí em diante o app
+     * dizia "sem som" enquanto o remédio das 08:00 nunca mais aparecia.
+     */
+    @Test
+    fun canalDesligadoDeixaOsAvisosDesligados() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_NONE)
+
+        assertThat(NotificationHelper.reminderAlerts(contexto))
+            .isEqualTo(NotificationHelper.ReminderAlerts.OFF)
+    }
+
+    /**
+     * O canal desligado também não pode devolver `POSTED`: quem lê esse desfecho gasta o degrau
+     * da escada e marca a ocorrência como avisada. Ela nunca viu nada, e o aviso seguinte —
+     * que o sistema também descartaria — deixava de ser armado.
+     */
+    @Test
+    fun canalDesligadoNaoPostaOLembrete() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_NONE)
+
+        val entrega = NotificationHelper.showReminder(contexto, ocorrencia, "s1", "Vitamina")
+
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.BLOCKED)
+        assertThat(shadowOf(gerente).size()).isEqualTo(0)
+    }
+
+    /**
+     * O canal rebaixado (mas ligado) continua sendo entrega: a notificação aparece, só não faz
+     * barulho — e é o cartão "sem som" que cuida disso. Desligado é que não é entrega.
+     */
+    @Test
+    fun canalRebaixadoContinuaPostandoOLembrete() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_LOW)
+
+        val entrega = NotificationHelper.showReminder(contexto, ocorrencia, "s1", "Vitamina")
+
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.POSTED)
+        assertThat(shadowOf(gerente).size()).isEqualTo(1)
+    }
+
+    @Test
+    fun canalRebaixadoDeixaOsAvisosSemSom() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_LOW)
+
+        assertThat(NotificationHelper.reminderAlerts(contexto))
+            .isEqualTo(NotificationHelper.ReminderAlerts.QUIET)
+    }
+
+    @Test
+    fun canalAltoComPermissaoEhAvisoQueFunciona() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_HIGH)
+
+        assertThat(NotificationHelper.reminderAlerts(contexto))
+            .isEqualTo(NotificationHelper.ReminderAlerts.OK)
+    }
+
+
+    @Test
     fun notificacaoBloqueadaEhSilenciosa() {
         liberarNotificacoes()
         criarCanal(NotificationManager.IMPORTANCE_HIGH)
@@ -128,8 +202,10 @@ class NotificationHelperTest {
         liberarNotificacoes()
         NotificationHelper.showReminder(contexto, ocorrencia, "s1", "Vitamina")
 
-        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val entrega =
+            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
 
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.POSTED)
         assertThat(shadowOf(gerente).size()).isEqualTo(2)
         assertThat(shadowOf(gerente).getNotification(idDoLembrete())).isNotNull()
         assertThat(shadowOf(gerente).getNotification(idDoAviso())).isNotNull()
@@ -150,8 +226,29 @@ class NotificationHelperTest {
         liberarNotificacoes()
         shadowOf(gerente).setNotificationsEnabled(false)
 
-        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val entrega =
+            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
 
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.BLOCKED)
+        assertThat(shadowOf(gerente).size()).isEqualTo(0)
+    }
+
+    /**
+     * O aviso de ação não aplicada sai pelo MESMO canal do lembrete, e o canal desligado o
+     * descartava calado: `areNotificationsEnabled()` continua verdadeiro, o `notify` não lança,
+     * e a notificação some antes de ela ver. Aqui isso pesa mais que no lembrete — o aviso
+     * existe só para dizer que o "Adiar" dela não pegou; descartado, ela fica esperando um
+     * aviso que ninguém agendou, sem saber de nada. Mesmo guard: canal desligado não é entrega.
+     */
+    @Test
+    fun canalDesligadoNaoPostaOAvisoDeAcao() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_NONE)
+
+        val entrega =
+            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.BLOCKED)
         assertThat(shadowOf(gerente).size()).isEqualTo(0)
     }
 

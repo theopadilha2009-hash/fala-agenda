@@ -94,6 +94,22 @@ class MissedSectionsTest {
     }
 
     /**
+     * O fragmento é emendado no meio da linha do cartão e antes do ponto do
+     * `contentDescription`: com pontuação própria ele sai como "não tocou.. Toque para
+     * editar." — ponto duplo e ponto no meio, justamente para quem ouve pelo TalkBack.
+     */
+    @Test
+    fun oFragmentoVaiSemPontuacaoFinal() {
+        val remedio = ficouParaTras("Tomar remédio", ultimoAviso = null)
+
+        val note = missedSections(listOf(remedio)).single().note!!
+
+        assertThat(note.trim()).isEqualTo(note)
+        assertThat(note).doesNotContain(".")
+        assertThat(note.last()).isNotEqualTo('.')
+    }
+
+    /**
      * Os dois casos dividem a seção sem que nenhuma ocorrência fique fora: a que ficou para
      * trás sem aviso sumia da agenda se a divisão fosse um filtro.
      */

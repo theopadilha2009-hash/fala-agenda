@@ -31,6 +31,10 @@ internal fun missedReason(item: AgendaItem): MissedReason =
  * [note] entra na linha do cartão no lugar da recorrência: "08:00 · O aviso não tocou" conta
  * o que aconteceu; "08:00 · Só uma vez" não diz nada sobre o aviso que faltou. Nula quer
  * dizer "a linha fica como sempre foi".
+ *
+ * O fragmento vai sem pontuação final: ele é emendado no meio de uma linha que continua
+ * ("… · O aviso não tocou · R$ 80,00") e antes do ponto do `contentDescription` — com o ponto
+ * aqui, quem ouve pelo TalkBack escuta "não tocou.. Toque para editar".
  */
 internal data class MissedSection(
     val title: String,
@@ -48,7 +52,7 @@ internal data class MissedSection(
 internal fun missedSections(missed: List<AgendaItem>): List<MissedSection> = listOf(
     MissedSection(
         title = "Não consegui avisar",
-        note = "O aviso não tocou.",
+        note = "O aviso não tocou",
         items = missed.filter { missedReason(it) == MissedReason.NOT_WARNED },
     ),
     MissedSection(

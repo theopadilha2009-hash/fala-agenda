@@ -60,9 +60,14 @@ fun WriteTaskScreen(
     // Sair no meio da gravação deixava o desfecho sem quem o anunciasse: a gravação termina
     // no escopo do ViewModel, a tela que a pediu já não existe, e ela nunca fica sabendo se
     // o aviso valeu — nem aparece o cartão do alarme inexato. O botão Cancelar já sai da
-    // mão dela neste estado; o gesto de voltar do sistema precisa da mesma guarda. A tela
-    // de escrever (o entendimento da fala) sai daqui com `saving` falso: o rascunho dela
-    // fica na sessão até alguém mostrá-lo, então voltar não perde nada.
+    // mão dela neste estado; o gesto de voltar do sistema precisa da mesma guarda.
+    //
+    // A guarda é da gravação, e só dela: a tela de escrever (o entendimento da fala) chega
+    // aqui com `saving` falso, e o rascunho que fica na sessão não é inofensivo como este
+    // comentário já afirmou — é ele que sequestra a próxima abertura da tela (a rota
+    // `"write"` encontra `WriteStep.Ready` e navega para a confirmação do recado
+    // abandonado). Aquele voltar é tratado pela rota, que descarta o parse em voo antes de
+    // sair (`cancelWrite`, em `FalaAgendaRoot.kt`).
     BackHandler(enabled = saving) { }
     val submit = {
         val value = text.trim()

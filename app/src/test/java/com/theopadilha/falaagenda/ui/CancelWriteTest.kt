@@ -30,6 +30,12 @@ import java.time.LocalTime
  * Room e do `NavHost`), então o que se prova aqui é o gesto de sair que a rota chama — o
  * mesmo [cancelWrite] do `onCancel` — contra uma [SpeechSession] de verdade e o que a rota
  * voltaria a encontrar na próxima composição.
+ *
+ * As duas portas de saída da tela chamam este mesmo gesto: o "Cancelar" e o voltar do
+ * sistema (o `BackHandler` da rota `"write"`, habilitado enquanto há parse em voo). O
+ * `BackHandler` em si não é alcançável aqui — montar a rota exige o `HomeViewModel`, o Room
+ * e o `NavHost`, e não há costura para prender em voo o parse que vem do `AppContainer`;
+ * sem isso o defeito não se reproduz. O que está coberto é o gesto que os dois chamam.
  */
 @RunWith(RobolectricTestRunner::class)
 class CancelWriteTest {

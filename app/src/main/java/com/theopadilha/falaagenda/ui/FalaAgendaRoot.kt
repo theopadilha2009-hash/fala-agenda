@@ -1,6 +1,7 @@
 package com.theopadilha.falaagenda.ui
 
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -462,6 +463,16 @@ fun FalaAgendaRoot(
                     }
                     WriteStep.Waiting -> Unit
                 }
+            }
+            // O voltar do sistema não passa pelo "Cancelar" da tela: o `BackHandler` de lá
+            // guarda a gravação, e aqui `saving` é falso. Sem esta guarda ele popava a rota
+            // direto pelo `NavHost` e o parse daquela fala continuava em voo — o mesmo
+            // estrago do botão, pela outra porta. É a guarda de fora: o `BackHandler` da
+            // tela, quando habilitado ("Daqui N min", que grava), registra depois e vence.
+            // Sem nada em voo não há o que descartar, e o `enabled` falso devolve o voltar
+            // de sempre ao `NavHost`.
+            BackHandler(enabled = speech.understanding) {
+                cancelWrite(nav, homeVm.speech)
             }
             WriteTaskScreen(
                 heading = "Escrever tarefa",

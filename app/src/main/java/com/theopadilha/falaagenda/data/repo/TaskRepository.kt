@@ -521,15 +521,18 @@ class TaskRepository(
                 scheduler.scheduleRecovery(occurrence.id, now.plusSeconds(DELIVERY_RETRY_DELAY_SECONDS))
                 return
             }
-            // Permanente: permissão negada ou canal desligado. Insistir de cinco em cinco
-            // minutos até a meia-noite não muda nada disso — só acorda o processo e gasta
-            // binder no aparelho dela, ~250 vezes por dia, por causa de uma chave que ela
-            // desligou sem querer. Nada é reagendado: a ocorrência fica pendente com a hora
-            // marcada e a varredura da virada do dia a marca como não realizada (o terminador).
+            // Permanente: permissão negada ou canal desligado. Insistir não muda nada disso — a
+            // chave é dela, e o estado só volta se ela mexer. Repetir de cinco em cinco minutos
+            // (DELIVERY_RETRY_DELAY_SECONDS) até a janela de entrega pendente fechar só acordaria
+            // o processo e gastaria binder no aparelho dela. Nada é reagendado aqui: a ocorrência
+            // fica pendente com a hora marcada.
             //
-            // Se ela religar os avisos depois, o aviso perdido NÃO volta — foi o preço de não
-            // insistir. Quem conta isso para ela é o cartão de avisos da home, que existe
-            // justamente enquanto os avisos estiverem desligados.
+            // O aviso não morreu, porém. Enquanto a janela estiver aberta, o `rescheduleAll` de
+            // todo start rearma a ocorrência no primeiro degrau — `reminderStep` zerado e
+            // `lastReminderAt` nulo mandam `first = true`, com o instante marcado já no passado —
+            // e o lembrete toca atrasado quando ela abre o aplicativo. Passada a janela, a
+            // varredura a marca como não realizada (o terminador). Quem conta a ela que os avisos
+            // estavam desligados é o cartão de avisos da home.
             Delivery.BLOCKED -> return
         }
         val nextStep = ReminderPolicy.nextStep(occurrence.reminderStep)

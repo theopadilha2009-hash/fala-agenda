@@ -202,8 +202,10 @@ class NotificationHelperTest {
         liberarNotificacoes()
         NotificationHelper.showReminder(contexto, ocorrencia, "s1", "Vitamina")
 
-        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val entrega =
+            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
 
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.POSTED)
         assertThat(shadowOf(gerente).size()).isEqualTo(2)
         assertThat(shadowOf(gerente).getNotification(idDoLembrete())).isNotNull()
         assertThat(shadowOf(gerente).getNotification(idDoAviso())).isNotNull()
@@ -224,8 +226,29 @@ class NotificationHelperTest {
         liberarNotificacoes()
         shadowOf(gerente).setNotificationsEnabled(false)
 
-        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val entrega =
+            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
 
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.BLOCKED)
+        assertThat(shadowOf(gerente).size()).isEqualTo(0)
+    }
+
+    /**
+     * O aviso de ação não aplicada sai pelo MESMO canal do lembrete, e o canal desligado o
+     * descartava calado: `areNotificationsEnabled()` continua verdadeiro, o `notify` não lança,
+     * e a notificação some antes de ela ver. Aqui isso pesa mais que no lembrete — o aviso
+     * existe só para dizer que o "Adiar" dela não pegou; descartado, ela fica esperando um
+     * aviso que ninguém agendou, sem saber de nada. Mesmo guard: canal desligado não é entrega.
+     */
+    @Test
+    fun canalDesligadoNaoPostaOAvisoDeAcao() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_NONE)
+
+        val entrega =
+            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+
+        assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.BLOCKED)
         assertThat(shadowOf(gerente).size()).isEqualTo(0)
     }
 

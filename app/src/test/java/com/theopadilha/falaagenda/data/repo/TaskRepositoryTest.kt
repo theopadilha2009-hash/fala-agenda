@@ -680,13 +680,15 @@ class TaskRepositoryTest {
 
     /**
      * O aviso bloqueado (permissão negada, canal desligado) não é uma tentativa que possa dar
-     * certo daqui a cinco minutos: o estado não muda sozinho. Reagendar aqui eram ~250 disparos
-     * inúteis das 08:00 à meia-noite, cada um acordando o processo e chamando o binder para
-     * nada — no aparelho dela, por causa de uma chave que ela desligou sem querer.
+     * certo daqui a cinco minutos: o estado não muda sozinho. Reagendar aqui seria repetir a
+     * cada DELIVERY_RETRY_DELAY_SECONDS enquanto a janela de entrega pendente estivesse aberta,
+     * cada repetição acordando o processo e chamando o binder para nada — no aparelho dela, por
+     * causa de uma chave que ela desligou sem querer.
      *
-     * Nada é reagendado, o degrau não é gasto e a ocorrência fica pendente com a hora marcada:
-     * quem encerra é a virada do dia (ver o teste seguinte). Se ela religar os avisos depois,
-     * o aviso perdido não volta — é por isso que o cartão da home existe.
+     * Nada é reagendado, o degrau não é gasto e a ocorrência fica pendente com a hora marcada.
+     * O aviso não morre nisso: dentro da janela o start seguinte o rearma e ele toca atrasado
+     * (ver o teste seguinte); passada a janela, a varredura a marca como não realizada. É o
+     * cartão da home que conta a ela que os avisos estavam desligados.
      */
     @Test
     fun avisoBloqueadoNaoReagendaNada() {
@@ -708,6 +710,48 @@ class TaskRepositoryTest {
                 .isEqualTo(LocalDateTime.of(2026, 8, 20, 9, 0).atZone(zone).toInstant())
             assertThat(stored.lastReminderAt).isNull()
             assertThat(sched.recovered).doesNotContainKey(id)
+        }
+    }
+
+    /**
+     * O outro lado do não-reagendar: o aviso bloqueado não se perde. Ela desligou os avisos, o
+     * lembrete das 09:00 não saiu, e às 10:30 — dentro da janela de entrega pendente — ela abre
+     * o aplicativo. O `rescheduleAll` do start rearma a ocorrência no primeiro degrau
+     * (`reminderStep` zerado e `lastReminderAt` nulo mandam `first = true`) com o instante
+     * marcado já no passado, então o alarme toca atrasado em vez de a hora sumir. É melhor para
+     * ela do que perder o aviso, e é o que o comentário do `fire` promete.
+     */
+    @Test
+    fun avisoBloqueadoTocaAtrasadoDentroDaJanela() {
+        runBlocking {
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, clock, sched)
+            val series = serieDaManha(clock.instant())
+            seriesDao.upsert(series.toEntity())
+            val id = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(ocorrenciaDeHoje(series.id, LocalDate.of(2026, 8, 20)).toEntity())
+
+            repoDaManha.onAlarmFired(id) { _, _ -> Delivery.BLOCKED }
+            // O bloqueio em si não deixa nada armado para esta ocorrência.
+            assertThat(sched.scheduled).doesNotContain(id)
+
+            val dezEmeia = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 10, 30).atZone(zone).toInstant(),
+                zone,
+            )
+            sched.scheduled.clear()
+            TaskRepository(seriesDao, occDao, dezEmeia, sched).rescheduleAll()
+
+            val stored = occDao.get(id)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.PENDING)
+            // O instante marcado continua sendo o das 09:00, já no passado: o alarme rearmado
+            // dispara assim que armado, atrasado, e não no horário de amanhã.
+            assertThat(stored.nextReminderAt)
+                .isEqualTo(LocalDateTime.of(2026, 8, 20, 9, 0).atZone(zone).toInstant())
+            assertThat(stored.nextReminderAt).isLessThan(dezEmeia.instant())
+            assertThat(sched.cancelled).doesNotContain(id)
+            assertThat(sched.scheduled).contains(id)
         }
     }
 

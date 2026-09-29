@@ -148,12 +148,22 @@ object NotificationHelper {
      * Sai no mesmo canal do lembrete, que é onde ela já sabe procurar; um canal novo não teria
      * som nem permissão garantidos. Não leva botões: a ação que ela tocou é justamente a que
      * não pegou, e oferecê-la de novo só repetiria a falha.
+     *
+     * Vale o mesmo guard do [showReminder], e aqui ele pesa mais: este aviso existe só para
+     * dizer que a ação dela não pegou. Com o canal desligado o sistema o descartaria calado —
+     * ela tocaria em "Adiar", nada seria agendado, e ela ficaria esperando um aviso que não
+     * vem sem nunca saber por quê. O desfecho [ReminderDelivery.BLOCKED] diz isso a quem
+     * chamou.
      */
-    fun showActionNotApplied(context: Context, occurrenceId: String, action: String) {
+    fun showActionNotApplied(context: Context, occurrenceId: String, action: String): ReminderDelivery {
         ensureChannel(context)
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
             Log.w(TAG, "Aviso de ação não aplicada $occurrenceId não emitido: notificações bloqueadas")
-            return
+            return ReminderDelivery.BLOCKED
+        }
+        if (channelDisabled(context)) {
+            Log.w(TAG, "Aviso de ação não aplicada $occurrenceId não emitido: canal $CHANNEL_ID desligado")
+            return ReminderDelivery.BLOCKED
         }
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
@@ -164,7 +174,7 @@ object NotificationHelper {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ERROR)
             .build()
-        try {
+        return try {
             NotificationManagerCompat.from(context).notify(
                 AlarmIds.requestCode(occurrenceId, AlarmIds.NOTIF_NOT_APPLIED),
                 notification,
@@ -173,8 +183,10 @@ object NotificationHelper {
             if (remindersWillBeSilent(context)) {
                 Log.w(TAG, "Aviso de ação não aplicada $occurrenceId apareceu sem som: canal rebaixado")
             }
+            ReminderDelivery.POSTED
         } catch (e: SecurityException) {
             Log.w(TAG, "Aviso de ação não aplicada $occurrenceId recusado pelo sistema", e)
+            ReminderDelivery.FAILED
         }
     }
 

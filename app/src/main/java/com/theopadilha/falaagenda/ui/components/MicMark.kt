@@ -28,7 +28,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.speech.VoiceState
@@ -37,12 +39,22 @@ import kotlinx.coroutines.delay
 @Composable
 fun PulsingMic(
     state: VoiceState,
-    contentDescription: String,
+    // Sem descrição este microfone é ilustração: fica fora da leitura de tela, em vez de
+    // virar uma parada de foco que anuncia e não responde ao toque duplo.
+    contentDescription: String?,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
 ) {
     val listening = state == VoiceState.LISTENING
     val idle = state == VoiceState.IDLE || state == VoiceState.PREPARING
+    val actionable = onClick != null
+    val description = contentDescription
+    // Sem ação o microfone não é o mesmo botão verde cheio: durante os ~20 s de
+    // "Entendendo o recado…" ele parecia clicável e o toque não devolvia nada. O cinza
+    // é fundo claro com ícone escuro em ambos os temas, e o pulso para junto.
+    val fill = if (actionable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    val iconTint =
+        if (actionable) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     val pulse = rememberInfiniteTransition(label = "mic-pulse")
     val idleScale by pulse.animateFloat(
         initialValue = 1f,
@@ -74,7 +86,7 @@ fun PulsingMic(
             shake = 0f
         }
     }
-    val scale = if (idle) idleScale else 1f
+    val scale = if (idle && actionable) idleScale else 1f
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -92,14 +104,23 @@ fun PulsingMic(
                 scaleY = scale
             }
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.primary)
-            .semantics { this.contentDescription = contentDescription }
+            .background(fill)
+            .semantics {
+                if (description != null) {
+                    this.contentDescription = description
+                    // O estado da fala muda o que o microfone diz ("Pode falar agora" →
+                    // "Entendendo o recado…"), e a mudança não era anunciada. O anúncio
+                    // sai da troca da descrição, que só muda com o estado: a animação do
+                    // pulso recompõe a cada quadro sem mexer em semântica.
+                    liveRegion = LiveRegionMode.Polite
+                }
+            }
         if (onClick != null) {
             IconButton(onClick = onClick, modifier = buttonMod) {
                 Icon(
                     Icons.Outlined.Mic,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                    tint = iconTint,
                     modifier = Modifier.size(40.dp),
                 )
             }
@@ -108,7 +129,7 @@ fun PulsingMic(
                 Icon(
                     Icons.Outlined.Mic,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                    tint = iconTint,
                     modifier = Modifier.size(40.dp),
                 )
             }

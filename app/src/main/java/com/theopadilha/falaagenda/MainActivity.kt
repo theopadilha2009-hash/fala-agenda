@@ -2,8 +2,10 @@ package com.theopadilha.falaagenda
 
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -33,15 +35,19 @@ class MainActivity : ComponentActivity() {
             .getOrDefault(ThemeMode.SYSTEM)
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
-        val dark = when (mode) {
-            ThemeMode.SYSTEM -> systemDark
-            ThemeMode.LIGHT -> false
-            ThemeMode.DARK -> true
-        }
+        val dark = themeIsDark(mode, systemDark)
         setTheme(if (dark) R.style.Theme_FalaAgenda_SplashDark else R.style.Theme_FalaAgenda_SplashLight)
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Os ícones das barras seguem o tema do aplicativo, e não o modo do celular: sem
+        // isto o `enableEdgeToEdge` lê `configuration.uiMode` sozinho e, com o celular no
+        // escuro e o aplicativo no claro, relógio e bateria ficam brancos sobre o creme.
+        // Os scrims são os mesmos que ele usa por padrão — a androidx não os expõe — e só
+        // valem abaixo do API 29, onde a barra ainda tem cor de fundo.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark },
+            navigationBarStyle = SystemBarStyle.auto(NAV_LIGHT_SCRIM, NAV_DARK_SCRIM) { dark },
+        )
         val intentKey = agendaIntentKey(intent.occurrenceId(), intent.wantsSpeak())
         // Girar o aparelho — ou trocar a fonte ou o tema, que também recriam a Activity —
         // traz o *mesmo* intent de volta. Aplicá-lo de novo abria o microfone sozinho
@@ -58,12 +64,7 @@ class MainActivity : ComponentActivity() {
             val speak by startSpeak.collectAsState()
             val themeMode by app.container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
             val systemDark = isSystemInDarkTheme()
-            val dark = when (themeMode) {
-                ThemeMode.SYSTEM -> systemDark
-                ThemeMode.LIGHT -> false
-                ThemeMode.DARK -> true
-            }
-            FalaAgendaTheme(darkTheme = dark) {
+            FalaAgendaTheme(darkTheme = themeIsDark(themeMode, systemDark)) {
                 FalaAgendaRoot(
                     container = app.container,
                     openOccurrenceId = occurrenceId,
@@ -103,6 +104,23 @@ private fun Intent.wantsSpeak(): Boolean =
     action == ACTION_SPEAK || getBooleanExtra(EXTRA_SPEAK, false)
 
 private const val STATE_HANDLED_INTENT = "handledIntentKey"
+
+// Os mesmos scrims que o `enableEdgeToEdge` usa por padrão nas barras, e que a androidx
+// não expõe: abaixo do API 29 a barra ainda tem cor de fundo, e é ela que muda com o tema.
+private val NAV_LIGHT_SCRIM = 0xE6FFFFFF.toInt()
+private val NAV_DARK_SCRIM = 0x801B1B1B.toInt()
+
+/**
+ * O aplicativo está escuro? Quem decide é o tema escolhido em Aparência; o modo do celular
+ * só vale no "Celular". Vale para a janela, para o tema do Compose e para os ícones das
+ * barras do sistema — o `enableEdgeToEdge` sozinho lê `configuration.uiMode`, que é o do
+ * sistema, e deixava relógio e bateria brancos sobre o creme com o aplicativo no claro.
+ */
+internal fun themeIsDark(mode: ThemeMode, systemDark: Boolean): Boolean = when (mode) {
+    ThemeMode.SYSTEM -> systemDark
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+}
 
 /**
  * A identidade de um pedido de intent: a ocorrência a abrir e o microfone a ligar. É o

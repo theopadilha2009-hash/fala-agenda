@@ -35,15 +35,21 @@
         android:textColor="@color/widget_muted"
         android:textSize="13sp" />
 
+    <!-- O botão "Falar" é a ação principal do widget e fica na tela inicial, na mão dela:
+         com wrap_content + 8dp de padding ele saía com ~33dp, o menor alvo de toque do
+         app. O minHeight vale mesmo com wrap_content, e o padding maior cresce junto com
+         a fonte do sistema (o RemoteViews não deixa aplicar altura em dp na mão). -->
     <TextView
         android:id="@+id/widget_speak"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="6dp"
         android:background="@drawable/widget_button"
         android:gravity="center"
-        android:padding="8dp"
+        android:minHeight="56dp"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="14dp"
         android:text="@string/shortcut_speak"
         android:textColor="@color/widget_on_accent"
-        android:textSize="14sp" />
+        android:textSize="16sp" />
 </LinearLayout>

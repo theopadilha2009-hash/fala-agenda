@@ -73,6 +73,12 @@ fun PrimaryButton(
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
+            // Desabilitado, o M3 deixa o texto a 38% de opacidade — 2,4:1 sobre o branco.
+            // Ela tocava num "Salvar" que não respondia e não enxergava que o botão existia.
+            // O cinza neutro fica em 5,0:1 (claro) e 5,3:1 (escuro), e não se confunde com
+            // o verde do botão ligado.
+            disabledContainerColor = MaterialTheme.colorScheme.outline,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
     ) {
@@ -96,7 +102,12 @@ fun SecondaryButton(
             .heightIn(min = 56.dp),
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.primary,
+            // Mesmo motivo do PrimaryButton: 38% de opacidade sobre o fundo não se lê.
+            disabledContainerColor = MaterialTheme.colorScheme.outline,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        ),
     ) {
         Text(text)
     }

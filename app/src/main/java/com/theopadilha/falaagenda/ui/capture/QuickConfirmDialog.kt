@@ -3,7 +3,7 @@ package com.theopadilha.falaagenda.ui.capture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -77,7 +77,8 @@ fun QuickConfirmDialog(
             TextButton(
                 onClick = onCancel,
                 enabled = !saving,
-                modifier = Modifier.height(56.dp),
+                // Altura mínima: com a fonte grande do sistema o "Cancelar" era cortado.
+                modifier = Modifier.heightIn(min = 56.dp),
             ) {
                 Text("Cancelar")
             }

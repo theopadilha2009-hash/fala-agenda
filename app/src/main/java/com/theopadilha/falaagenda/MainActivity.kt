@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
@@ -39,21 +40,15 @@ class MainActivity : ComponentActivity() {
         setTheme(if (dark) R.style.Theme_FalaAgenda_SplashDark else R.style.Theme_FalaAgenda_SplashLight)
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        // Os ícones das barras seguem o tema do aplicativo, e não o modo do celular: sem
-        // isto o `enableEdgeToEdge` lê `configuration.uiMode` sozinho e, com o celular no
-        // escuro e o aplicativo no claro, relógio e bateria ficam brancos sobre o creme.
-        // Os scrims são os mesmos que ele usa por padrão — a androidx não os expõe — e só
-        // valem abaixo do API 29, onde a barra ainda tem cor de fundo.
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark },
-            navigationBarStyle = SystemBarStyle.auto(NAV_LIGHT_SCRIM, NAV_DARK_SCRIM) { dark },
-        )
+        applySystemBarStyle(dark)
         val intentKey = agendaIntentKey(intent.occurrenceId(), intent.wantsSpeak())
-        // Girar o aparelho — ou trocar a fonte ou o tema, que também recriam a Activity —
-        // traz o *mesmo* intent de volta. Aplicá-lo de novo abria o microfone sozinho
-        // ("Pode falar agora" sem ela ter pedido) e reabria uma ocorrência já atendida. O
-        // pedido só vale quando é novo para esta tela: a criação de verdade, sem estado
-        // guardado, e o `onNewIntent` de quem já estava com o app aberto.
+        // Girar o aparelho — ou trocar a fonte ou o modo escuro do *celular*, que também
+        // recriam a Activity — traz o *mesmo* intent de volta. Aplicá-lo de novo abria o
+        // microfone sozinho ("Pode falar agora" sem ela ter pedido) e reabria uma ocorrência
+        // já atendida. O pedido só vale quando é novo para esta tela: a criação de verdade,
+        // sem estado guardado, e o `onNewIntent` de quem já estava com o app aberto.
+        // Escolher outro tema em Aparência, esse, não recria nada — é por isso que as
+        // barras do sistema são reaplicadas lá dentro do `setContent`.
         if (shouldApplyAgendaIntent(savedInstanceState?.getString(STATE_HANDLED_INTENT), intentKey)) {
             openOccurrenceId.value = intent.occurrenceId()
             startSpeak.value = intent.wantsSpeak()
@@ -64,7 +59,14 @@ class MainActivity : ComponentActivity() {
             val speak by startSpeak.collectAsState()
             val themeMode by app.container.settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
             val systemDark = isSystemInDarkTheme()
-            FalaAgendaTheme(darkTheme = themeIsDark(themeMode, systemDark)) {
+            val dark = themeIsDark(themeMode, systemDark)
+            // Escolher outro tema em Aparência não recria a Activity, e o `enableEdgeToEdge`
+            // lê o tema uma vez só, na abertura: sem reaplicar aqui, escolher "Claro" com o
+            // celular no escuro deixava relógio e bateria brancos sobre o creme até girar o
+            // aparelho. Reaplicar o estilo (e não `recreate()`) mexe só nas barras, sem
+            // reabrir a tela e sem o flash claro↔escuro que o `setTheme` da abertura evita.
+            LaunchedEffect(dark) { applySystemBarStyle(dark) }
+            FalaAgendaTheme(darkTheme = dark) {
                 FalaAgendaRoot(
                     container = app.container,
                     openOccurrenceId = occurrenceId,
@@ -74,6 +76,20 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    /**
+     * Os ícones das barras seguem o tema do aplicativo, e não o modo do celular: sem isto o
+     * `enableEdgeToEdge` lê `configuration.uiMode` sozinho e, com o celular no escuro e o
+     * aplicativo no claro, relógio e bateria ficam brancos sobre o creme. Os scrims são os
+     * mesmos que ele usa por padrão — a androidx não os expõe — e só valem abaixo do API 29,
+     * onde a barra ainda tem cor de fundo. Chamado na abertura e a cada troca de tema.
+     */
+    private fun applySystemBarStyle(dark: Boolean) {
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark },
+            navigationBarStyle = SystemBarStyle.auto(NAV_LIGHT_SCRIM, NAV_DARK_SCRIM) { dark },
+        )
     }
 
     override fun onNewIntent(intent: Intent) {

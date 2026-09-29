@@ -14,6 +14,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -104,8 +105,12 @@ fun SecondaryButton(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         colors = ButtonDefaults.outlinedButtonColors(
             contentColor = MaterialTheme.colorScheme.primary,
-            // Mesmo motivo do PrimaryButton: 38% de opacidade sobre o fundo não se lê.
-            disabledContainerColor = MaterialTheme.colorScheme.outline,
+            // Mesmo motivo do PrimaryButton: 38% de opacidade sobre o fundo não se lê (5,2:1
+            // ou mais contra qualquer superfície do diálogo, nos dois temas). O contorno,
+            // porém, fica sem preenchimento: com "Salvar" e "Cancelar" desabilitados ao mesmo
+            // tempo (gravação em voo), os dois ficavam idênticos — e um deles é o caminho de
+            // sair da caixa.
+            disabledContainerColor = Color.Transparent,
             disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
     ) {

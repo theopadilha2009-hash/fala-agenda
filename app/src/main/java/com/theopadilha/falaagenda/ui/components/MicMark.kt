@@ -28,9 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.theopadilha.falaagenda.speech.VoiceState
@@ -50,8 +48,11 @@ fun PulsingMic(
     val actionable = onClick != null
     val description = contentDescription
     // Sem ação o microfone não é o mesmo botão verde cheio: durante os ~20 s de
-    // "Entendendo o recado…" ele parecia clicável e o toque não devolvia nada. O cinza
-    // é fundo claro com ícone escuro em ambos os temas, e o pulso para junto.
+    // "Entendendo o recado…" ele parecia clicável e o toque não devolvia nada. O disco fica
+    // no `outline` do tema: um cinza neutro, pouco acima ou abaixo do fundo (#E4DFD4 sobre
+    // o creme no claro, 1,2:1; #3A4742 sobre o verde-escuro no escuro, 1,7:1), então quem
+    // sustenta a leitura é o ícone — 5,9:1 no claro e 8,9:1 no escuro contra o fundo. O
+    // pulso para junto.
     val fill = if (actionable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
     val iconTint =
         if (actionable) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -108,11 +109,6 @@ fun PulsingMic(
             .semantics {
                 if (description != null) {
                     this.contentDescription = description
-                    // O estado da fala muda o que o microfone diz ("Pode falar agora" →
-                    // "Entendendo o recado…"), e a mudança não era anunciada. O anúncio
-                    // sai da troca da descrição, que só muda com o estado: a animação do
-                    // pulso recompõe a cada quadro sem mexer em semântica.
-                    liveRegion = LiveRegionMode.Polite
                 }
             }
         if (onClick != null) {

@@ -9,8 +9,10 @@ import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import com.theopadilha.falaagenda.data.repo.EditOutcome
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.platform.UpdateCheck
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.Flow
@@ -296,6 +298,12 @@ data class StatusMessage(
 
 private const val TAG = "FalaAgendaHome"
 
+/**
+ * O anúncio de uma gravação que não vai gerar aviso nenhum. Diz o que aconteceu em vez de
+ * "Vai avisar": a home mostra essa mesma tarefa como "Não consegui avisar" no toque seguinte.
+ */
+private const val SEM_AVISO = "Salvo. Esse horário já passou e a tarefa não repete, então não vou avisar."
+
 class HomeViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
@@ -473,7 +481,14 @@ class HomeViewModel(
         write(
             action = "Não consegui salvar o recado.",
             onError = { message -> publishFailed(requestId, origin, message) },
-            onSuccess = { result -> publishSaved(requestId, origin, announceOf(draft), result.usedInexactAlarm) },
+            onSuccess = { result ->
+                publishSaved(
+                    requestId,
+                    origin,
+                    announceOf(draft, result.occurrence),
+                    result.usedInexactAlarm,
+                )
+            },
         ) { container.tasks.saveDraft(draft) }
         return requestId
     }
@@ -498,8 +513,18 @@ class HomeViewModel(
         _draftSaveOutcome.value = DraftSaveOutcome.Failed(++outcomeSeq, requestId, origin, message)
     }
 
-    /** O que se anuncia ao salvar: o horário em que o aviso vai tocar. */
-    private fun announceOf(draft: ParsedTaskDraft): String {
+    /**
+     * O que se anuncia ao salvar: o horário em que o aviso vai tocar — e, quando não vai tocar
+     * nenhum, isso.
+     *
+     * A escolha que já passou e não repete nasce arquivada como não realizada e **sem alarme**
+     * (ver `DraftSchedule.bornWithoutReminder` e `TaskRepository.saveDraft`). Anunciar "Vai
+     * avisar" aqui era a tela prometer um aviso e a home, no toque seguinte, mostrar "Não
+     * consegui avisar" sobre a mesma tarefa. Quem diz o desfecho é o repositório — uma segunda
+     * conta do predicado aqui poderia discordar do que ele acabou de gravar.
+     */
+    private fun announceOf(draft: ParsedTaskDraft, saved: TaskOccurrence): String {
+        if (saved.status == OccurrenceStatus.MISSED) return SEM_AVISO
         val date = draft.localDate
         val time = draft.localTime
         return if (date != null && time != null) {

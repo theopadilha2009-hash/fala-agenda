@@ -79,6 +79,21 @@ class HomeDraftSaveOutcomeTest {
         esperaAGravacaoTerminar()
     }
 
+    /**
+     * A escolha que já passou e não repete não gera alarme nenhum: o salvar arquiva a
+     * ocorrência como não realizada (ver `TaskRepository.saveDraft`). O anúncio não pode
+     * prometer o aviso — ele dizia "Vai avisar hoje às 08:00" e a home, no toque seguinte,
+     * mostrava "Não consegui avisar" sobre a mesma tarefa.
+     */
+    @Test
+    fun aEscolhaQueJaPassouNaoAnunciaAviso() {
+        viewModel.saveDraft(recado(data = LocalDate.now().minusDays(1)), DraftSaveOrigin.CONFIRM)
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).doesNotContain("Vai avisar")
+        assertThat(saved.message).contains("já passou")
+    }
+
     /** Desfecho consumido não volta a aparecer numa recomposição qualquer. */
     @Test
     fun oDesfechoConsumidoNaoVolta() {
@@ -216,9 +231,15 @@ class HomeDraftSaveOutcomeTest {
     }
 
     /** O recado tem que estar completo: `saveDraft` recusa rascunho sem data e horário. */
-    private fun recado(titulo: String = "tomar remédio") = ParsedTaskDraft(
+    private fun recado(
+        titulo: String = "tomar remédio",
+        // Amanhã, e não uma data fixa: o recado desta suíte é um aviso que ainda vai tocar,
+        // que é o que o anúncio do salvar descreve. Com a data no passado e sem repetição o
+        // desfecho é outro — arquivada como não realizada, sem alarme — e o anúncio diz isso.
+        data: LocalDate = LocalDate.now().plusDays(1),
+    ) = ParsedTaskDraft(
         title = titulo,
-        localDate = LocalDate.of(2026, 9, 28),
+        localDate = data,
         localTime = LocalTime.of(8, 30),
         recurrence = RecurrenceRule(RecurrenceKind.NONE),
         confidence = 1.0,

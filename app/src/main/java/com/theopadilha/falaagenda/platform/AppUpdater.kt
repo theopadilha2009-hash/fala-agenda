@@ -11,6 +11,15 @@ import java.io.File
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
+/**
+ * Recusa que uma nova tentativa não conserta: o veredito é sobre o que a release publicou —
+ * destino, soma, assinatura, número da versão — e o mesmo endereço vai dar o mesmo veredito.
+ * Quem tenta de novo paga 13 MB dos dados do aparelho para receber o mesmo recado. Falha de
+ * rede, de transferência ou de leitura do arquivo continua sendo exceção comum, e essa vale
+ * um toque: a tela ainda convida a baixar.
+ */
+class UpdateRefused(val reason: String) : IllegalStateException(reason)
+
 data class UpdateCheck(
     val local: String,
     val remote: String?,
@@ -47,7 +56,9 @@ class AppUpdater(
      */
     private val http: OkHttpClient = http.newBuilder()
         .addNetworkInterceptor { chain ->
-            if (!allowedDownloadUrl(chain.request().url.toString())) error(DESTINO_NAO_CONFIAVEL)
+            if (!allowedDownloadUrl(chain.request().url.toString())) {
+                throw UpdateRefused(DESTINO_NAO_CONFIAVEL)
+            }
             chain.proceed(chain.request())
         }
         .build()
@@ -78,31 +89,39 @@ class AppUpdater(
     }
 
     fun download(url: String, sha256Url: String? = null): File {
-        if (!allowedDownloadUrl(url)) error(FONTE_INVALIDA)
+        if (!allowedDownloadUrl(url)) throw UpdateRefused(FONTE_INVALIDA)
         // Integridade não é opcional: uma release sem o `.sha256` publicado não pode virar uma
         // instalação silenciosamente mais fraca. Recusar antes de baixar 20 MB também é mais
         // barato para quem paga os dados do aparelho.
-        val soma = sha256Url?.takeIf { it.isNotBlank() } ?: error(SOMA_AUSENTE)
-        if (!allowedDownloadUrl(soma)) error(FONTE_INVALIDA)
+        val soma = sha256Url?.takeIf { it.isNotBlank() } ?: throw UpdateRefused(SOMA_AUSENTE)
+        if (!allowedDownloadUrl(soma)) throw UpdateRefused(FONTE_INVALIDA)
         val dest = File(updatesDir(context), "Fala-Agenda-update.apk")
         val origem = File(updatesDir(context), "Fala-Agenda-update.source")
-        if (jaBaixado(dest, origem, url)) return dest
         return try {
-            dest.delete()
-            origem.delete()
-            fetchTo(url, dest, MAX_APK_BYTES)
-            val sumFile = File(updatesDir(context), "apk.sha256")
-            fetchTo(soma, sumFile, 8 * 1024)
-            val expected = parseSha256Sum(sumFile.readText())
-                ?: error("Não deu para ler a assinatura do instalador.")
-            val actual = sha256(dest)
-            if (!expected.equals(actual, ignoreCase = true)) {
-                error("O arquivo veio diferente do publicado. Não instalei.")
+            if (jaBaixado(dest, origem, url)) {
+                // O arquivo guardado passou por soma e assinatura quando foi gravado, mas não
+                // pela checagem de versão, que nasceu depois dele: sem isto, um "Instalar agora"
+                // vindo do cache podia oferecer um rebaixamento, e quem barrava era o instalador
+                // do sistema, com o erro genérico dele no lugar do recado do aplicativo.
+                requireNotOlder(dest)
+                dest
+            } else {
+                dest.delete()
+                origem.delete()
+                fetchTo(url, dest, MAX_APK_BYTES)
+                val sumFile = File(updatesDir(context), "apk.sha256")
+                fetchTo(soma, sumFile, 8 * 1024)
+                val expected = parseSha256Sum(sumFile.readText())
+                    ?: throw UpdateRefused("Não deu para ler a assinatura do instalador.")
+                val actual = sha256(dest)
+                if (!expected.equals(actual, ignoreCase = true)) {
+                    throw UpdateRefused("O arquivo veio diferente do publicado. Não instalei.")
+                }
+                requireTrustedSignature(dest)
+                requireNotOlder(dest)
+                origem.writeText(url)
+                dest
             }
-            requireTrustedSignature(dest)
-            requireNotOlder(dest)
-            origem.writeText(url)
-            dest
         } catch (e: Exception) {
             // Arquivo pela metade ou recusado nunca fica no cache passando por bom.
             dest.delete()
@@ -136,7 +155,7 @@ class AppUpdater(
     private fun requireTrustedSignature(apk: File) {
         val verdict = ApkSignature.verdict(certificates.installed(), certificates.archive(apk))
         if (verdict == ApkSignatureVerdict.TRUSTED) return
-        error(
+        throw UpdateRefused(
             when (verdict) {
                 ApkSignatureVerdict.MISMATCH -> ASSINATURA_DIFERENTE
                 else -> ASSINATURA_ILEGIVEL
@@ -155,7 +174,7 @@ class AppUpdater(
      */
     private fun requireNotOlder(apk: File) {
         if (!isDowngrade(versions.archive(apk), versions.installed())) return
-        error(VERSAO_NAO_E_MAIS_NOVA)
+        throw UpdateRefused(VERSAO_NAO_E_MAIS_NOVA)
     }
 
     private fun fetchTo(url: String, dest: File, maxBytes: Long) {
@@ -209,8 +228,15 @@ class AppUpdater(
 
         const val FONTE_INVALIDA = "Fonte de atualização inválida."
 
+        /**
+         * O interceptor está no mesmo cliente HTTP que o `check()` usa, então este recado pode
+         * aparecer na checagem de release — onde arquivo nenhum existia e download nenhum tinha
+         * começado. Ele não afirma que um arquivo foi apagado; o que vale nos dois caminhos é
+         * que nada saiu do lugar.
+         */
         const val DESTINO_NAO_CONFIAVEL =
-            "O download tentou ir para outro endereço e eu não deixei. Apaguei o arquivo e não instalei nada."
+            "O pedido de atualização tentou ir para outro endereço e eu não deixei. " +
+                "Não baixei nem instalei nada."
 
         const val SOMA_AUSENTE =
             "A versão nova não veio com o arquivo que confere o download, então não baixei nada. " +
@@ -248,9 +274,7 @@ class AppUpdater(
             val parsed = json.decodeFromString(GithubRelease.serializer(), raw)
             val remote = versionName(parsed.tagName)
             val apk = parsed.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
-            val sha = parsed.assets.firstOrNull {
-                it.name.endsWith(".sha256", ignoreCase = true) || it.name.equals("apk.sha256", ignoreCase = true)
-            }
+            val sha = parsed.assets.firstOrNull { it.name.endsWith(".sha256", ignoreCase = true) }
             val newer = isNewer(remote, local)
             val message = when {
                 apk == null -> "A versão $remote saiu, mas ainda não tem instalador."

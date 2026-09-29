@@ -275,6 +275,56 @@ class AppUpdaterFluxoTest {
     }
 
     /**
+     * O APK guardado da rodada anterior era devolvido sem passar pela checagem de versão, que
+     * nasceu depois dele: um "Instalar agora" a partir do cache podia oferecer um rebaixamento,
+     * e quem barrava era o instalador do sistema, com o erro genérico dele no lugar do recado
+     * do aplicativo.
+     */
+    @Test
+    fun apkEmCacheMaisAntigoQueOInstaladoNaoEhEntregue() {
+        val apk = "apk-da-versao-que-ficou-no-cache"
+        server.enqueue(MockResponse().setBody(apk))
+        server.enqueue(MockResponse().setBody("${sha256(apk.toByteArray())}  app-release.apk\n"))
+        val guardado = updater(mesmaChave, VersoesFalsas(instalada = 7L, baixada = 8L))
+            .download(url("/app-release.apk"), url("/apk.sha256"))
+        val chamadas = server.requestCount
+        assertThat(guardado.exists()).isTrue()
+
+        // Agora o aparelho está na 9 e o arquivo guardado é o da 8: o cache não pode chegar ao
+        // instalador só porque veio de uma rodada mais antiga.
+        val erro = falhaDe {
+            updater(mesmaChave, VersoesFalsas(instalada = 9L, baixada = 8L))
+                .download(url("/app-release.apk"), url("/apk.sha256"))
+        }
+
+        assertThat(erro.message).isEqualTo(AppUpdater.VERSAO_NAO_E_MAIS_NOVA)
+        assertThat(guardado.exists()).isFalse()
+        assertThat(server.requestCount).isEqualTo(chamadas)
+    }
+
+    /**
+     * O interceptor do destino está no mesmo cliente HTTP que a checagem de release usa: o
+     * recado dele pode aparecer na tela em que arquivo nenhum existia e download nenhum tinha
+     * começado, e afirmar que apagou o arquivo ali é mentira.
+     */
+    @Test
+    fun recusaDeDestinoNaChecagemNaoAfirmaQueApagouArquivo() {
+        server.enqueue(
+            MockResponse().setResponseCode(302).setHeader(
+                "Location",
+                "http://espelho.example:${server.port}/latest",
+            ),
+        )
+        server.enqueue(MockResponse().setBody("""{"tag_name":"v9.9.9","assets":[]}"""))
+
+        val erro = falhaDe { updater(mesmaChave).check(url("/latest")) }
+
+        assertThat(erro.message).isEqualTo(AppUpdater.DESTINO_NAO_CONFIAVEL)
+        assertThat(erro.message.orEmpty()).doesNotContain("Apaguei")
+        assertThat(arquivoBaixado().exists()).isFalse()
+    }
+
+    /**
      * A release nova traz, dentro dela, um APK legitimamente assinado — só que da versão 6,
      * enquanto o aparelho já está na 7. Assinatura e soma passam; é o número da versão que
      * precisa barrar, senão ela "atualiza" para trás.

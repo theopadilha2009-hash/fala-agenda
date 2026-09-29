@@ -8,7 +8,9 @@ import android.util.Log
 import com.theopadilha.falaagenda.FalaAgendaApplication
 import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import com.theopadilha.falaagenda.data.repo.Delivery
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
@@ -114,8 +116,17 @@ class ReminderActionReceiver : BroadcastReceiver() {
             return
         }
         val occurrenceId = intent.getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID) ?: return
+        // O contexto e o escopo são resolvidos antes do `goAsync` de propósito: um `pending` já
+        // pedido depende do `finally` lá de baixo para ser encerrado, e nem um contexto que não é
+        // o do aplicativo (`as?` devolve `null`) nem um escopo já cancelado — em que `launch`
+        // devolve um job morto e o corpo nunca começa — chegam a rodá-lo. Com o `pending` pedido
+        // antes, o receiver ficaria vivo até o sistema matar o processo.
+        val app = context.applicationContext as? FalaAgendaApplication
+        if (app == null || !app.appScope.isActive) {
+            Log.w(TAG, "Sem escopo para responder o lembrete $occurrenceId")
+            return
+        }
         val pending = goAsync()
-        val app = context.applicationContext as FalaAgendaApplication
         app.appScope.launch {
             try {
                 val resposta = try {
@@ -126,6 +137,14 @@ class ReminderActionReceiver : BroadcastReceiver() {
                     // este desfecho o caminho terminava em silêncio, com a notificação do
                     // lembrete presa na barra como se ela não tivesse tocado em nada.
                     ActionResponse.UNFINISHED
+                } catch (cancellation: CancellationException) {
+                    // Cancelar o escopo é controle de fluxo, não falha do trabalho. Sem esta
+                    // reexposição o `catch` de baixo (que é `Exception`, e cancelamento é uma)
+                    // transformaria um encerramento deliberado do aplicativo em desfecho: diria a
+                    // ela que a ação não pegou e ainda cancelaria o lembrete, por causa de algo que
+                    // ela não fez. Vem depois do `TimeoutCancellationException`, que é filho dele e
+                    // tem desfecho próprio.
+                    throw cancellation
                 } catch (e: Exception) {
                     Log.w(TAG, "Falha ao responder o lembrete $occurrenceId", e)
                     ActionResponse.UNFINISHED

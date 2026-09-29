@@ -694,14 +694,19 @@ fun HomeScreen(
                     showWhenEmpty = false,
                     onClick = onEditItem,
                 )
-                section(
-                    "Não realizadas",
-                    agenda.missed,
-                    empty = "Nada ficou para trás.",
-                    showWhenEmpty = false,
-                    emphasize = true,
-                    onClick = onEditItem,
-                )
+                // "Não realizadas" era uma história só para os dois casos: com o aviso
+                // entregue a falta é dela, sem nenhum aviso entregue quem falhou foi o
+                // aplicativo. Ver [missedSections].
+                missedSections(agenda.missed).forEach { secao ->
+                    section(
+                        secao.title,
+                        secao.items,
+                        showWhenEmpty = false,
+                        emphasize = true,
+                        missedNote = secao.note,
+                        onClick = onEditItem,
+                    )
+                }
             }
         }
     }
@@ -893,9 +898,14 @@ private fun MicDock(
 private fun androidx.compose.foundation.lazy.LazyListScope.section(
     title: String,
     items: List<AgendaItem>,
-    empty: String,
+    empty: String = "",
     showWhenEmpty: Boolean = true,
     emphasize: Boolean = false,
+    /**
+     * O que a linha diz no lugar da recorrência quando a ocorrência ficou para trás sem
+     * aviso. Ver [missedSections]: a recorrência não conta nada sobre o aviso que faltou.
+     */
+    missedNote: String? = null,
     onComplete: ((AgendaItem) -> Unit)? = null,
     onClick: (AgendaItem) -> Unit,
 ) {
@@ -942,7 +952,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                     }
                     else -> {
                         append(" · ")
-                        append(item.series.recurrence.describePtBr())
+                        append(
+                            // O cartão da não realizada sem aviso diz o que aconteceu; a
+                            // recorrência ("Só uma vez") não diz nada sobre o aviso que faltou.
+                            if (item.occurrence.status == OccurrenceStatus.MISSED && missedNote != null) {
+                                missedNote
+                            } else {
+                                item.series.recurrence.describePtBr()
+                            },
+                        )
                     }
                 }
                 item.series.amountCents?.let { cents ->

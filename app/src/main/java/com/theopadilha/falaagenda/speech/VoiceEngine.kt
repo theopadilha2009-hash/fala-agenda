@@ -1,5 +1,7 @@
 package com.theopadilha.falaagenda.speech
 
+import androidx.annotation.VisibleForTesting
+
 /**
  * Escolhe o motor de fala. O offline (modelo instalado no aparelho) vem primeiro
  * porque não depende de rede nem do serviço do fabricante; se ele falhar, o app
@@ -34,7 +36,12 @@ object VoiceEngine {
      * Devolve o offline à escolha. É do teste: no aparelho a falha de ligação vale para
      * o processo inteiro, mas a JVM dos testes é uma só para todos os métodos — sem isto
      * um caso que condena decide a escolha do caso seguinte.
+     *
+     * `@VisibleForTesting` porque é o único caminho de volta: chamá-la em produção
+     * ("tentar o offline de vez em quando") reintroduz exatamente a carga nativa falha
+     * por toque que a condenação existe para não pagar.
      */
+    @VisibleForTesting
     fun forgetOfflineCondemnation() {
         offlineCondemned = false
     }

@@ -32,6 +32,9 @@ class VoiceCaptureControllerTest {
     fun setUp() {
         // Sem motor ligado o controller cai na tela do sistema e não há o que dirigir.
         ShadowSpeechRecognizer.setIsOnDeviceRecognitionAvailable(true)
+        // O motor condenado é estado do processo, e o sandbox dos testes é um só: quem
+        // condena num caso não pode decidir a escolha do caso seguinte.
+        VoiceEngine.forgetOfflineCondemnation()
         controller = VoiceCaptureController(context)
         controller.start(context)
         idle()

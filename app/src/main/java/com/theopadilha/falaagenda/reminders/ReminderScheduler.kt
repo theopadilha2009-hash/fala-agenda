@@ -65,6 +65,26 @@ class ReminderScheduler(
         }
     }
 
+    override fun scheduleDailySweep(at: Instant) {
+        val intent = Intent(context, DailySweepReceiver::class.java)
+            .setAction(AlarmIds.ACTION_DAILY_SWEEP)
+        val pi = PendingIntent.getBroadcast(
+            context,
+            AlarmIds.requestCode(AlarmIds.DAILY_SWEEP_ID, AlarmIds.ACTION_DAILY_SWEEP),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        // Sem cancel antes: o instante é sempre o próximo 00:05, e o mesmo `PendingIntent`
+        // substitui o alarme anterior. Alarme exato porque é uma hora marcada — o dia virar
+        // tarde é a ocorrência de ontem ficando pendente e o widget anunciando o dia velho.
+        val millis = at.toEpochMilli()
+        if (canScheduleExact()) {
+            setExactCompat(millis, pi)
+        } else {
+            setInexactCompat(millis, pi)
+        }
+    }
+
     override fun cancel(occurrenceId: String) {
         cancelAlarm(occurrenceId)
         listOf(AlarmIds.ACTION_COMPLETE, AlarmIds.ACTION_SNOOZE).forEach { action ->

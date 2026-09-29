@@ -80,10 +80,16 @@
             <intent-filter>
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
                 <action android:name="android.intent.action.TIME_SET" />
-                <action android:name="android.intent.action.DATE_CHANGED" />
+                <!-- android.intent.action.DATE_CHANGED não entra aqui: não está na lista de
+                     exceções do broadcast implícito do Android 8, então receiver de manifesto
+                     nunca o recebe (targetSdk 36). Quem virou o dia é o DailySweepReceiver. -->
                 <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".reminders.DailySweepReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".widget.AgendaWidgetProvider"

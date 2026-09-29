@@ -15,6 +15,7 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
+import com.theopadilha.falaagenda.domain.recurrence.OccurrenceLifecycle
 import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
@@ -551,6 +552,83 @@ class TaskRepositoryTest {
 
             assertThat(sections.today).isEmpty()
             assertThat(sections.upcoming.map { it.occurrence.id }).containsExactly(amanha.id)
+        }
+    }
+
+    /**
+     * A varredura entrega ao `AlarmManager` o instante que a ocorrência tem marcado — e um
+     * instante no passado dispara na hora. A ocorrência da manhã que ficou pendente (a
+     * repetição das 09:30 que o Doze segurou) está fora da janela de entrega pendente às
+     * 16:00: rearmá-la era uma notificação por abertura do aplicativo, e o remédio da manhã
+     * chegava em rajada — cinco aberturas, cinco avisos.
+     */
+    @Test
+    fun naoRearmaInstanteQueJaPassouForaDaJanela() {
+        runBlocking {
+            val tarde = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 16, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaTarde = TaskRepository(seriesDao, occDao, tarde, sched)
+            seriesDao.upsert(serieDaManha(tarde.instant()).toEntity())
+            val hoje = LocalDate.of(2026, 8, 20)
+            val id = OccurrenceIds.of("s1", hoje)
+            occDao.upsert(
+                ocorrenciaDeHoje("s1", hoje)
+                    .copy(
+                        reminderStep = ReminderPolicy.STEP_PLUS_30,
+                        lastReminderAt = LocalDateTime.of(2026, 8, 20, 9, 0)
+                            .atZone(zone).toInstant(),
+                        nextReminderAt = LocalDateTime.of(2026, 8, 20, 9, 30)
+                            .atZone(zone).toInstant(),
+                    )
+                    .toEntity(),
+            )
+
+            repeat(5) { repoDaTarde.rescheduleAll() }
+
+            assertThat(sched.scheduled.count { it == id }).isEqualTo(0)
+            // Nada se perde: ela segue na agenda, e quem a encerra é a virada do dia.
+            assertThat(occDao.get(id)!!.status).isEqualTo(OccurrenceStatus.PENDING.name)
+        }
+    }
+
+    /**
+     * A varredura precisa das pendentes, não do histórico inteiro: `getAll()` trazia toda
+     * ocorrência já gravada desde o começo do aplicativo para descartar o que não fosse
+     * PENDING — e `byStatus` já existia para isso.
+     */
+    @Test
+    fun varreduraNaoLeOHistoricoInteiro() {
+        runBlocking {
+            val saved = repo.saveDraft(
+                completeDraft("Remédio", LocalDate.of(2026, 8, 19), LocalTime.of(8, 0)),
+            )
+            repo.complete(saved.occurrence.id)
+            occurrenceDao.getAllCalls = 0
+
+            repo.rescheduleAll()
+
+            assertThat(occurrenceDao.getAllCalls).isEqualTo(0)
+        }
+    }
+
+    /**
+     * A virada do dia não tem broadcast que a acorde, então a varredura rearma o alarme dela
+     * em toda passagem — start do processo, boot, troca de hora e a própria virada. Sem ele a
+     * ocorrência de ontem fica pendente para sempre e o widget anuncia o dia velho (ver
+     * `DailySweepAlarmTest`).
+     */
+    @Test
+    fun varreduraRearmaAViradaDoDia() {
+        runBlocking {
+            repeat(4) { repo.rescheduleAll() }
+
+            assertThat(scheduler.dailySweeps.toSet())
+                .containsExactly(OccurrenceLifecycle.nextDaySweep(clock.instant(), zone))
+            assertThat(scheduler.dailySweeps).hasSize(4)
         }
     }
 
@@ -1479,6 +1557,7 @@ private class RecordingScheduler : AlarmScheduler {
     val scheduled = mutableListOf<String>()
     val cancelled = mutableListOf<String>()
     val recovered = mutableMapOf<String, Instant>()
+    val dailySweeps = mutableListOf<Instant>()
 
     override suspend fun quietHours(): QuietHours = QuietHours()
     override fun canScheduleExact(): Boolean = exact
@@ -1491,6 +1570,9 @@ private class RecordingScheduler : AlarmScheduler {
     }
     override fun scheduleRecovery(occurrenceId: String, at: Instant) {
         recovered[occurrenceId] = at
+    }
+    override fun scheduleDailySweep(at: Instant) {
+        dailySweeps += at
     }
 }
 
@@ -1517,6 +1599,9 @@ private class FakeOccurrenceDao : OccurrenceDao {
     private val flow = MutableStateFlow<List<OccurrenceEntity>>(emptyList())
     /** Gancho de teste: suspende a primeira leitura para encaixar outra chamada no meio. */
     var onFirstGet: (suspend () -> Unit)? = null
+
+    /** Quantas vezes o histórico inteiro foi lido — a varredura não deve precisar dele. */
+    var getAllCalls = 0
     private fun emit() { flow.value = rows.values.toList() }
     override suspend fun get(id: String): OccurrenceEntity? {
         onFirstGet?.let { hook ->
@@ -1527,7 +1612,10 @@ private class FakeOccurrenceDao : OccurrenceDao {
     }
     override suspend fun forSeries(seriesId: String) = rows.values.filter { it.seriesId == seriesId }
     override suspend fun byStatus(status: String) = rows.values.filter { it.status == status }
-    override suspend fun getAll() = rows.values.toList()
+    override suspend fun getAll(): List<OccurrenceEntity> {
+        getAllCalls += 1
+        return rows.values.toList()
+    }
     override fun observeAll(): Flow<List<OccurrenceEntity>> = flow.map { it }
     override suspend fun upsert(entity: OccurrenceEntity): Long {
         rows[entity.id] = entity

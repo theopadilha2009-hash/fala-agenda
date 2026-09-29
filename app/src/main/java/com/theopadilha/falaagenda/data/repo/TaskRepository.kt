@@ -581,10 +581,19 @@ class TaskRepository(
         seriesList.forEach { series ->
             applyLifecycle(series, now)
         }
-        occurrenceDao.getAll().map { it.toDomain() }
-            .filter { it.status == OccurrenceStatus.PENDING }
+        // As pendentes, não o histórico inteiro: `getAll` trazia toda ocorrência já gravada
+        // desde o começo do aplicativo (sem poda) para descartar tudo que não fosse PENDING.
+        // E a série de cada uma sai do retrato que a varredura já leu — antes era um `get`
+        // por ocorrência, o N+1 que a agenda de anos dela pagava em todo start.
+        val seriesById = seriesList.associateBy { it.id }
+        occurrenceDao.byStatus(OccurrenceStatus.PENDING.name).map { it.toDomain() }
             .forEach { occ ->
-                val series = seriesDao.get(occ.seriesId)?.toTaskSeries() ?: return@forEach
+                val series = seriesById[occ.seriesId] ?: return@forEach
+                // Instante marcado no passado só volta ao alarme enquanto for entrega
+                // pendente: ver `OccurrenceLifecycle.valeRearmar`.
+                if (!OccurrenceLifecycle.valeRearmar(occ, now, JANELA_ENTREGA_PENDENTE)) {
+                    return@forEach
+                }
                 val scheduled = scheduler.schedule(
                     occ,
                     series,
@@ -592,6 +601,12 @@ class TaskRepository(
                 )
                 occurrenceDao.upsert(occ.copy(inexactAlarm = scheduled.inexact).toEntity())
             }
+        // A varredura da virada do dia não tem broadcast que a acorde: `DATE_CHANGED` não é
+        // exceção do broadcast implícito desde o Android 8 (o app tem targetSdk 36), e só
+        // `TIME_SET`, `TIMEZONE_CHANGED` e `NEXT_ALARM_CLOCK_CHANGED` chegam. Quem vira o dia
+        // é este alarme — rearmado aqui, no start do processo, no boot, na troca de hora e
+        // pela própria virada.
+        scheduler.scheduleDailySweep(OccurrenceLifecycle.nextDaySweep(now, clock.zoneId()))
     }
 
     private suspend fun applyLifecycle(series: TaskSeries, now: Instant) {
@@ -616,25 +631,13 @@ class TaskRepository(
     }
 
     /**
-     * Alarme marcado para um instante que já passou e ainda não foi entregue é entrega
-     * pendente. Nunca tendo tocado, a escada nem começou (`lastReminderAt` nulo): o aviso das
-     * 22:00 que o Doze segurou continua pendente depois da meia-noite — sem isso a primeira
-     * varredura do dia seguinte o arquivava como não realizada e o único aviso do dia morria
-     * calado. Com um aviso já entregue, vale o critério de sempre: o que está marcado é a
-     * repetição seguinte, e ela só é entrega pendente se o último aviso ficou para trás.
-     *
-     * Vale até [JANELA_ENTREGA_PENDENTE] depois do horário marcado — dentro dela o
-     * `rescheduleAll` de todo start rearma o aviso; passada ela, o `advance` volta a decidir
-     * e a ocorrência vira não realizada, que é o terminador da entrega pendente (nada fica
-     * pendurado para sempre).
+     * A regra é do ciclo de vida (`OccurrenceLifecycle.entregaPendente`); aqui ela só entra na
+     * janela de entrega deste aplicativo. Dentro da janela o `rescheduleAll` rearma o aviso e o
+     * `advance` não o arquiva; passada ela, o `advance` volta a decidir e a ocorrência vira não
+     * realizada, que é o terminador da entrega pendente (nada fica pendurado para sempre).
      */
-    private fun entregaPendente(occurrence: TaskOccurrence, now: Instant): Boolean {
-        val marcado = occurrence.nextReminderAt ?: return false
-        if (marcado.isAfter(now)) return false
-        val ultimoAviso = occurrence.lastReminderAt
-        return (ultimoAviso == null || ultimoAviso.isBefore(marcado)) &&
-            now.isBefore(marcado.plus(JANELA_ENTREGA_PENDENTE))
-    }
+    private fun entregaPendente(occurrence: TaskOccurrence, now: Instant): Boolean =
+        OccurrenceLifecycle.entregaPendente(occurrence, now, JANELA_ENTREGA_PENDENTE)
 
     private suspend fun spawnNextIfNeeded(series: TaskSeries, completedDate: java.time.LocalDate, now: Instant) {
         if (series.isEnded || !series.recurrence.isRecurring) return

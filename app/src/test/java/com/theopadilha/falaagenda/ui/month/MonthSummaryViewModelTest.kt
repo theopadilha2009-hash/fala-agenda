@@ -182,6 +182,7 @@ private object NoopScheduler : AlarmScheduler {
     ): SchedulerOutcome = SchedulerOutcome(inexact = false, scheduled = true)
     override fun cancel(occurrenceId: String) = Unit
     override fun scheduleRecovery(occurrenceId: String, at: Instant) = Unit
+    override fun scheduleDailySweep(at: Instant) = Unit
 }
 
 /**

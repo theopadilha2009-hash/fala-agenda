@@ -8,6 +8,7 @@ import android.util.Log
 import com.theopadilha.falaagenda.FalaAgendaApplication
 import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import com.theopadilha.falaagenda.data.repo.Delivery
+import com.theopadilha.falaagenda.widget.AgendaWidgetProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.isActive
@@ -261,11 +262,29 @@ class TimeChangeReceiver : BroadcastReceiver() {
         when (intent.action) {
             Intent.ACTION_TIMEZONE_CHANGED,
             Intent.ACTION_TIME_CHANGED,
-            Intent.ACTION_DATE_CHANGED,
+            // `ACTION_DATE_CHANGED` já esteve aqui e no manifesto, e nunca chegou: ele não
+            // está na lista de exceções do broadcast implícito do Android 8 (o app tem
+            // targetSdk 36), e receiver de manifesto não recebe broadcast implícito fora
+            // dela. No grupo do relógio só `TIME_SET`, `TIMEZONE_CHANGED` e
+            // `NEXT_ALARM_CLOCK_CHANGED` são exceção — é por isso que a troca de hora
+            // funcionava e a virada do dia não. Quem virou o dia é o `DailySweepReceiver`.
             AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED,
             -> rescheduleAsync(context)
         }
     }
+}
+
+/**
+ * A virada do dia. Nenhum broadcast do sistema avisa que a data mudou (ver
+ * [TimeChangeReceiver]), então quem avisa é um alarme exato nosso — armado por todo
+ * `rescheduleAll`: start do processo, boot, troca de hora e a própria virada.
+ *
+ * É ele que faz a ocorrência de ontem virar "não realizada" e o widget parar de anunciar o
+ * dia velho — e é por isso que ele repinta o widget junto: a virada do dia não muda o banco,
+ * e é o banco que repinta o widget (ver `collectWidgetUpdates`).
+ */
+class DailySweepReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) = rescheduleAsync(context)
 }
 
 private fun BroadcastReceiver.rescheduleAsync(context: Context) {
@@ -274,6 +293,9 @@ private fun BroadcastReceiver.rescheduleAsync(context: Context) {
     app.appScope.launch {
         try {
             app.container.tasks.rescheduleAll()
+            // O relógio mudou e o banco não: sem este empurrão o widget seguia anunciando
+            // "Hoje · 08:00" com a data de ontem e "Próxima" para o que já passou.
+            AgendaWidgetProvider.refreshNow(context)
         } catch (e: Exception) {
             // Sem o catch a exceção subia pelo appScope e derrubava o processo no boot
             // e na troca de hora.

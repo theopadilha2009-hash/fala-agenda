@@ -9,8 +9,11 @@ import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import com.theopadilha.falaagenda.data.repo.EditOutcome
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.model.TaskOccurrence
+import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import com.theopadilha.falaagenda.platform.UpdateCheck
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.Flow
@@ -28,8 +31,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 
 /**
  * A lista, a resposta para "isto já veio do banco?" e a resposta para "e o que ele
@@ -296,6 +301,12 @@ data class StatusMessage(
 
 private const val TAG = "FalaAgendaHome"
 
+/**
+ * O anúncio de uma gravação que não vai gerar aviso nenhum. Diz o que aconteceu em vez de
+ * "Vai avisar": a home mostra essa mesma tarefa como "Não consegui avisar" no toque seguinte.
+ */
+private const val SEM_AVISO = "Salvo. Esse horário já passou e a tarefa não repete, então não vou avisar."
+
 class HomeViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
@@ -473,7 +484,14 @@ class HomeViewModel(
         write(
             action = "Não consegui salvar o recado.",
             onError = { message -> publishFailed(requestId, origin, message) },
-            onSuccess = { result -> publishSaved(requestId, origin, announceOf(draft), result.usedInexactAlarm) },
+            onSuccess = { result ->
+                publishSaved(
+                    requestId,
+                    origin,
+                    announceOf(draft, result.occurrence),
+                    result.usedInexactAlarm,
+                )
+            },
         ) { container.tasks.saveDraft(draft) }
         return requestId
     }
@@ -498,14 +516,46 @@ class HomeViewModel(
         _draftSaveOutcome.value = DraftSaveOutcome.Failed(++outcomeSeq, requestId, origin, message)
     }
 
-    /** O que se anuncia ao salvar: o horário em que o aviso vai tocar. */
-    private fun announceOf(draft: ParsedTaskDraft): String {
-        val date = draft.localDate
+    /**
+     * O que se anuncia ao salvar: o horário em que o aviso vai tocar — e, quando não vai tocar
+     * nenhum, isso.
+     *
+     * A escolha que já passou e não repete nasce arquivada como não realizada e **sem alarme**
+     * (ver `DraftSchedule.bornWithoutReminder` e `TaskRepository.saveDraft`). Anunciar "Vai
+     * avisar" aqui era a tela prometer um aviso e a home, no toque seguinte, mostrar "Não
+     * consegui avisar" sobre a mesma tarefa. Quem diz o desfecho é o repositório — uma segunda
+     * conta do predicado aqui poderia discordar do que ele acabou de gravar.
+     *
+     * A **data** sai da ocorrência gravada, não do rascunho: com uma regra semanal o rascunho
+     * é o piso e quem decide é a regra (ver `DraftSchedule.firstOccurrenceDate`), então o
+     * resumo prometia "segunda, 05/10" e este anúncio dizia "Vai avisar hoje" — a mesma
+     * contradição do defeito de origem, sobrevivendo no recado que sai depois de salvar. O
+     * horário continua vindo do rascunho porque a ocorrência não o carrega; na criação os dois
+     * são o mesmo valor por construção (`TaskRepository.saveDraft` grava `draft.localTime`).
+     */
+    private fun announceOf(draft: ParsedTaskDraft, saved: TaskOccurrence): String {
+        if (saved.status == OccurrenceStatus.MISSED) return SEM_AVISO
         val time = draft.localTime
-        return if (date != null && time != null) {
-            AgendaFormat.announce(date, time, LocalDate.now())
+        return if (time != null) {
+            AgendaFormat.announce(saved.localDate, time, LocalDate.now())
         } else {
             "Tarefa salva."
+        }
+    }
+
+    /**
+     * O mesmo anúncio para o caminho da edição, que não devolve ocorrência: quem decide é o
+     * predicado compartilhado — a data que ela escolheu ali vale literalmente
+     * (`TaskRepository.editOccurrence`), então o instante do primeiro aviso é o da própria
+     * escolha, e o predicado só morde quando a tarefa não repete. Escrever a conta aqui de
+     * novo seria a terceira cópia da regra; ver `DraftSchedule`.
+     */
+    private fun announceOfEdit(date: LocalDate, time: LocalTime, recurrence: RecurrenceRule): String {
+        val firstAt = DraftSchedule.firstOccurrenceAt(recurrence, date, time, ZoneId.systemDefault())
+        return if (DraftSchedule.bornWithoutReminder(firstAt, recurrence, Instant.now())) {
+            SEM_AVISO
+        } else {
+            AgendaFormat.announce(date, time, LocalDate.now())
         }
     }
 
@@ -609,7 +659,7 @@ class HomeViewModel(
                     publishSaved(
                         requestId,
                         DraftSaveOrigin.CONFIRM,
-                        AgendaFormat.announce(date, time, LocalDate.now()),
+                        announceOfEdit(date, time, recurrence),
                     )
                 } else {
                     // A ocorrência saiu do banco (o "Excluir" de outra tela, a varredura do

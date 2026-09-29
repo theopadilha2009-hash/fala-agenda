@@ -20,6 +20,40 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+
+/**
+ * O que a caixa "Pode salvar?" promete, montado a partir do rascunho: o resumo do aviso e,
+ * quando a data do rascunho não é a que vai valer, a linha que explica. Nula quando falta
+ * data ou horário — aí não há o que prometer, e a caixa não mostra nada.
+ *
+ * Mora aqui, com a caixa, e chama a mesma peça da tela de confirmação: a data do rascunho
+ * entra como piso e quem decide a primeira ocorrência é a regra (ver `DraftSchedule`). O
+ * caminho comum já concordava — o parser resolve a data de uma regra com o mesmo
+ * `firstOnOrAfter` —, mas o rascunho contraditório ("sábado, dias úteis") prometia sábado
+ * aqui e nascia na segunda.
+ */
+internal fun quickConfirmPromise(
+    draft: ParsedTaskDraft,
+    today: LocalDate,
+    now: Instant,
+    zone: ZoneId,
+): AgendaFormat.DraftPromise? {
+    val date = draft.localDate ?: return null
+    val time = draft.localTime ?: return null
+    // A caixa não edita: o salvar cria, e o contrato é o da criação (a tela de confirmação
+    // é quem sabe se está criando ou editando).
+    return AgendaFormat.promiseOfChoice(
+        chosenDate = date,
+        chosenTime = time,
+        recurrence = draft.recurrence,
+        today = today,
+        now = now,
+        zone = zone,
+    )
+}
 
 @Composable
 fun QuickConfirmDialog(
@@ -32,6 +66,12 @@ fun QuickConfirmDialog(
     val haptic = LocalHapticFeedback.current
     val date = draft.localDate
     val time = draft.localTime
+    val promise = quickConfirmPromise(
+        draft = draft,
+        today = LocalDate.now(),
+        now = Instant.now(),
+        zone = ZoneId.systemDefault(),
+    )
     AlertDialog(
         // Sair da caixa no meio da gravação deixava a gravação órfã de confirmação: ela
         // toca "Salvar", some da caixa por "Mudar" e a tela seguinte salva o mesmo recado
@@ -49,8 +89,11 @@ fun QuickConfirmDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
                 Text(draft.title, style = MaterialTheme.typography.titleLarge)
-                if (date != null && time != null) {
-                    Text(AgendaFormat.recap(date, time, draft.recurrence), style = MaterialTheme.typography.bodyLarge)
+                promise?.let {
+                    Text(it.recap, style = MaterialTheme.typography.bodyLarge)
+                    it.droppedChoice?.let { linha ->
+                        Text(linha, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
                 draft.amountCents?.let {
                     Text(Money.formatReais(it), style = MaterialTheme.typography.bodyLarge)

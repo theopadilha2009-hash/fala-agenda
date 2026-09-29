@@ -1,10 +1,12 @@
 package com.theopadilha.falaagenda.ui
 
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -40,6 +42,75 @@ object AgendaFormat {
 
     fun recap(date: LocalDate, time: LocalTime, recurrence: RecurrenceRule): String =
         "Vai avisar ${longDate(date)} às ${time(time)}. ${recurrence.describePtBr()}."
+
+    /**
+     * O que a tela promete antes de salvar: o resumo, a linha que explica uma data descartada
+     * e o rótulo do botão. Os três saem das mesmas contas, para não voltarem a divergir entre
+     * si — o defeito de origem foram duas contas para a mesma data.
+     */
+    data class DraftPromise(
+        val recap: String,
+        /** Nulo quando a data escolhida é a que vai valer. */
+        val droppedChoice: String?,
+        val saveLabel: String,
+    )
+
+    /**
+     * [editing] diz qual contrato vale, porque são dois: criar uma série ancora a primeira
+     * ocorrência na regra — a data escolhida é só piso, ver [DraftSchedule.firstOccurrenceDate]
+     * —, enquanto editar materializa a data escolhida literalmente. A tela descreve o contrato
+     * que vai valer, e não o que ela tocou.
+     */
+    fun promiseOfChoice(
+        chosenDate: LocalDate,
+        chosenTime: LocalTime,
+        recurrence: RecurrenceRule,
+        today: LocalDate,
+        now: Instant,
+        zone: ZoneId,
+        editing: Boolean = false,
+    ): DraftPromise {
+        val firstAt = DraftSchedule.firstOccurrenceAt(recurrence, chosenDate, chosenTime, zone)
+        // A escolha que já passou e não repete: o salvar arquiva a ocorrência como não
+        // realizada e não cria alarme nenhum (ver `TaskRepository.saveDraft`). Prometer "Vai
+        // avisar" aqui era o aplicativo anunciar um aviso que ele mesmo não arma — e a home,
+        // no toque seguinte, mostrar "Não consegui avisar" sobre a mesma tarefa.
+        if (DraftSchedule.bornWithoutReminder(firstAt, recurrence, now)) {
+            return DraftPromise(
+                recap = "Este horário já passou e a tarefa não repete: não vou avisar.",
+                droppedChoice = null,
+                saveLabel = "Salvar · ${dateLabel(chosenDate, today).lowercase(locale)} " +
+                    "${time(chosenTime)}, sem aviso",
+            )
+        }
+        val promisedDate = if (editing) {
+            chosenDate
+        } else {
+            DraftSchedule.firstOccurrenceDate(recurrence, chosenDate)
+        }
+        return DraftPromise(
+            recap = recap(promisedDate, chosenTime, recurrence),
+            droppedChoice = droppedChoiceLine(chosenDate, promisedDate, recurrence, today),
+            saveLabel = "Salvar · ${dateLabel(promisedDate, today).lowercase(locale)} ${time(chosenTime)}",
+        )
+    }
+
+    /**
+     * A linha que impede a data descartada de sumir em silêncio: ela tocou o chip "Hoje" numa
+     * terça com a regra "toda segunda", o aviso vai ser em 05/10, e ela precisa poder entender
+     * por quê — e corrigir. Nula quando a data escolhida é a que vai valer.
+     */
+    private fun droppedChoiceLine(
+        chosenDate: LocalDate,
+        promisedDate: LocalDate,
+        recurrence: RecurrenceRule,
+        today: LocalDate,
+    ): String? {
+        if (chosenDate == promisedDate) return null
+        return "Você escolheu ${dateLabel(chosenDate, today).lowercase(locale)}, e " +
+            "“${recurrence.describePtBr()}” não cai nesse dia: o primeiro aviso é " +
+            "${longDate(promisedDate)}."
+    }
 
     data class DayShareLine(
         val title: String,

@@ -8,11 +8,11 @@ import com.theopadilha.falaagenda.data.local.toDomain
 import com.theopadilha.falaagenda.data.local.toEntity
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
-import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
 import com.theopadilha.falaagenda.domain.recurrence.OccurrenceLifecycle
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
+import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import com.theopadilha.falaagenda.domain.reminder.ReminderPolicy
 import com.theopadilha.falaagenda.domain.reminder.RetryPolicy
 import com.theopadilha.falaagenda.domain.time.AppClock
@@ -132,14 +132,10 @@ class TaskRepository(
             createdAt = now,
             updatedAt = now,
         )
-        val firstDate = RecurrenceEngine.firstOnOrAfter(
-            series.recurrence,
-            series.startLocalDate,
-            series.startLocalDate,
-        ) ?: series.startLocalDate
+        val firstDate = DraftSchedule.firstOccurrenceDate(series.recurrence, series.startLocalDate)
         var occurrence = OccurrenceLifecycle.materialize(series, firstDate, now)
         val scheduledAt = occurrence.scheduledAt
-        if (scheduledAt.isBefore(now) && series.recurrence.kind == RecurrenceKind.NONE) {
+        if (DraftSchedule.bornWithoutReminder(scheduledAt, series.recurrence, now)) {
             occurrence = occurrence.copy(
                 status = OccurrenceStatus.MISSED,
                 missedAt = now,
@@ -410,7 +406,9 @@ class TaskRepository(
         }
         val serieRow = updatedSeries.toEntity()
         val substituidas = pending.map { it.id }
-        if (refreshed.scheduledAt.isBefore(now) && !updatedSeries.recurrence.isRecurring) {
+        // A escolha que já passou e não repete nasce sem alarme — o mesmo predicado da criação,
+        // compartilhado, para o anúncio da edição não discordar do que acabou de ser gravado.
+        if (DraftSchedule.bornWithoutReminder(refreshed.scheduledAt, updatedSeries.recurrence, now)) {
             occurrenceDao.applyBatch(
                 seriesDao = seriesDao,
                 upserts = listOf(

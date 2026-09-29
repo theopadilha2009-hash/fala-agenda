@@ -59,6 +59,7 @@ import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -273,17 +274,44 @@ fun ConfirmDraftScreen(
             val recapDate = date
             val recapTime = time
             val recapAmount = amountText.trim().takeIf { it.isNotEmpty() }?.let { Money.parseReais(it) }
-            if (recapDate != null && recapTime != null) {
+            // A promessa sai das contas que o salvar vai usar, não da data do seletor: numa
+            // série a criar, quem decide a primeira ocorrência é a regra (ver
+            // `DraftSchedule`), e a escolha que já passou sem repetição não vira alarme
+            // nenhum. Com a data do seletor, o resumo prometia um dia que o agendamento
+            // descarta — a home mostrava outro dia ao lado da promessa.
+            val promise = if (recapDate != null && recapTime != null) {
+                AgendaFormat.promiseOfChoice(
+                    chosenDate = recapDate,
+                    chosenTime = recapTime,
+                    recurrence = previewRule,
+                    today = today,
+                    now = Instant.now(),
+                    zone = ZoneId.systemDefault(),
+                    editing = editing,
+                )
+            } else {
+                null
+            }
+            if (promise != null) {
                 QuietCard {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            AgendaFormat.recap(recapDate, recapTime, previewRule),
+                            promise.recap,
                             style = MaterialTheme.typography.titleMedium,
                         )
                         recapAmount?.let {
                             Text(Money.formatReais(it), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
+                }
+                // A data que ela tocou não é a que vai valer: dizer isso é o que a deixa
+                // entender o porquê e corrigir, em vez de o chip "Hoje" sumir sem explicação.
+                promise.droppedChoice?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             } else {
                 Text(
@@ -307,8 +335,9 @@ fun ConfirmDraftScreen(
             PrimaryButton(
                 text = when {
                     saving -> "Salvando…"
-                    recapDate != null && recapTime != null ->
-                        "Salvar · ${AgendaFormat.dateLabel(recapDate, LocalDate.now()).lowercase()} ${AgendaFormat.time(recapTime)}"
+                    // O botão promete o mesmo que o resumo: o dia do primeiro aviso (ou o
+                    // "sem aviso", quando não há alarme para armar).
+                    promise != null -> promise.saveLabel
                     else -> "Salvar"
                 },
                 enabled = missing.isEmpty() && !saving,

@@ -8,6 +8,7 @@ import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.filterNotNull
@@ -77,6 +78,84 @@ class HomeDraftSaveOutcomeTest {
         // E a gravação acabou de verdade: o `busy` volta a soltar o botão Salvar — ele
         // mora no ViewModel, então o giro não o reabilita antes da hora.
         esperaAGravacaoTerminar()
+    }
+
+    /**
+     * A escolha que já passou e não repete não gera alarme nenhum: o salvar arquiva a
+     * ocorrência como não realizada (ver `TaskRepository.saveDraft`). O anúncio não pode
+     * prometer o aviso — ele dizia "Vai avisar hoje às 08:00" e a home, no toque seguinte,
+     * mostrava "Não consegui avisar" sobre a mesma tarefa.
+     */
+    @Test
+    fun aEscolhaQueJaPassouNaoAnunciaAviso() {
+        viewModel.saveDraft(recado(data = LocalDate.now().minusDays(1)), DraftSaveOrigin.CONFIRM)
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).doesNotContain("Vai avisar")
+        assertThat(saved.message).contains("já passou")
+    }
+
+    /**
+     * A data do anúncio é a da ocorrência gravada, não a do rascunho. Com uma regra semanal, o
+     * chip "Hoje" e a lista mostrando "01/10 às 08:30", o anúncio dizia "Vai avisar hoje às
+     * 08:30." — a mesma contradição do defeito de origem, agora saindo do recado pós-salvar
+     * com a data do rascunho de um lado e a ocorrência do banco do outro.
+     */
+    @Test
+    fun aTarefaQueRepeteAnunciaODiaDaOcorrenciaGravada() {
+        val hoje = LocalDate.now()
+        val diaQueVale = hoje.plusDays(2)
+        val regra = RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = setOf(diaQueVale.dayOfWeek))
+        // A data que o repositório materializa para este rascunho — a outra ponta do anúncio.
+        val gravada = runBlocking { container.tasks.saveDraft(recado(data = hoje, regra = regra)) }
+            .occurrence.localDate
+        assertThat(gravada).isEqualTo(diaQueVale)
+
+        viewModel.saveDraft(recado(data = hoje, regra = regra), DraftSaveOrigin.CONFIRM)
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).contains(AgendaFormat.dateLabel(gravada, hoje).lowercase())
+        assertThat(saved.message).doesNotContain("Vai avisar hoje")
+    }
+
+    /**
+     * O gêmeo da criação, no caminho da edição: mudar a tarefa para um horário que já passou
+     * e não repete também não deixa alarme nenhum — `editOccurrence` arquiva a ocorrência como
+     * não realizada (ver `DraftSchedule.bornWithoutReminder`). O anúncio dizia "Vai avisar" e
+     * a home, no toque seguinte, mostrava "Não consegui avisar" sobre a tarefa recém-editada.
+     */
+    @Test
+    fun aEdicaoParaDataPassadaNaoAnunciaAviso() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+
+        viewModel.edit(
+            id = salvo.occurrence.id,
+            title = "tomar remédio",
+            date = LocalDate.now().minusDays(1),
+            time = LocalTime.of(8, 30),
+            recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        )
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).doesNotContain("Vai avisar")
+        assertThat(saved.message).contains("já passou")
+    }
+
+    /** E a correção não engole o caso que continua valendo: edição para frente avisa. */
+    @Test
+    fun aEdicaoParaDataFuturaContinuaAnunciandoAviso() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+
+        viewModel.edit(
+            id = salvo.occurrence.id,
+            title = "tomar remédio",
+            date = LocalDate.now().plusDays(2),
+            time = LocalTime.of(8, 30),
+            recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        )
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).contains("Vai avisar")
     }
 
     /** Desfecho consumido não volta a aparecer numa recomposição qualquer. */
@@ -216,11 +295,18 @@ class HomeDraftSaveOutcomeTest {
     }
 
     /** O recado tem que estar completo: `saveDraft` recusa rascunho sem data e horário. */
-    private fun recado(titulo: String = "tomar remédio") = ParsedTaskDraft(
+    private fun recado(
+        titulo: String = "tomar remédio",
+        // Amanhã, e não uma data fixa: o recado desta suíte é um aviso que ainda vai tocar,
+        // que é o que o anúncio do salvar descreve. Com a data no passado e sem repetição o
+        // desfecho é outro — arquivada como não realizada, sem alarme — e o anúncio diz isso.
+        data: LocalDate = LocalDate.now().plusDays(1),
+        regra: RecurrenceRule = RecurrenceRule(RecurrenceKind.NONE),
+    ) = ParsedTaskDraft(
         title = titulo,
-        localDate = LocalDate.of(2026, 9, 28),
+        localDate = data,
         localTime = LocalTime.of(8, 30),
-        recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        recurrence = regra,
         confidence = 1.0,
         missingFields = emptySet(),
         ambiguous = false,

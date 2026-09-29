@@ -51,6 +51,9 @@
     <string name="action_not_applied_text_complete">Esta tarefa não está mais na agenda. Nada foi marcado como feito.</string>
     <string name="action_not_applied_title_snooze">Não deu para adiar</string>
     <string name="action_not_applied_text_snooze">Nada foi adiado e não vai tocar outro aviso.</string>
+    <string name="action_unfinished_text">O aplicativo não conseguiu terminar. Veja na agenda.</string>
+    <string name="action_unfinished_text_complete">O aplicativo não conseguiu terminar. Veja na agenda se a tarefa ficou marcada como feita.</string>
+    <string name="action_unfinished_text_snooze">O aplicativo não conseguiu terminar. Veja na agenda: pode ser que este aviso não toque de novo.</string>
     <string name="missing_fields">Falta preencher: %1$s</string>
     <string name="recurrence_none">Só uma vez</string>
     <string name="recurrence_daily">Todos os dias</string>

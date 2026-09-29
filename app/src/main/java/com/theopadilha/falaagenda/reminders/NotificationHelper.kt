@@ -141,9 +141,10 @@ object NotificationHelper {
     }
 
     /**
-     * Ela tocou num botão da notificação e a ação não pegou: a ocorrência saiu da agenda entre o
-     * aviso e o toque. Sem isto o lembrete só desaparecia — e, no "adiar", ela ficava esperando
-     * um aviso que ninguém agendou. No remédio, o remédio que não toca.
+     * Ela tocou num botão da notificação e a ação não valeu: a ocorrência saiu da agenda entre o
+     * aviso e o toque, ou o trabalho não terminou a tempo de responder. Sem isto o lembrete só
+     * desaparecia — e, no "adiar", ela ficava esperando um aviso que ninguém agendou. No remédio,
+     * o remédio que não toca.
      *
      * Sai no mesmo canal do lembrete, que é onde ela já sabe procurar; um canal novo não teria
      * som nem permissão garantidos. Não leva botões: a ação que ela tocou é justamente a que
@@ -154,8 +155,17 @@ object NotificationHelper {
      * ela tocaria em "Adiar", nada seria agendado, e ela ficaria esperando um aviso que não
      * vem sem nunca saber por quê. O desfecho [ReminderDelivery.BLOCKED] diz isso a quem
      * chamou.
+     *
+     * O que [resposta] separa é o texto, e não se publica ou não: [ActionResponse.GONE] é o fato
+     * de a ocorrência ter saído da agenda; [ActionResponse.UNFINISHED] é o trabalho que estourou o
+     * tempo, e ali afirmar o que foi gravado seria chute.
      */
-    fun showActionNotApplied(context: Context, occurrenceId: String, action: String): ReminderDelivery {
+    fun showActionNotApplied(
+        context: Context,
+        occurrenceId: String,
+        action: String,
+        resposta: ActionResponse,
+    ): ReminderDelivery {
         ensureChannel(context)
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
             Log.w(TAG, "Aviso de ação não aplicada $occurrenceId não emitido: notificações bloqueadas")
@@ -168,7 +178,7 @@ object NotificationHelper {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(actionNotAppliedTitle(action)))
-            .setContentText(context.getString(actionNotAppliedText(action)))
+            .setContentText(context.getString(actionNotAppliedText(action, resposta)))
             .setContentIntent(openPending(context, occurrenceId))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -194,6 +204,9 @@ object NotificationHelper {
      * O aviso muda com o que ela tentou fazer: "concluir" e "adiar" terminam em histórias
      * diferentes na cabeça dela — no "adiar" o que não pode ficar por dizer é que outro aviso não
      * vai tocar. Ação sem texto próprio cai no genérico: vago é melhor do que mudo.
+     *
+     * O título não muda com [ActionResponse], e de propósito: "Não deu para concluir" já diz o
+     * essencial nos dois casos, e é o texto que precisa separar o fato do chute.
      */
     fun actionNotAppliedTitle(action: String): Int = when (action) {
         AlarmIds.ACTION_COMPLETE -> R.string.action_not_applied_title_complete
@@ -201,10 +214,28 @@ object NotificationHelper {
         else -> R.string.action_not_applied_title
     }
 
-    fun actionNotAppliedText(action: String): Int = when (action) {
-        AlarmIds.ACTION_COMPLETE -> R.string.action_not_applied_text_complete
-        AlarmIds.ACTION_SNOOZE -> R.string.action_not_applied_text_snooze
-        else -> R.string.action_not_applied_text
+    /**
+     * O texto muda também com o que se sabe do resultado. No [ActionResponse.GONE] a ocorrência
+     * saiu da agenda, e dizer isso é dizer o que aconteceu; no [ActionResponse.UNFINISHED] o
+     * trabalho não terminou e ninguém sabe o que foi gravado — repetir ali "esta tarefa não está
+     * mais na agenda" seria anunciar uma causa que o aplicativo não verificou. O que se pode dizer
+     * é o que se sabe: não terminou, e ela precisa conferir.
+     */
+    fun actionNotAppliedText(action: String, resposta: ActionResponse): Int = when (resposta) {
+        ActionResponse.GONE -> when (action) {
+            AlarmIds.ACTION_COMPLETE -> R.string.action_not_applied_text_complete
+            AlarmIds.ACTION_SNOOZE -> R.string.action_not_applied_text_snooze
+            else -> R.string.action_not_applied_text
+        }
+        ActionResponse.UNFINISHED -> when (action) {
+            AlarmIds.ACTION_COMPLETE -> R.string.action_unfinished_text_complete
+            AlarmIds.ACTION_SNOOZE -> R.string.action_unfinished_text_snooze
+            else -> R.string.action_unfinished_text
+        }
+        // [ActionResponse.RESOLVIDA] é "não há o que dizer", e por isso não chega aqui: o aviso só
+        // é publicado quando `precisaAvisarDeAcaoNaoAplicada` responde que há. Cai no genérico,
+        // como a ação sem texto próprio — vago é melhor do que mudo.
+        ActionResponse.RESOLVIDA -> R.string.action_not_applied_text
     }
 
     fun cancel(context: Context, occurrenceId: String) {

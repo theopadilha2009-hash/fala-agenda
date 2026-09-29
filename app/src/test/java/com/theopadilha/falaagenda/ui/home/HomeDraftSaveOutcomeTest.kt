@@ -8,6 +8,7 @@ import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.filterNotNull
@@ -92,6 +93,29 @@ class HomeDraftSaveOutcomeTest {
         val saved = desfecho() as DraftSaveOutcome.Saved
         assertThat(saved.message).doesNotContain("Vai avisar")
         assertThat(saved.message).contains("já passou")
+    }
+
+    /**
+     * A data do anúncio é a da ocorrência gravada, não a do rascunho. Com uma regra semanal, o
+     * chip "Hoje" e a lista mostrando "01/10 às 08:30", o anúncio dizia "Vai avisar hoje às
+     * 08:30." — a mesma contradição do defeito de origem, agora saindo do recado pós-salvar
+     * com a data do rascunho de um lado e a ocorrência do banco do outro.
+     */
+    @Test
+    fun aTarefaQueRepeteAnunciaODiaDaOcorrenciaGravada() {
+        val hoje = LocalDate.now()
+        val diaQueVale = hoje.plusDays(2)
+        val regra = RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = setOf(diaQueVale.dayOfWeek))
+        // A data que o repositório materializa para este rascunho — a outra ponta do anúncio.
+        val gravada = runBlocking { container.tasks.saveDraft(recado(data = hoje, regra = regra)) }
+            .occurrence.localDate
+        assertThat(gravada).isEqualTo(diaQueVale)
+
+        viewModel.saveDraft(recado(data = hoje, regra = regra), DraftSaveOrigin.CONFIRM)
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).contains(AgendaFormat.dateLabel(gravada, hoje).lowercase())
+        assertThat(saved.message).doesNotContain("Vai avisar hoje")
     }
 
     /**
@@ -277,11 +301,12 @@ class HomeDraftSaveOutcomeTest {
         // que é o que o anúncio do salvar descreve. Com a data no passado e sem repetição o
         // desfecho é outro — arquivada como não realizada, sem alarme — e o anúncio diz isso.
         data: LocalDate = LocalDate.now().plusDays(1),
+        regra: RecurrenceRule = RecurrenceRule(RecurrenceKind.NONE),
     ) = ParsedTaskDraft(
         title = titulo,
         localDate = data,
         localTime = LocalTime.of(8, 30),
-        recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        recurrence = regra,
         confidence = 1.0,
         missingFields = emptySet(),
         ambiguous = false,

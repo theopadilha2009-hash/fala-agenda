@@ -525,13 +525,19 @@ class HomeViewModel(
      * avisar" aqui era a tela prometer um aviso e a home, no toque seguinte, mostrar "Não
      * consegui avisar" sobre a mesma tarefa. Quem diz o desfecho é o repositório — uma segunda
      * conta do predicado aqui poderia discordar do que ele acabou de gravar.
+     *
+     * A **data** sai da ocorrência gravada, não do rascunho: com uma regra semanal o rascunho
+     * é o piso e quem decide é a regra (ver `DraftSchedule.firstOccurrenceDate`), então o
+     * resumo prometia "segunda, 05/10" e este anúncio dizia "Vai avisar hoje" — a mesma
+     * contradição do defeito de origem, sobrevivendo no recado que sai depois de salvar. O
+     * horário continua vindo do rascunho porque a ocorrência não o carrega; na criação os dois
+     * são o mesmo valor por construção (`TaskRepository.saveDraft` grava `draft.localTime`).
      */
     private fun announceOf(draft: ParsedTaskDraft, saved: TaskOccurrence): String {
         if (saved.status == OccurrenceStatus.MISSED) return SEM_AVISO
-        val date = draft.localDate
         val time = draft.localTime
-        return if (date != null && time != null) {
-            AgendaFormat.announce(date, time, LocalDate.now())
+        return if (time != null) {
+            AgendaFormat.announce(saved.localDate, time, LocalDate.now())
         } else {
             "Tarefa salva."
         }

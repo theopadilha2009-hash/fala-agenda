@@ -26,6 +26,11 @@ object DraftSchedule {
      * terça escolhida não satisfaz "toda segunda" e nunca vira ocorrência — nem no banco, nem
      * no `AlarmManager`. O primeiro aviso é segunda, 05/10/2026, e é essa data que a tela
      * precisa mostrar.
+     *
+     * O `?: chosenDate` é inalcançável hoje — `firstOnOrAfter` só devolve nulo para a regra que
+     * não repete com `seriesStart` antes do piso, e aqui os dois argumentos são a mesma data. Fica
+     * como rede: se o motor ganhar um caso nulo novo, a tela mostra a data escolhida em vez de
+     * estourar no meio de um toque.
      */
     fun firstOccurrenceDate(rule: RecurrenceRule, chosenDate: LocalDate): LocalDate =
         RecurrenceEngine.firstOnOrAfter(rule, chosenDate, chosenDate) ?: chosenDate

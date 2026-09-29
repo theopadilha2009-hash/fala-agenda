@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.domain.model
 
+import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -74,7 +75,11 @@ data class ParsedTaskDraft(
         val date = localDate ?: return false
         val time = localTime ?: return false
         val at = date.atTime(time).atZone(zone).toInstant()
-        return !at.isBefore(now) || recurrence.isRecurring
+        // A escolha que nasce sem aviso não passa pela caixa rápida: é o mesmo predicado do
+        // repositório e da tela (`DraftSchedule.bornWithoutReminder`), não uma quarta conta
+        // da mesma regra. Aqui a data é literal, e para a regra que não repete — a única em
+        // que o predicado morde — literal e primeira ocorrência são a mesma data.
+        return !DraftSchedule.bornWithoutReminder(at, recurrence, now)
     }
 
     fun withManual(

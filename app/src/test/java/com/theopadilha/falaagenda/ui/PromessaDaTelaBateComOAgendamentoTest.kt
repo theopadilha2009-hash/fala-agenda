@@ -152,6 +152,11 @@ class PromessaDaTelaBateComOAgendamentoTest {
 
             assertThat(promessa.recap)
                 .contains(AgendaFormat.longDate(saved.occurrence.localDate))
+            // E quando a data escolhida não é a que vale, ela não pode aparecer no resumo: só o
+            // `contains` de cima passaria com um texto que citasse as duas datas.
+            if (saved.occurrence.localDate != escolhida) {
+                assertThat(promessa.recap).doesNotContain(AgendaFormat.longDate(escolhida))
+            }
         }
     }
 

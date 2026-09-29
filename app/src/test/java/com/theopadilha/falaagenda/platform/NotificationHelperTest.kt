@@ -10,6 +10,7 @@ import android.content.ContextWrapper
 import android.content.res.Resources
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.reminders.ActionResponse
 import com.theopadilha.falaagenda.reminders.AlarmIds
 import com.theopadilha.falaagenda.reminders.NotificationHelper
 import org.junit.Test
@@ -202,8 +203,12 @@ class NotificationHelperTest {
         liberarNotificacoes()
         NotificationHelper.showReminder(contexto, ocorrencia, "s1", "Vitamina")
 
-        val entrega =
-            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val entrega = NotificationHelper.showActionNotApplied(
+            contexto,
+            ocorrencia,
+            AlarmIds.ACTION_SNOOZE,
+            ActionResponse.GONE,
+        )
 
         assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.POSTED)
         assertThat(shadowOf(gerente).size()).isEqualTo(2)
@@ -215,7 +220,12 @@ class NotificationHelperTest {
     fun avisoDeAcaoNaoAplicadaSaiNoCanalDoLembrete() {
         liberarNotificacoes()
 
-        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        NotificationHelper.showActionNotApplied(
+            contexto,
+            ocorrencia,
+            AlarmIds.ACTION_SNOOZE,
+            ActionResponse.GONE,
+        )
 
         assertThat(shadowOf(gerente).getNotification(idDoAviso())!!.channelId)
             .isEqualTo(NotificationHelper.CHANNEL_ID)
@@ -226,8 +236,12 @@ class NotificationHelperTest {
         liberarNotificacoes()
         shadowOf(gerente).setNotificationsEnabled(false)
 
-        val entrega =
-            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val entrega = NotificationHelper.showActionNotApplied(
+            contexto,
+            ocorrencia,
+            AlarmIds.ACTION_SNOOZE,
+            ActionResponse.GONE,
+        )
 
         assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.BLOCKED)
         assertThat(shadowOf(gerente).size()).isEqualTo(0)
@@ -245,8 +259,12 @@ class NotificationHelperTest {
         liberarNotificacoes()
         criarCanal(NotificationManager.IMPORTANCE_NONE)
 
-        val entrega =
-            NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        val entrega = NotificationHelper.showActionNotApplied(
+            contexto,
+            ocorrencia,
+            AlarmIds.ACTION_SNOOZE,
+            ActionResponse.GONE,
+        )
 
         assertThat(entrega).isEqualTo(NotificationHelper.ReminderDelivery.BLOCKED)
         assertThat(shadowOf(gerente).size()).isEqualTo(0)
@@ -255,25 +273,81 @@ class NotificationHelperTest {
     @Test
     fun cadaAcaoQuePodeFalharTemTituloETextoProprios() {
         val acoes = listOf(AlarmIds.ACTION_COMPLETE, AlarmIds.ACTION_SNOOZE, "acao-sem-texto-proprio")
+        val motivos = listOf(ActionResponse.GONE, ActionResponse.UNFINISHED)
 
         assertThat(acoes.map { NotificationHelper.actionNotAppliedTitle(it) }.toSet()).hasSize(acoes.size)
-        assertThat(acoes.map { NotificationHelper.actionNotAppliedText(it) }.toSet()).hasSize(acoes.size)
+        motivos.forEach { motivo ->
+            assertThat(acoes.map { NotificationHelper.actionNotAppliedText(it, motivo) }.toSet())
+                .hasSize(acoes.size)
+        }
+    }
+
+    /**
+     * O texto não pode afirmar a causa errada. "Esta tarefa não está mais na agenda" é verdade no
+     * [ActionResponse.GONE] e chute no [ActionResponse.UNFINISHED], em que o trabalho estourou o
+     * tempo ou caiu e ninguém sabe o que foi gravado. Reaproveitar o texto do GONE ali seria dizer
+     * a ela uma causa que o aplicativo não verificou.
+     */
+    @Test
+    fun oTrabalhoQueNaoTerminouNaoUsaOTextoDoQueSaiuDaAgenda() {
+        listOf(AlarmIds.ACTION_COMPLETE, AlarmIds.ACTION_SNOOZE, "acao-sem-texto-proprio").forEach { acao ->
+            assertThat(NotificationHelper.actionNotAppliedText(acao, ActionResponse.UNFINISHED))
+                .isNotEqualTo(NotificationHelper.actionNotAppliedText(acao, ActionResponse.GONE))
+        }
     }
 
     @Test
     fun oAvisoPublicadoUsaOTextoEscolhidoParaAAcao() {
         liberarNotificacoes()
 
-        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_SNOOZE)
+        NotificationHelper.showActionNotApplied(
+            contexto,
+            ocorrencia,
+            AlarmIds.ACTION_SNOOZE,
+            ActionResponse.GONE,
+        )
         val doAdiar = textoDoAviso()
 
-        NotificationHelper.showActionNotApplied(contexto, ocorrencia, AlarmIds.ACTION_COMPLETE)
+        NotificationHelper.showActionNotApplied(
+            contexto,
+            ocorrencia,
+            AlarmIds.ACTION_COMPLETE,
+            ActionResponse.GONE,
+        )
         val doConcluir = textoDoAviso()
 
         assertThat(doAdiar).isEqualTo(
-            contexto.getString(NotificationHelper.actionNotAppliedText(AlarmIds.ACTION_SNOOZE)),
+            contexto.getString(
+                NotificationHelper.actionNotAppliedText(AlarmIds.ACTION_SNOOZE, ActionResponse.GONE),
+            ),
         )
         assertThat(doAdiar).isNotEqualTo(doConcluir)
+    }
+
+    /**
+     * O motivo tem que chegar na notificação, e não só na função de texto: o aviso do trabalho que
+     * não terminou é o único que sai quando o toque dela valeu ou não — repetir ali o "não está mais
+     * na agenda" seria anunciar uma causa inventada justamente no caso em que nada se sabe.
+     */
+    @Test
+    fun oAvisoPublicadoUsaOTextoDoMotivoDoTrabalhoQueNaoTerminou() {
+        liberarNotificacoes()
+
+        NotificationHelper.showActionNotApplied(
+            contexto,
+            ocorrencia,
+            AlarmIds.ACTION_SNOOZE,
+            ActionResponse.UNFINISHED,
+        )
+
+        assertThat(textoDoAviso()).isEqualTo(
+            contexto.getString(
+                NotificationHelper.actionNotAppliedText(
+                    AlarmIds.ACTION_SNOOZE,
+                    ActionResponse.UNFINISHED,
+                ),
+            ),
+        )
     }
 
     private fun idDoLembrete() = AlarmIds.requestCode(ocorrencia, AlarmIds.NOTIF_REMINDER)

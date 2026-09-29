@@ -8,7 +8,9 @@ import android.util.Log
 import com.theopadilha.falaagenda.FalaAgendaApplication
 import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import com.theopadilha.falaagenda.data.repo.Delivery
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
@@ -62,68 +64,187 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
     }
 }
 
+/**
+ * As ações que o botão da notificação sabe pedir. São um tipo, e não as strings soltas de
+ * [AlarmIds], porque é o compilador que precisa cobrar um desfecho para cada uma: uma ação nova
+ * não pode cair, sem ninguém notar, num caminho que responde outra coisa.
+ */
+internal enum class AcaoDaNotificacao(val id: String) {
+    CONCLUIR(AlarmIds.ACTION_COMPLETE),
+    ADIAR(AlarmIds.ACTION_SNOOZE);
+
+    companion object {
+        /** A ação pedida, ou `null` quando não é nenhuma destas. */
+        fun de(action: String?): AcaoDaNotificacao? = entries.firstOrNull { it.id == action }
+    }
+}
+
+/**
+ * Como terminou o trabalho do [ReminderActionReceiver] sobre o toque dela.
+ *
+ * [ActionOutcome] não serve sozinho: ele só fala do que o repositório respondeu, e o desfecho que
+ * mais importa aqui não vem de lá — o trabalho que estourou o tempo ou caiu antes de responder, e
+ * que deixa o resultado desconhecido. Ele precisa de nome próprio porque é dele que sai o texto do
+ * aviso: no [GONE] a ocorrência saiu da agenda, e isso é fato; no [UNFINISHED] afirmar o que foi
+ * gravado seria chute.
+ *
+ * [RESOLVIDA] junta os dois desfechos do repositório em que não há nada a dizer — foi gravado, ou
+ * já estava no estado pedido — porque, para quem decide falar ou calar, os dois são a mesma coisa:
+ * silêncio.
+ */
+enum class ActionResponse {
+    /** A ação foi gravada, ou já estava no estado pedido: não há o que dizer nem o que corrigir. */
+    RESOLVIDA,
+
+    /** A ocorrência saiu da agenda: nada foi gravado, e é isso que ela precisa saber. */
+    GONE,
+
+    /** O trabalho não terminou (tempo esgotado, falha): o que foi gravado é desconhecido. */
+    UNFINISHED,
+}
+
 class ReminderActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val acao = AcaoDaNotificacao.de(intent.action)
+        if (acao == null) {
+            // Nada disto acontece hoje: o `PendingIntent` do lembrete só nasce com "concluir" e
+            // "adiar". Antes, uma ação que não fosse nenhuma das duas atravessava o `when` sem
+            // casar com nada e caía no `cancel` — a notificação do lembrete sumia da barra sem
+            // nada ter sido aplicado nem dito, e a tarefa continuava na agenda. Com um pedido que
+            // não se entendeu, o certo é não responder: não aplica, não cancela e não diz nada.
+            Log.w(TAG, "Ação desconhecida na notificação do lembrete: ${intent.action}")
+            return
+        }
         val occurrenceId = intent.getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID) ?: return
+        // O contexto e o escopo são resolvidos antes do `goAsync` de propósito: um `pending` já
+        // pedido depende do `finally` lá de baixo para ser encerrado, e nem um contexto que não é
+        // o do aplicativo (`as?` devolve `null`) nem um escopo já cancelado — em que `launch`
+        // devolve um job morto e o corpo nunca começa — chegam a rodá-lo. Com o `pending` pedido
+        // antes, o receiver ficaria vivo até o sistema matar o processo.
+        val app = context.applicationContext as? FalaAgendaApplication
+        if (app == null || !app.appScope.isActive) {
+            Log.w(TAG, "Sem escopo para responder o lembrete $occurrenceId")
+            return
+        }
         val pending = goAsync()
-        val app = context.applicationContext as FalaAgendaApplication
         app.appScope.launch {
             try {
-                withTimeout(WORK_TIMEOUT_MS) {
-                    when (intent.action) {
-                        AlarmIds.ACTION_COMPLETE -> registrarSeNaoPegou(
-                            context,
-                            AlarmIds.ACTION_COMPLETE,
-                            occurrenceId,
-                            app.container.tasks.complete(occurrenceId),
-                        )
-                        AlarmIds.ACTION_SNOOZE -> registrarSeNaoPegou(
-                            context,
-                            AlarmIds.ACTION_SNOOZE,
-                            occurrenceId,
-                            app.container.tasks.snooze(occurrenceId, 30),
-                        )
-                    }
-                    NotificationHelper.cancel(context, occurrenceId)
+                val resposta = try {
+                    withTimeout(WORK_TIMEOUT_MS) { aplicar(app, acao, occurrenceId) }
+                } catch (e: TimeoutCancellationException) {
+                    Log.w(TAG, "Tempo esgotado ao responder o lembrete $occurrenceId")
+                    // O trabalho foi interrompido no meio: nada garante que a ação gravou. Sem
+                    // este desfecho o caminho terminava em silêncio, com a notificação do
+                    // lembrete presa na barra como se ela não tivesse tocado em nada.
+                    ActionResponse.UNFINISHED
+                } catch (cancellation: CancellationException) {
+                    // Cancelar o escopo é controle de fluxo, não falha do trabalho. Sem esta
+                    // reexposição o `catch` de baixo (que é `Exception`, e cancelamento é uma)
+                    // transformaria um encerramento deliberado do aplicativo em desfecho: diria a
+                    // ela que a ação não pegou e ainda cancelaria o lembrete, por causa de algo que
+                    // ela não fez. Vem depois do `TimeoutCancellationException`, que é filho dele e
+                    // tem desfecho próprio.
+                    throw cancellation
+                } catch (e: Exception) {
+                    Log.w(TAG, "Falha ao responder o lembrete $occurrenceId", e)
+                    ActionResponse.UNFINISHED
                 }
-            } catch (e: TimeoutCancellationException) {
-                Log.w(TAG, "Tempo esgotado ao responder o lembrete $occurrenceId")
-            } catch (e: Exception) {
-                Log.w(TAG, "Falha ao responder o lembrete $occurrenceId", e)
+                encerrar(context, acao, occurrenceId, resposta)
             } finally {
                 pending.finish()
             }
         }
     }
 
-    /**
-     * A ocorrência saiu da agenda (ou já não aceita mais aquela ação) e o toque no botão da
-     * notificação não pegou. Um receiver não tem tela: quem fala com ela é a notificação, e a do
-     * lembrete já vai embora daqui. Por isso o desfecho sai numa notificação própria — sem ela,
-     * no "adiar", nada foi agendado e o aviso que ela esperava não vem: no remédio, o remédio
-     * que não toca.
-     */
-    private fun registrarSeNaoPegou(
-        context: Context,
-        acao: String,
+    /** Aplica o que ela pediu e traduz o que o repositório respondeu. */
+    private suspend fun aplicar(
+        app: FalaAgendaApplication,
+        acao: AcaoDaNotificacao,
         occurrenceId: String,
-        desfecho: ActionOutcome,
+    ): ActionResponse = when (acao) {
+        AcaoDaNotificacao.CONCLUIR -> app.container.tasks.complete(occurrenceId).paraResposta()
+        AcaoDaNotificacao.ADIAR -> app.container.tasks.snooze(occurrenceId, 30).paraResposta()
+    }
+
+    /**
+     * Fecha o toque dela: diz o que houver de ser dito e decide o destino do lembrete na barra.
+     *
+     * A ordem é a regra. O aviso sai primeiro, e é o desfecho dele que decide se o lembrete pode
+     * sair junto: é isso que garante que nunca se apague a última coisa na tela que conta a ela
+     * que o toque não valeu.
+     */
+    private fun encerrar(
+        context: Context,
+        acao: AcaoDaNotificacao,
+        occurrenceId: String,
+        resposta: ActionResponse,
     ) {
-        if (!precisaAvisarDeAcaoNaoAplicada(desfecho)) return
-        Log.w(TAG, "A ação $acao da notificação não pegou: $occurrenceId não está mais na agenda")
-        NotificationHelper.showActionNotApplied(context, occurrenceId, acao)
+        // Sem fala pendente, "o aviso saiu" é verdadeiro por definição: não há o que publicar.
+        val avisoSaiu = !precisaAvisarDeAcaoNaoAplicada(resposta) ||
+            publicarOaviso(context, acao, occurrenceId, resposta)
+        if (deveCancelarOLembrete(resposta, avisoSaiu)) {
+            NotificationHelper.cancel(context, occurrenceId)
+        } else {
+            // Fica na barra de propósito, e é a única coisa que sobra na tela contando a ela que
+            // o toque não valeu — cancelar aqui devolveria o silêncio que este caminho conserta.
+            Log.w(TAG, "A ação ${acao.id} não pegou e o aviso não saiu: o lembrete fica na barra")
+        }
+    }
+
+    /**
+     * A ocorrência saiu da agenda — ou o trabalho não terminou — e o toque no botão da notificação
+     * não pegou. Um receiver não tem tela: quem fala com ela é a notificação, e a do lembrete já
+     * vai embora daqui. Por isso o desfecho sai numa notificação própria — sem ela, no "adiar",
+     * nada foi agendado e o aviso que ela esperava não vem: no remédio, o remédio que não toca.
+     *
+     * Devolve se a fala saiu de fato. O aviso tem id próprio, e não é ele que
+     * [NotificationHelper.cancel] apaga.
+     */
+    private fun publicarOaviso(
+        context: Context,
+        acao: AcaoDaNotificacao,
+        occurrenceId: String,
+        resposta: ActionResponse,
+    ): Boolean {
+        Log.w(TAG, "A ação ${acao.id} da notificação não pegou ($resposta): $occurrenceId")
+        return NotificationHelper.showActionNotApplied(context, occurrenceId, acao.id, resposta) ==
+            NotificationHelper.ReminderDelivery.POSTED
     }
 }
 
+/** A tradução do que o repositório respondeu para o que o receiver tem a dizer. */
+internal fun ActionOutcome.paraResposta(): ActionResponse = when (this) {
+    ActionOutcome.APPLIED, ActionOutcome.UNCHANGED -> ActionResponse.RESOLVIDA
+    ActionOutcome.GONE -> ActionResponse.GONE
+}
+
 /**
- * Ela precisa saber que a ação da notificação não pegou? Só no [ActionOutcome.GONE]: ali nada foi
- * gravado — e, no "adiar", nada foi agendado, então o aviso que ela espera não vem.
+ * Ela precisa saber que a ação da notificação não pegou? Só quando nada foi gravado — no
+ * [ActionResponse.GONE], em que a ocorrência saiu da agenda — ou quando não se sabe o que foi
+ * gravado, no [ActionResponse.UNFINISHED].
  *
- * [ActionOutcome.UNCHANGED] cala de propósito: concluir o que já estava concluído é no-op
+ * [ActionResponse.RESOLVIDA] cala de propósito: concluir o que já estava concluído é no-op
  * legítimo, não falha — anunciá-lo seria trocar a mentira pelo alarme falso.
  */
-internal fun precisaAvisarDeAcaoNaoAplicada(desfecho: ActionOutcome): Boolean =
-    desfecho == ActionOutcome.GONE
+internal fun precisaAvisarDeAcaoNaoAplicada(resposta: ActionResponse): Boolean = when (resposta) {
+    ActionResponse.GONE, ActionResponse.UNFINISHED -> true
+    ActionResponse.RESOLVIDA -> false
+}
+
+/**
+ * Tira o lembrete da barra depois que o toque dela foi respondido?
+ *
+ * Sim quando não havia o que dizer — a ação foi gravada — e sim quando o que havia de ser dito
+ * saiu de fato ([avisoSaiu]). Não quando havia o que dizer e o aviso não pôde ser publicado: aí o
+ * lembrete na barra é a única evidência que resta de que o toque dela não valeu, e apagá-lo
+ * devolveria o silêncio que este caminho existe para consertar.
+ *
+ * É esta a preocupação que sempre esteve por trás de não cancelar — "cancelar apagaria a
+ * evidência" —, e ela só se sustenta enquanto não se diz nada. Dito o que havia de ser dito, o
+ * lembrete na barra vira só uma oferta a mais de uma ação que acabou de falhar, e sai.
+ */
+internal fun deveCancelarOLembrete(resposta: ActionResponse, avisoSaiu: Boolean): Boolean =
+    !precisaAvisarDeAcaoNaoAplicada(resposta) || avisoSaiu
 
 class BootCompletedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

@@ -24,17 +24,17 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
         app.appScope.launch {
             try {
                 withTimeout(WORK_TIMEOUT_MS) {
-                    val result = app.container.tasks.onAlarmFired(occurrenceId)
-                    if (result.notify) {
+                    app.container.tasks.onAlarmFired(occurrenceId) { title, seriesId ->
                         val delivery = NotificationHelper.showReminder(
                             context,
                             occurrenceId,
-                            result.seriesId,
-                            result.title,
+                            seriesId,
+                            title,
                         )
                         if (delivery != NotificationHelper.ReminderDelivery.POSTED) {
                             Log.w(TAG, "Lembrete $occurrenceId não apareceu: $delivery")
                         }
+                        delivery == NotificationHelper.ReminderDelivery.POSTED
                     }
                 }
             } catch (e: TimeoutCancellationException) {

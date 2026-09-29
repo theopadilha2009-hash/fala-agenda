@@ -155,8 +155,8 @@ class TaskRepositoryTest {
     fun alarmeDeOcorrenciaConcluidaNaoNotifica() = runBlocking {
         val saved = repo.saveDraft(completeDraft("Remédio", LocalDate.of(2026, 8, 21), LocalTime.of(8, 0)))
         repo.complete(saved.occurrence.id)
-        val result = repo.onAlarmFired(saved.occurrence.id)
-        assertThat(result.notify).isFalse()
+        val result = repo.onAlarmFired(saved.occurrence.id) { _, _ -> true }
+        assertThat(result.delivered).isFalse()
     }
 
     @Test
@@ -590,9 +590,9 @@ class TaskRepositoryTest {
                 ).toEntity(),
             )
 
-            val result = repoDaManha.onAlarmFired(ontem)
+            val result = repoDaManha.onAlarmFired(ontem) { _, _ -> true }
 
-            assertThat(result.notify).isTrue()
+            assertThat(result.delivered).isTrue()
             val stored = occDao.get(ontem)!!.toDomain()
             assertThat(stored.status).isEqualTo(OccurrenceStatus.PENDING)
             // O último degrau do dia já tocou: a escada não atravessa para o dia seguinte.
@@ -609,6 +609,69 @@ class TaskRepositoryTest {
             assertThat(adiada.snoozedUntil).isEqualTo(esperado)
             assertThat(adiada.nextReminderAt).isEqualTo(esperado)
             assertThat(sched.scheduled).contains(ontem)
+        }
+    }
+
+    /** O caminho feliz: o aviso chegou nela, então o degrau é gasto e a repetição é armada. */
+    @Test
+    fun avisoEntregueGastaODegrau() {
+        runBlocking {
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoHoje = TaskRepository(seriesDao, occDao, clock, sched)
+            val series = serieDaManha(clock.instant())
+            seriesDao.upsert(series.toEntity())
+            val id = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(ocorrenciaDeHoje(series.id, LocalDate.of(2026, 8, 20)).toEntity())
+
+            val entregues = mutableListOf<String>()
+            val result = repoHoje.onAlarmFired(id) { titulo, _ ->
+                entregues += titulo
+                true
+            }
+
+            assertThat(entregues).containsExactly("Remédio")
+            assertThat(result.delivered).isTrue()
+            val stored = occDao.get(id)!!.toDomain()
+            assertThat(stored.reminderStep).isEqualTo(ReminderPolicy.STEP_PLUS_15)
+            assertThat(stored.nextReminderAt)
+                .isEqualTo(LocalDateTime.of(2026, 8, 20, 10, 15).atZone(zone).toInstant())
+            assertThat(stored.lastReminderAt).isEqualTo(clock.instant())
+        }
+    }
+
+    /**
+     * O aviso que NÃO chegou até ela — permissão de notificação negada, canal bloqueado, o
+     * sistema recusando a notificação — não pode custar o degrau. Antes o repositório avançava
+     * a escada e só depois o receiver tentava mostrar: o aviso das 09:00 não tocou, e o das
+     * 10:15 já nascia queimado. Ela perdia a hora e a repetição seguinte, calada.
+     *
+     * A ocorrência continua pendente com o mesmo degrau marcado, e uma recuperação fica
+     * armada para tentar de novo — nunca entregue, ela segue "vai tocar" até a virada do dia.
+     */
+    @Test
+    fun avisoQueNaoChegouNaoGastaODegrau() {
+        runBlocking {
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoHoje = TaskRepository(seriesDao, occDao, clock, sched)
+            val series = serieDaManha(clock.instant())
+            seriesDao.upsert(series.toEntity())
+            val id = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(ocorrenciaDeHoje(series.id, LocalDate.of(2026, 8, 20)).toEntity())
+
+            val result = repoHoje.onAlarmFired(id) { _, _ -> false }
+
+            assertThat(result.delivered).isFalse()
+            val stored = occDao.get(id)!!.toDomain()
+            assertThat(stored.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(stored.reminderStep).isEqualTo(ReminderPolicy.STEP_FIRST)
+            assertThat(stored.nextReminderAt)
+                .isEqualTo(LocalDateTime.of(2026, 8, 20, 9, 0).atZone(zone).toInstant())
+            assertThat(stored.lastReminderAt).isNull()
+            // Voltou para a fila: sem isto o degrau ficava parado e nada tocava de novo.
+            assertThat(sched.recovered).containsKey(id)
+            assertThat(sched.cancelled).doesNotContain(id)
         }
     }
 
@@ -682,6 +745,32 @@ class TaskRepositoryTest {
         recurrence = RecurrenceRule(RecurrenceKind.DAILY),
         createdAt = now,
         updatedAt = now,
+    )
+
+    /**
+     * Série de dia, para o disparo caber no mesmo dia do relógio dos testes: assim a
+     * varredura de ciclo de vida da própria chamada não devolve a ocorrência ao primeiro
+     * degrau, e o que o teste lê é só o que o disparo decidiu.
+     */
+    private fun serieDaManha(now: Instant) = TaskSeries(
+        id = "s1",
+        title = "Remédio",
+        zoneId = zone,
+        localTime = LocalTime.of(9, 0),
+        startLocalDate = LocalDate.of(2026, 8, 20),
+        recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+        createdAt = now,
+        updatedAt = now,
+    )
+
+    private fun ocorrenciaDeHoje(seriesId: String, dia: LocalDate) = TaskOccurrence(
+        id = OccurrenceIds.of(seriesId, dia),
+        seriesId = seriesId,
+        localDate = dia,
+        scheduledAt = dia.atTime(9, 0).atZone(zone).toInstant(),
+        status = OccurrenceStatus.PENDING,
+        reminderStep = ReminderPolicy.STEP_FIRST,
+        nextReminderAt = dia.atTime(9, 0).atZone(zone).toInstant(),
     )
 
     private fun ocorrenciaAdiada(

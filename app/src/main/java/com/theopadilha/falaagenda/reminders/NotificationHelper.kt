@@ -28,6 +28,16 @@ object NotificationHelper {
         FAILED,
     }
 
+    /**
+     * O que os avisos deste aplicativo estão valendo agora.
+     *
+     * [OFF] é a permissão negada: nada é postado, e sem aviso não existe lembrete —
+     * [showReminder] devolve [ReminderDelivery.BLOCKED] e o degrau da escada fica sem
+     * entrega. [QUIET] é o canal rebaixado: a notificação sai, mas muda, e para quem
+     * depende dela ser lembrada isso é quase o mesmo que não sair.
+     */
+    enum class ReminderAlerts { OK, OFF, QUIET }
+
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = context.getSystemService(NotificationManager::class.java)
@@ -48,12 +58,33 @@ object NotificationHelper {
      * Acontece quando o app está sem permissão de notificação ou quando o canal foi
      * rebaixado nas configurações do aparelho. A resposta vem do canal gravado, não
      * da constante: o sistema ignora uma criação que tente subir a importância de volta.
+     *
+     * O aplicativo NÃO toca som próprio quando esta resposta é `true`, e é de propósito. Uma
+     * notificação bloqueada não sai de jeito nenhum, e um `MediaPlayer` não conserta isso —
+     * ele só passaria por cima do Modo Silencioso e do Não Perturbe, que é justamente o que
+     * uma pessoa idosa liga de propósito (à noite, no médico, na igreja). Trocar o silêncio
+     * dela por um alarme nosso seria desfazer uma escolha que ela fez. O que o aplicativo
+     * deve a ela é saber que está mudo e dizer, com um toque que resolva — é o cartão de
+     * avisos da home.
      */
-    fun remindersWillBeSilent(context: Context): Boolean {
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return true
-        val channel = context.getSystemService(NotificationManager::class.java)
-            .getNotificationChannel(CHANNEL_ID) ?: return false
-        return channel.importance < NotificationManager.IMPORTANCE_DEFAULT
+    fun remindersWillBeSilent(context: Context): Boolean =
+        reminderAlerts(context) != ReminderAlerts.OK
+
+    /**
+     * O estado dos avisos: a mesma pergunta que a home faz para decidir se mostra o cartão e
+     * qual ação ele oferece. Vive aqui, e não na tela, porque é a mesma sondagem que o
+     * lembrete faz antes de sair — duas respostas diferentes para "os avisos estão valendo?"
+     * seriam a home dizendo que está tudo bem enquanto o lembrete não sai.
+     *
+     * A permissão vem do [NotificationManagerCompat], que é quem enxerga o "desligado nas
+     * configurações" além da permissão negada; a importância vem do canal gravado. `minSdk`
+     * é 26, então canal sempre existe.
+     */
+    fun reminderAlerts(context: Context): ReminderAlerts {
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return ReminderAlerts.OFF
+        val importance = context.getSystemService(NotificationManager::class.java)
+            ?.getNotificationChannel(CHANNEL_ID)?.importance ?: return ReminderAlerts.OK
+        return if (importance < NotificationManager.IMPORTANCE_DEFAULT) ReminderAlerts.QUIET else ReminderAlerts.OK
     }
 
     fun showReminder(

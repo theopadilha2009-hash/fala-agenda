@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -32,6 +33,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.theopadilha.falaagenda.data.prefs.SettingsStore
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
@@ -56,6 +58,9 @@ fun OnboardingScreen(
     // despacho) e o onboarding voltava a aparecer na abertura seguinte — ela já tinha
     // começado a usar o aplicativo.
     var finishing by rememberSaveable { mutableStateOf(false) }
+    // "Agora não" com o pedido de avisos em voo: a resposta do sistema sai desta tela em vez
+    // de seguir para o alarme exato. Guardado para o giro não perder a saída no meio.
+    var exitAfterNotifications by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(finishing) {
         if (!finishing) return@LaunchedEffect
         try {
@@ -108,7 +113,13 @@ fun OnboardingScreen(
     }
 
     val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
+        val sairAgora = exitAfterNotifications
+        exitAfterNotifications = false
+        if (sairAgora) {
+            // Os avisos foram pedidos e ela já tinha dito que não queria decidir mais nada:
+            // a resposta do sistema não pode prendê-la aqui.
+            finish()
+        } else if (granted) {
             requestExactAlarm()
         } else {
             // Negou (ou o sistema nem mostrou o pedido): sem notificação não toca lembrete
@@ -117,9 +128,21 @@ fun OnboardingScreen(
         }
     }
 
-    fun requestNotifications() {
-        if (Build.VERSION.SDK_INT >= 33) {
+    /**
+     * Pede os avisos. [exitAfter] é o "Agora não", que é sobre o microfone: os avisos são
+     * pedidos de qualquer jeito, e ela sai da tela com a resposta que vier.
+     *
+     * O pedido não pode depender de ela ter aceitado o microfone. Antes ele só acontecia
+     * dentro da cadeia do microfone concedido, e negando o microfone — ou tocando "Agora
+     * não" — a permissão de aviso nunca era pedida: do Android 13 em diante ela nasce
+     * negada, e o lembrete não aparecia nunca, para sempre, sem nada dizer.
+     */
+    fun requestNotifications(exitAfter: Boolean = false) {
+        if (!hasNotificationPermission(context)) {
+            exitAfterNotifications = exitAfter
             notif.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else if (exitAfter) {
+            finish()
         } else {
             requestExactAlarm()
         }
@@ -131,6 +154,9 @@ fun OnboardingScreen(
         } else {
             // Negou o microfone: não dá para seguir como se tivesse aceitado.
             micRefused = true
+            // O microfone é um recurso a menos; os avisos são o aplicativo funcionando. Negar
+            // um não pode custar o outro, e as duas permissões são independentes.
+            requestNotifications()
         }
     }
 
@@ -203,7 +229,9 @@ fun OnboardingScreen(
                 micRefused -> PrimaryButton("Continuar") { requestNotifications() }
                 else -> PrimaryButton("Começar") { mic.launch(Manifest.permission.RECORD_AUDIO) }
             }
-            SecondaryButton("Agora não") { finish() }
+            // "Agora não" pula o microfone, não os avisos: sair daqui sem pedir a permissão
+            // de aviso é o caminho por onde o lembrete nunca tocou.
+            SecondaryButton("Agora não") { requestNotifications(exitAfter = true) }
         }
     }
 }
@@ -219,3 +247,13 @@ private fun canScheduleExactAlarms(context: Context): Boolean =
     } else {
         true
     }
+
+/**
+ * A permissão de aviso existe a partir do Android 13; antes dela os avisos nascem ligados e
+ * não há o que pedir. Perguntar pelo `checkSelfPermission` cobre o caso de ela já ter
+ * respondido: pedir de novo quando já está concedida não abre diálogo nenhum.
+ */
+private fun hasNotificationPermission(context: Context): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED

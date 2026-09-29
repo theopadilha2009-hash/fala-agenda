@@ -115,6 +115,34 @@ class NotificationHelperTest {
     }
 
     @Test
+    fun semPermissaoOsAvisosEstaoDesligados() {
+        liberarNotificacoes()
+        shadowOf(gerente).setNotificationsEnabled(false)
+
+        assertThat(NotificationHelper.reminderAlerts(contexto))
+            .isEqualTo(NotificationHelper.ReminderAlerts.OFF)
+    }
+
+    @Test
+    fun canalRebaixadoDeixaOsAvisosSemSom() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_LOW)
+
+        assertThat(NotificationHelper.reminderAlerts(contexto))
+            .isEqualTo(NotificationHelper.ReminderAlerts.QUIET)
+    }
+
+    @Test
+    fun canalAltoComPermissaoEhAvisoQueFunciona() {
+        liberarNotificacoes()
+        criarCanal(NotificationManager.IMPORTANCE_HIGH)
+
+        assertThat(NotificationHelper.reminderAlerts(contexto))
+            .isEqualTo(NotificationHelper.ReminderAlerts.OK)
+    }
+
+
+    @Test
     fun notificacaoBloqueadaEhSilenciosa() {
         liberarNotificacoes()
         criarCanal(NotificationManager.IMPORTANCE_HIGH)

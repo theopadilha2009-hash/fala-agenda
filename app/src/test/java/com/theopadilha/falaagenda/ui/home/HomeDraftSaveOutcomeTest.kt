@@ -94,6 +94,46 @@ class HomeDraftSaveOutcomeTest {
         assertThat(saved.message).contains("já passou")
     }
 
+    /**
+     * O gêmeo da criação, no caminho da edição: mudar a tarefa para um horário que já passou
+     * e não repete também não deixa alarme nenhum — `editOccurrence` arquiva a ocorrência como
+     * não realizada (ver `DraftSchedule.bornWithoutReminder`). O anúncio dizia "Vai avisar" e
+     * a home, no toque seguinte, mostrava "Não consegui avisar" sobre a tarefa recém-editada.
+     */
+    @Test
+    fun aEdicaoParaDataPassadaNaoAnunciaAviso() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+
+        viewModel.edit(
+            id = salvo.occurrence.id,
+            title = "tomar remédio",
+            date = LocalDate.now().minusDays(1),
+            time = LocalTime.of(8, 30),
+            recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        )
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).doesNotContain("Vai avisar")
+        assertThat(saved.message).contains("já passou")
+    }
+
+    /** E a correção não engole o caso que continua valendo: edição para frente avisa. */
+    @Test
+    fun aEdicaoParaDataFuturaContinuaAnunciandoAviso() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado()) }
+
+        viewModel.edit(
+            id = salvo.occurrence.id,
+            title = "tomar remédio",
+            date = LocalDate.now().plusDays(2),
+            time = LocalTime.of(8, 30),
+            recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        )
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        assertThat(saved.message).contains("Vai avisar")
+    }
+
     /** Desfecho consumido não volta a aparecer numa recomposição qualquer. */
     @Test
     fun oDesfechoConsumidoNaoVolta() {

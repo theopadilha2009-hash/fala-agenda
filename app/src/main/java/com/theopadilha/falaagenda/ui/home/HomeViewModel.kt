@@ -13,6 +13,7 @@ import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
+import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import com.theopadilha.falaagenda.platform.UpdateCheck
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.Flow
@@ -30,8 +31,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 
 /**
  * A lista, a resposta para "isto já veio do banco?" e a resposta para "e o que ele
@@ -534,6 +537,22 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * O mesmo anúncio para o caminho da edição, que não devolve ocorrência: quem decide é o
+     * predicado compartilhado — a data que ela escolheu ali vale literalmente
+     * (`TaskRepository.editOccurrence`), então o instante do primeiro aviso é o da própria
+     * escolha, e o predicado só morde quando a tarefa não repete. Escrever a conta aqui de
+     * novo seria a terceira cópia da regra; ver `DraftSchedule`.
+     */
+    private fun announceOfEdit(date: LocalDate, time: LocalTime, recurrence: RecurrenceRule): String {
+        val firstAt = DraftSchedule.firstOccurrenceAt(recurrence, date, time, ZoneId.systemDefault())
+        return if (DraftSchedule.bornWithoutReminder(firstAt, recurrence, Instant.now())) {
+            SEM_AVISO
+        } else {
+            AgendaFormat.announce(date, time, LocalDate.now())
+        }
+    }
+
     fun complete(item: AgendaItem) = write(
         action = "Não consegui marcar como feito.",
         // O item vai dentro do recado: é ele que o desfazer devolve, e não "o último que
@@ -634,7 +653,7 @@ class HomeViewModel(
                     publishSaved(
                         requestId,
                         DraftSaveOrigin.CONFIRM,
-                        AgendaFormat.announce(date, time, LocalDate.now()),
+                        announceOfEdit(date, time, recurrence),
                     )
                 } else {
                     // A ocorrência saiu do banco (o "Excluir" de outra tela, a varredura do

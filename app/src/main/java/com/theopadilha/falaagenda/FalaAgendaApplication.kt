@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.reminders.NotificationHelper
+import com.theopadilha.falaagenda.speech.VoskModel
 import com.theopadilha.falaagenda.widget.AgendaWidgetProvider
 import com.theopadilha.falaagenda.widget.collectWidgetUpdates
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -51,5 +52,25 @@ class FalaAgendaApplication : Application() {
                 }
             }
         }
+    }
+
+    /**
+     * O sistema avisou que este processo está na fila para morrer: é o único "acabou"
+     * que o aparelho dá — o `onTerminate` não é chamado aqui. É onde o modelo de 53 MB
+     * do Vosk é fechado. Fora daí ele fica de pé de propósito: recarregá-lo leva
+     * segundos, dentro do prazo de preparo da escuta, e é isso que custava a fala dela.
+     *
+     * Na thread principal e sem esperar: uma escuta de pé segura o modelo e o
+     * `release` desiste na hora, sem entrar na fila de um carregamento em curso.
+     *
+     * O nível está marcado como obsoleto desde a API 35 — o sistema deixou de garantir
+     * a entrega dele. Continua sendo o único aviso de saída que existe, e um aviso que
+     * não chega não custa nada: quem morre sem ele tem a memória recuperada junto com
+     * o processo.
+     */
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == TRIM_MEMORY_COMPLETE) VoskModel.release()
     }
 }

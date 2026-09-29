@@ -16,6 +16,15 @@ object AlarmIds {
     const val EXTRA_SERIES_ID = "series_id"
     const val EXTRA_ACTION = "action"
 
+    /** Id da notificação do lembrete na tela. */
+    const val NOTIF_REMINDER = "notif"
+
+    /**
+     * Id da notificação que conta que a ação tocada não pegou. Lane própria: se dividisse o id
+     * com [NOTIF_REMINDER], o aviso tomaria o lugar do lembrete — ou sumiria junto com ele.
+     */
+    const val NOTIF_NOT_APPLIED = "notif_not_applied"
+
     fun openIntent(context: Context, occurrenceId: String): Intent =
         Intent(context, MainActivity::class.java).apply {
             action = ACTION_OPEN_OCCURRENCE
@@ -31,7 +40,8 @@ object AlarmIds {
             ACTION_COMPLETE -> 2
             ACTION_SNOOZE -> 3
             ACTION_OPEN -> 4
-            "notif" -> 5
+            NOTIF_REMINDER -> 5
+            NOTIF_NOT_APPLIED -> 7
             else -> 6
         }
         val digest = MessageDigest.getInstance("SHA-256")

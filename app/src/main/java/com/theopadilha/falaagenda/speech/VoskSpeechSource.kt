@@ -10,6 +10,7 @@ import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicBoolean
 import org.vosk.Model
 import org.vosk.Recognizer
 
@@ -27,10 +28,13 @@ class VoskSpeechSource(
     context: Context,
     private val model: () -> Model,
     private val sampleRate: Int = SAMPLE_RATE,
+    /** Avisa quem emprestou o modelo que esta escuta acabou — ver `VoskOfflineSpeech`. */
+    private val onFinished: () -> Unit = {},
 ) : SpeechSource {
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private var worker: Thread? = null
+    private val encerrada = AtomicBoolean(false)
 
     @Volatile private var listener: SpeechSource.Listener? = null
 
@@ -40,6 +44,8 @@ class VoskSpeechSource(
 
     override fun start(listener: SpeechSource.Listener) {
         if (!hasMicrophone()) {
+            // Sem escuta de pé não há motivo para o modelo continuar aberto.
+            finish()
             listener.onError(VoiceEngine.INSUFFICIENT_PERMISSIONS)
             return
         }
@@ -108,7 +114,13 @@ class VoskSpeechSource(
         } finally {
             releaseRecord()
             runCatching { recognizer?.close() }
+            finish()
         }
+    }
+
+    /** Uma vez só por escuta: a contagem do modelo emprestado não pode passar do ponto. */
+    private fun finish() {
+        if (encerrada.compareAndSet(false, true)) onFinished()
     }
 
     private fun hasMicrophone(): Boolean =

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.theopadilha.falaagenda.FalaAgendaApplication
+import com.theopadilha.falaagenda.data.repo.ActionOutcome
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -71,8 +72,18 @@ class ReminderActionReceiver : BroadcastReceiver() {
             try {
                 withTimeout(WORK_TIMEOUT_MS) {
                     when (intent.action) {
-                        AlarmIds.ACTION_COMPLETE -> app.container.tasks.complete(occurrenceId)
-                        AlarmIds.ACTION_SNOOZE -> app.container.tasks.snooze(occurrenceId, 30)
+                        AlarmIds.ACTION_COMPLETE -> registrarSeNaoPegou(
+                            context,
+                            AlarmIds.ACTION_COMPLETE,
+                            occurrenceId,
+                            app.container.tasks.complete(occurrenceId),
+                        )
+                        AlarmIds.ACTION_SNOOZE -> registrarSeNaoPegou(
+                            context,
+                            AlarmIds.ACTION_SNOOZE,
+                            occurrenceId,
+                            app.container.tasks.snooze(occurrenceId, 30),
+                        )
                     }
                     NotificationHelper.cancel(context, occurrenceId)
                 }
@@ -85,7 +96,35 @@ class ReminderActionReceiver : BroadcastReceiver() {
             }
         }
     }
+
+    /**
+     * A ocorrência saiu da agenda (ou já não aceita mais aquela ação) e o toque no botão da
+     * notificação não pegou. Um receiver não tem tela: quem fala com ela é a notificação, e a do
+     * lembrete já vai embora daqui. Por isso o desfecho sai numa notificação própria — sem ela,
+     * no "adiar", nada foi agendado e o aviso que ela esperava não vem: no remédio, o remédio
+     * que não toca.
+     */
+    private fun registrarSeNaoPegou(
+        context: Context,
+        acao: String,
+        occurrenceId: String,
+        desfecho: ActionOutcome,
+    ) {
+        if (!precisaAvisarDeAcaoNaoAplicada(desfecho)) return
+        Log.w(TAG, "A ação $acao da notificação não pegou: $occurrenceId não está mais na agenda")
+        NotificationHelper.showActionNotApplied(context, occurrenceId, acao)
+    }
 }
+
+/**
+ * Ela precisa saber que a ação da notificação não pegou? Só no [ActionOutcome.GONE]: ali nada foi
+ * gravado — e, no "adiar", nada foi agendado, então o aviso que ela espera não vem.
+ *
+ * [ActionOutcome.UNCHANGED] cala de propósito: concluir o que já estava concluído é no-op
+ * legítimo, não falha — anunciá-lo seria trocar a mentira pelo alarme falso.
+ */
+internal fun precisaAvisarDeAcaoNaoAplicada(desfecho: ActionOutcome): Boolean =
+    desfecho == ActionOutcome.GONE
 
 class BootCompletedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

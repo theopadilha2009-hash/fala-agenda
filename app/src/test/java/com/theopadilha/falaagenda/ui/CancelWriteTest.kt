@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui
 
+import android.app.Application
 import androidx.navigation.NavHostController
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
@@ -15,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.time.LocalDate
 import java.time.LocalTime
 
@@ -38,6 +40,12 @@ import java.time.LocalTime
  * sem isso o defeito não se reproduz. O que está coberto é o gesto que os dois chamam.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(
+    sdk = [34],
+    manifest = Config.NONE,
+    packageName = "com.theopadilha.falaagenda",
+    application = Application::class,
+)
 class CancelWriteTest {
     /** O escopo que no aplicativo é o do ViewModel (não o da tela). Aqui, sem
      *  confinamento, cada passo acontece na hora e o teste não depende de relógio. */

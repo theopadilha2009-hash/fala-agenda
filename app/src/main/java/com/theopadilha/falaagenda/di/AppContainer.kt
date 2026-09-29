@@ -58,6 +58,7 @@ class AppContainer(
     val activation = ActivationClient(supabase)
     // Sem o modelo baixado isto é null e a fala segue no motor do sistema, como antes.
     // A consulta é por escuta, não uma vez só: o download pode terminar com o app aberto.
+    // O motor resolvido, esse, é um por processo — quem o guarda e o fecha é o VoskModel.
     val voice = VoiceCaptureController(appContext, offline = { VoskModel.offlineSpeech(appContext) })
     val offlineModel = OfflineModelInstaller(appContext)
     val updater = AppUpdater(appContext)

@@ -115,15 +115,27 @@ class ConfirmDraftScreenTest {
     /**
      * O outro lado da linha: quando a data escolhida é a que vale não há o que explicar. Sem
      * este caso, a linha poderia aparecer sempre e os testes de cima passariam por acidente.
+     *
+     * A data escolhida é a da **semana que vem**, não hoje. Com hoje + 09:00 o caso dependeria
+     * do relógio de parede: depois das 09:00 o primeiro aviso vira o sábado seguinte — não por
+     * defeito, mas justamente pelo que o #36 consertou (`DraftSchedule.firstOccurrence`: hora
+     * vencida numa regra que repete avança, e a tela explica) — e o teste daria vermelho na CI
+     * da tarde e verde na da manhã. Sete dias à frente o instante é futuro a qualquer hora do
+     * dia, e a invariante que este caso protege — sem explicação quando a escolha vale — continua
+     * sendo a mesma exercitada.
      */
     @Test
     fun semDataDescartadaNaoHaOLinhaDaExplicacao() {
-        val regra = recurrenceFor(RecurrenceKind.WEEKLY, hoje, setOf(hoje.dayOfWeek))
-        tela(rascunho("Natação", hoje, hora, regra))
+        val escolhida = hoje.plusWeeks(1)
+        val regra = recurrenceFor(RecurrenceKind.WEEKLY, escolhida, setOf(escolhida.dayOfWeek))
+        tela(rascunho("Natação", escolhida, hora, regra))
 
         compose.onNodeWithText("Vai avisar", substring = true)
-            .assertTextContains(AgendaFormat.longDate(hoje), substring = true)
+            .assertTextContains(AgendaFormat.longDate(escolhida), substring = true)
         compose.onNodeWithText("não cai nesse dia", substring = true).assertDoesNotExist()
+        // A linha tem dois motivos agora: a regra que não cai naquele dia e a hora de hoje que
+        // já passou. Anular só o primeiro deixaria a segunda passar por baixo deste teste.
+        compose.onNodeWithText("esse horário já passou", substring = true).assertDoesNotExist()
     }
 
     /**

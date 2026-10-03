@@ -59,7 +59,22 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Ligado: sem minify o D8 empacota toda classe das dependências, usada ou não. No
+            // APK de release deste commit, medido com `unzip -v` (mesmo build, mesma máquina,
+            // mudando só esta flag): os 3 `classes*.dex` eram 12.628.488 bytes comprimidos de
+            // um APK de 19.201.559. Com R8: 1.735.131 em um único dex, APK de 8.306.142 —
+            // 10.895.417 bytes a menos, 56,7% do download. Só o pacote de ícones do
+            // material-icons-extended tem 11.404 entradas removidas no usage.txt do R8, contra
+            // 15 ícones que o código referencia. O debug fica sem minify de propósito: a suíte
+            // testDebugUnitTest roda contra o bytecode dele (ver buildTypes.debug).
+            isMinifyEnabled = true
+            // shrinkResources fica no default (desligado) de caso pensado: res/ +
+            // resources.arsc medem 723.611 bytes descompactados / 599.000 comprimidos neste
+            // mesmo APK de antes, ou 3,1% do download, e o teto prático do shrinker ali é
+            // < 150 KB (< 0,8%). Não paga o risco de sumir com recurso resolvido por nome —
+            // layout do widget via RemoteViews, xml de backup, shortcuts. Consequência medida:
+            // o lint passa a reportar NotShrinkingResources (88 -> 89 avisos, 0 erros) apontando
+            // para a linha de cima. É a recusa registrada aqui, não um esquecimento.
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

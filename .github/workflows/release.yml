@@ -263,16 +263,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          ASSETS=("$APK" "$RUNNER_TEMP/apk.sha256")
+          # O mapping do R8 vive 20 minutos no filesystem efemero do runner e nao e lido por
+          # ninguem: com minify ligado, stack frame de biblioteca (Compose/Tink/JNA) chega
+          # renomeado e, sem este arquivo, o crash de uma versao taggada e indecifavel para
+          # sempre. Attach no proprio release = o mapping dura enquanto a versao dura. O app
+          # escolhe seus assets por sufixo (.apk/.sha256, AppUpdater.kt:276-277), entao um
+          # .txt a mais nao sequestra nada. if, nao &&: o runner roda bash -e e o ramo falso
+          # de um && abortaria o passo em silencio.
+          MAP="app/build/outputs/mapping/release/mapping.txt"
+          if [ -f "$MAP" ]; then
+            ASSETS+=("$MAP")
+          else
+            echo "::warning::mapping.txt ausente (minify desligado ou build sem R8): release vai sem mapeamento de classes."
+          fi
           # Pre-release nunca vira "latest" no GitHub: /releases/latest continua apontando para a
           # ultima estavel, entao o app nao oferece o rc como atualizacao.
           if [ "${PRERELEASE:-0}" = "1" ]; then
-            gh release create "$GITHUB_REF_NAME" "$APK" "$RUNNER_TEMP/apk.sha256" \
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
               --clobber \
               --prerelease
           else
-            gh release create "$GITHUB_REF_NAME" "$APK" "$RUNNER_TEMP/apk.sha256" \
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
               --clobber

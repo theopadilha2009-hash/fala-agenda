@@ -1,6 +1,7 @@
 package com.theopadilha.falaagenda.data.prefs
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
@@ -90,7 +91,17 @@ class SecureTokenStore(context: Context) {
             androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
-    }.getOrElse {
+    }.getOrElse { erro ->
+        // A rede é segura contra crash, mas era muda: se o Tink falhar (R8, KeyStore, keyset
+        // corrompido) o token passa a viver em texto plano e nada na tela denuncia. Este Log.w
+        // é a única pista — no aparelho, `adb logcat -s SecureTokenStore` e a presença de
+        // `fala_agenda_secure_fallback.xml` em shared_prefs confirmam ou descartam a degradação
+        // invisível que o review do R8 apontou.
+        Log.w(
+            TAG,
+            "SharedPreferences criptografado indisponível; o token vai em texto plano no fallback.",
+            erro,
+        )
         context.getSharedPreferences("fala_agenda_secure_fallback", Context.MODE_PRIVATE)
     }
 
@@ -104,5 +115,6 @@ class SecureTokenStore(context: Context) {
 
     companion object {
         private const val KEY_TOKEN = "installation_token"
+        private const val TAG = "SecureTokenStore"
     }
 }

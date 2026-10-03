@@ -1,10 +1,13 @@
 package com.theopadilha.falaagenda.ui.capture
 
 import android.app.Application
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -52,8 +55,14 @@ class ConfirmDraftScreenTest {
 
     private val hoje = LocalDate.now()
 
-    /** O próximo sábado: a "dias úteis" a regra não tem sábado — a data é sempre descartada. */
-    private val sabado = hoje.with(TemporalAdjusters.next(DayOfWeek.SATURDAY))
+    /**
+     * O sábado da **semana que vem**: "dias úteis" não tem sábado, então a data é sempre
+     * descartada. Não é o sábado mais próximo de propósito — a mais de uma semana, o
+     * `dateLabel` cai sempre no ramo `dd/MM`, e uma corrida que atravessa a meia-noite não
+     * troca "amanhã" por "hoje" no meio do caminho (com sábado = amanhã, a instância criada
+     * antes das 00:00 e a tela lida depois discordariam por relógio, não por defeito).
+     */
+    private val sabado = hoje.with(TemporalAdjusters.nextOrSame(DayOfWeek.SATURDAY)).plusWeeks(1)
 
     /** A primeira segunda depois dele: onde o aviso realmente nasce. */
     private val segunda = sabado.with(TemporalAdjusters.next(DayOfWeek.MONDAY))
@@ -115,6 +124,46 @@ class ConfirmDraftScreenTest {
         compose.onNodeWithText("Vai avisar", substring = true)
             .assertTextContains(AgendaFormat.longDate(hoje), substring = true)
         compose.onNodeWithText("não cai nesse dia", substring = true).assertDoesNotExist()
+    }
+
+    /**
+     * Os quatro testes de cima montam o rascunho **já resolvido** e prendem a renderização
+     * inicial. Isso deixa um mutante vivo: trocar a fonte da promessa de `previewRule` (o
+     * estado ao vivo dos chips, `ConfirmDraftScreen.kt:286`) para `initial.recurrence` — a
+     * regra como veio no rascunho — passa os quatro verdes, porque no primeiro frame os dois
+     * são a mesma coisa. É o defeito do #33 de volta, só que mudando **de qual das três
+     * entradas** o resumo lê: a tela descreveria o sábado do rascunho enquanto o `onSave`
+     * grava `recurrenceFor(kind, …)` com o chip que ela tocou.
+     *
+     * Este caso começa em "Só uma vez" e **toca** "Dias úteis": aí as duas fontes divergem, e
+     * a promessa tem que acompanhar o toque.
+     *
+     * O toque vai com `performScrollTo()` porque sem rolar o hit-teste da viewport do
+     * Robolectric não alcança o chip e `performClick()` não faz nada — em silêncio, sem
+     * exceção. E vem seguido de `assertIsSelected()` exatamente por isso: um clique morto
+     * deixaria este teste verde na direção oposta à que ele existe para prender. Ninguém no
+     * repositório tinha exercitado toque nesse harness antes (`grep performClick` em
+     * `app/src/test`: zero ocorrências).
+     */
+    @Test
+    fun tocarDiasUteisDepoisMoveAPromessaComOToque() {
+        val unica = recurrenceFor(RecurrenceKind.NONE, sabado, emptySet())
+        tela(rascunho("Cabelo", sabado, hora, unica))
+
+        // O ponto de partida: com "Só uma vez" a data escolhida vale, e não há explicação de
+        // data descartada — é o estado que o mutante preservaria.
+        compose.onNodeWithText("Vai avisar", substring = true)
+            .assertTextContains(AgendaFormat.longDate(sabado), substring = true)
+
+        compose.onNodeWithText("Dias úteis").performScrollTo().performClick().assertIsSelected()
+
+        val diasUteis = recurrenceFor(RecurrenceKind.WEEKDAYS, sabado, emptySet())
+        compose.onNodeWithText("Vai avisar", substring = true)
+            .assertTextEquals(AgendaFormat.recap(segunda, hora, diasUteis))
+        compose.onNodeWithText("Salvar ·", substring = true).assertTextContains(
+            "Salvar · ${AgendaFormat.dateLabel(segunda, hoje).lowercase(ptBr)} ${AgendaFormat.time(hora)}",
+            substring = true,
+        )
     }
 
     private fun tela(draft: ParsedTaskDraft) {

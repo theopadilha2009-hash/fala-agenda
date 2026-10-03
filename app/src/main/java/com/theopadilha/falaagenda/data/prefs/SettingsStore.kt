@@ -92,11 +92,14 @@ class SecureTokenStore(context: Context) {
             androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
     }.getOrElse { erro ->
-        // A rede é segura contra crash, mas era muda: se o Tink falhar (R8, KeyStore, keyset
-        // corrompido) o token passa a viver em texto plano e nada na tela denuncia. Este Log.w
-        // é a única pista — no aparelho, `adb logcat -s SecureTokenStore` e a presença de
-        // `fala_agenda_secure_fallback.xml` em shared_prefs confirmam ou descartam a degradação
-        // invisível que o review do R8 apontou.
+        // O fallback protege o app de cair, mas era mudo: se o Tink falhar (R8, KeyStore,
+        // keyset corrompido) o token passa a viver em texto plano e nada na tela denuncia.
+        // No aparelho da release — o único cenário onde o R8 existe — a pista é só este log:
+        // `adb logcat -s SecureTokenStore` (o Log.w sobrevive ao minify; nenhuma regra do app
+        // remove log de efeito colateral). `run-as` é negado na release assinada, então listar
+        // `shared_prefs/` só funciona em build debugável ou root — e mesmo lá o
+        // `fala_agenda_secure_fallback.xml` nasce só na primeira escrita do token: ausência
+        // não descarta a degradação, só diz que ainda não gravaram nada em claro.
         Log.w(
             TAG,
             "SharedPreferences criptografado indisponível; o token vai em texto plano no fallback.",

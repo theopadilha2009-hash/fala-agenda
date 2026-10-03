@@ -8,9 +8,13 @@
 # runtime num caminho que nenhum teste desta máquina cobre.
 -keep class com.theopadilha.falaagenda.** { *; }
 
-# As quatro classes abaixo são anotações do checker estático Error Prone (retenção CLASS,
-# nunca lidas em runtime) que o Tink referencia nos descritores das próprias classes
-# (KeysetManager, InsecureSecretKeyAccess, AesEaxKey$Builder...). Elas não existem no Android,
+# As quatro classes abaixo são anotações do checker estático Error Prone que o Tink
+# referencia nos descritores das próprias classes (KeysetManager, InsecureSecretKeyAccess,
+# AesEaxKey$Builder...). Nada neste app as lê em runtime — a retenção é mista, medida com
+# javap no error_prone_annotations 2.26.1 (CheckReturnValue e Immutable são RUNTIME;
+# CanIgnoreReturnValue é CLASS; RestrictedApi não declara @Retention, logo CLASS) — e o que o
+# R8 precisa resolver é o descritor no bytecode, não uma
+# anotação viva. Elas não existem no Android,
 # e o R8 do release trata isso como erro: minifyReleaseWithR8 falha com "Missing classes
 # detected while running R8". Medido no cache do Gradle desta máquina: o AAR do
 # androidx.security:security-crypto 1.1.0-alpha06 não traz proguard.txt nenhum, e o único

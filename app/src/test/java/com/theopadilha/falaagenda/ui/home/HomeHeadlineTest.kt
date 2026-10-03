@@ -30,11 +30,14 @@ class HomeHeadlineTest {
     private val zone = ZoneId.of("America/Sao_Paulo")
     private val vazia = AgendaSections(emptyList(), emptyList(), emptyList(), emptyList())
 
+    /** O estado como o composable o recebe: seções e bandeira no mesmo objeto, de propósito. */
+    private fun agendaUi(sections: AgendaSections, failed: Boolean) =
+        AgendaUi(sections = sections, loaded = true, failed = failed)
+
     @Test
     fun comALeituraFalhandoESemProximoAMancheteNaoAfirmaAusencia() {
         val text = homeHeadline(
-            agenda = vazia,
-            failed = true,
+            agendaUi = agendaUi(vazia, failed = true),
             nowTime = LocalTime.of(19, 0),
             today = hoje,
         )
@@ -57,8 +60,7 @@ class HomeHeadlineTest {
         )
 
         val text = homeHeadline(
-            agenda = comTarefa,
-            failed = true,
+            agendaUi = agendaUi(comTarefa, failed = true),
             nowTime = LocalTime.of(8, 0),
             today = hoje,
         )
@@ -70,8 +72,7 @@ class HomeHeadlineTest {
     @Test
     fun semFalhaESemProximoAMancheteContinuaONadaMarcado() {
         val text = homeHeadline(
-            agenda = vazia,
-            failed = false,
+            agendaUi = agendaUi(vazia, failed = false),
             nowTime = LocalTime.of(19, 0),
             today = hoje,
         )
@@ -81,13 +82,21 @@ class HomeHeadlineTest {
 
     /**
      * A montagem da manchete saiu do composable inteira, inclusive a escolha do compromisso:
-     * ela olha "Hoje" e "Amanhã" juntos e fica com o mais próximo dos dois, não com o primeiro
-     * da lista.
+     * ela olha "Hoje" e "Amanhã" juntos e fica com o **mais próximo** dos dois blocos.
+     *
+     * Os itens de "Hoje" vêm fora de ordem de propósito. O repositório entrega as seções já
+     * ordenadas (`TaskRepository.sectionsOf`), então com a lista ordenada `minByOrNull` e
+     * `firstOrNull` devolvem o mesmo item e o teste não discrimina nada: passaria verde com a
+     * escolha errada dentro de `homeHeadline`. Assim, quem pegar o primeiro da lista anuncia
+     * o Cabelo das 15:00 quando o mais próximo é o remédio das 09:00.
      */
     @Test
     fun aMancheteAnunciaOCompromissoMaisProximoDosDoisBlocos() {
         val agenda = AgendaSections(
-            today = listOf(item("Tomar remédio", hoje, LocalTime.of(9, 0), Instant.EPOCH.plusSeconds(9 * 3600))),
+            today = listOf(
+                item("Cabelo", hoje, LocalTime.of(15, 0), Instant.EPOCH.plusSeconds(15 * 3600)),
+                item("Tomar remédio", hoje, LocalTime.of(9, 0), Instant.EPOCH.plusSeconds(9 * 3600)),
+            ),
             upcoming = listOf(
                 item("Consulta", hoje.plusDays(1), LocalTime.of(8, 0), Instant.EPOCH.plusSeconds(32 * 3600)),
             ),
@@ -96,8 +105,7 @@ class HomeHeadlineTest {
         )
 
         val text = homeHeadline(
-            agenda = agenda,
-            failed = false,
+            agendaUi = agendaUi(agenda, failed = false),
             nowTime = LocalTime.of(8, 0),
             today = hoje,
         )
@@ -105,7 +113,7 @@ class HomeHeadlineTest {
         assertThat(text).isEqualTo("Bom dia. Próximo: Tomar remédio, hoje às 09:00.")
     }
 
-    /** Os 2 recados ficam para trás, e o contador da manchete é o deles. */
+    /** O recado fica para trás, e o contador da manchete é o dele. */
     @Test
     fun aMancheteContaOsRecadosQueFicaramParaTras() {
         val agenda = AgendaSections(
@@ -116,13 +124,40 @@ class HomeHeadlineTest {
         )
 
         val text = homeHeadline(
-            agenda = agenda,
-            failed = false,
+            agendaUi = agendaUi(agenda, failed = false),
             nowTime = LocalTime.of(19, 0),
             today = hoje,
         )
 
         assertThat(text).isEqualTo("Boa noite. Nada marcado agora. 1 recado ficou para trás.")
+    }
+
+    /**
+     * O contador não sobrevive à frase de falha: ao lado de "não consegui ler" ele diria que
+     * algo foi lido ("...agora. 2 recados ficaram para trás."). As seções têm de trazer o
+     * `missed` cheio para este teste valer alguma coisa — com a agenda vazia o contador já é
+     * zero por fora e a supressão passaria sem ser exercida.
+     */
+    @Test
+    fun comALeituraFalhandoOContadorDeRecadosNaoAparece() {
+        val comRecados = AgendaSections(
+            today = emptyList(),
+            upcoming = emptyList(),
+            completed = emptyList(),
+            missed = listOf(
+                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), Instant.EPOCH),
+                item("Consulta", hoje.minusDays(2), LocalTime.of(8, 0), Instant.EPOCH),
+            ),
+        )
+
+        val text = homeHeadline(
+            agendaUi = agendaUi(comRecados, failed = true),
+            nowTime = LocalTime.of(19, 0),
+            today = hoje,
+        )
+
+        assertThat(text).isEqualTo("Boa noite. Não consegui ler a sua agenda agora.")
+        assertThat(text).doesNotContain("recado")
     }
 
     private fun item(

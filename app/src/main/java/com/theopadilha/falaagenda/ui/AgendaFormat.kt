@@ -165,32 +165,35 @@ object AgendaFormat {
         leituraFalhou: Boolean = false,
     ): String {
         val greet = greeting(nowTime)
+        val recados = when (missedCount) {
+            0 -> ""
+            1 -> " 1 recado ficou para trás."
+            else -> " $missedCount recados ficaram para trás."
+        }
+        // O contador entra montado dentro de cada ramo, e não deduzido à parte por uma
+        // segunda conta de "há próximo": escrita duas vezes, a condição do ramo e a da
+        // supressão divergem na primeira pessoa que alargar uma delas, e a divergência é a
+        // frase contraditória "Não consegui ler a sua agenda agora. 2 recados ficaram para
+        // trás." que este conserto existe para não dizer nunca.
         val next = if (nextTitle != null && nextDate != null && nextTime != null) {
             val whenLabel = dateLabel(nextDate, today).lowercase(locale)
             // A pendente que atravessou a meia-noite é a mais urgente e é ela que aparece
             // aqui; chamá-la de "Próximo" fazia a frase se contradizer — "Próximo: Tomar
             // remédio, ontem às 08:00". O cartão da lista já a marca como atrasada (ver
-            // [lateMark]); o cabeçalho diz o mesmo.
+            // [lateMark]); o cabeçalho diz o mesmo. Com próximo o contador fica: ali o dado
+            // veio de uma leitura real, mesmo quando a última tentativa falhou.
             val lead = if (lateMark(nextDate, today) != null) "Atrasada" else "Próximo"
-            " $lead: $nextTitle, $whenLabel às ${time(nextTime)}."
+            " $lead: $nextTitle, $whenLabel às ${time(nextTime)}.$recados"
         } else if (leituraFalhou) {
             // Sem próximo não há o que mostrar, e afirmar ausência é justamente o que a
             // falha não pode fazer: é a mentira que o cartão da home existe para matar,
-            // saindo do lugar mais visível da tela.
+            // saindo do lugar mais visível da tela. O contador fica de fora exatamente aqui,
+            // porque ao lado dessa frase ele diria que algo foi lido.
             " Não consegui ler a sua agenda agora."
         } else {
-            " Nada marcado agora."
+            " Nada marcado agora.$recados"
         }
-        // O contador fala do que se leu: ao lado da frase de falha ele se contradiz ("Não
-        // consegui ler a sua agenda agora. 2 recados ficaram para trás."). Com próximo a
-        // frase é a de sempre e ele fica — ali o dado veio de uma leitura real.
-        val semProximo = nextTitle == null || nextDate == null || nextTime == null
-        val missed = if (leituraFalhou && semProximo) "" else when (missedCount) {
-            0 -> ""
-            1 -> " 1 recado ficou para trás."
-            else -> " $missedCount recados ficaram para trás."
-        }
-        return "$greet.$next$missed"
+        return "$greet.$next"
     }
 
     fun fromNow(target: Instant, now: Instant): String? {

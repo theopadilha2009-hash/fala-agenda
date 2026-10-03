@@ -478,8 +478,7 @@ fun HomeScreen(
             ) {
                 Text(
                     homeHeadline(
-                        agenda = agenda,
-                        failed = agendaUi.failed,
+                        agendaUi = agendaUi,
                         nowTime = LocalTime.now(),
                         today = LocalDate.now(),
                     ),
@@ -870,13 +869,19 @@ internal fun showsSpeakInvite(agenda: AgendaSections, failed: Boolean): Boolean 
  * que ficava de fora do `failed`: com a leitura falhando e sem próximo, a home dizia "Nada
  * marcado agora" em cima do cartão "Não consegui ler a sua agenda" logo abaixo. O horário
  * entra por parâmetro para a decisão ser pura; quem lê o relógio é o composable.
+ *
+ * Recebe o [AgendaUi] inteiro, e não as seções mais uma bandeira separada, de propósito: com
+ * os dois desencontrados, trocar `failed = agendaUi.failed` por `failed = false` no call site
+ * é uma edição de uma palavra, e ela passaria despercebida porque nenhum teste renderiza a
+ * home. Aqui, desligar a bandeira exige montar um `AgendaUi` falso — o que é um ato visível,
+ * não um deslize.
  */
 internal fun homeHeadline(
-    agenda: AgendaSections,
-    failed: Boolean,
+    agendaUi: AgendaUi,
     nowTime: LocalTime,
     today: LocalDate,
 ): String {
+    val agenda = agendaUi.sections
     val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
     return AgendaFormat.headline(
         nowTime = nowTime,
@@ -884,8 +889,8 @@ internal fun homeHeadline(
         nextTitle = next?.series?.title,
         nextDate = next?.occurrence?.localDate,
         nextTime = next?.series?.localTime,
-        missedCount = agenda.missed.size,
-        leituraFalhou = failed,
+        missedCount = agendaUi.sections.missed.size,
+        leituraFalhou = agendaUi.failed,
     )
 }
 

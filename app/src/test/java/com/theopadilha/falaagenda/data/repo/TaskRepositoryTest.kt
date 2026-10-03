@@ -332,14 +332,15 @@ class TaskRepositoryTest {
 
             repo.deleteOccurrence(inicio)
             assertThat(occurrenceDao.get(inicio)).isNull()
+            // 21/08, e não 20/08: a primeira ocorrência de regra que repete nasce na próxima data válida.
             assertThat(seriesDao.get(saved.series.id)!!.toDomain().skippedDates)
-                .containsExactly(LocalDate.of(2026, 8, 20))
+                .containsExactly(LocalDate.of(2026, 8, 21))
 
             repo.rescheduleAll()
 
             assertThat(occurrenceDao.get(inicio)).isNull()
             assertThat(occurrenceDao.forSeries(saved.series.id).map { it.localDate })
-                .doesNotContain("2026-08-20")
+                .doesNotContain("2026-08-21")
         }
     }
 
@@ -1418,15 +1419,16 @@ class TaskRepositoryTest {
                 .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
             val saved = repo.saveDraft(draft)
             repo.rescheduleAll()
-            val amanha = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 21))
+            // 22/08, e não 21/08: a primeira ocorrência de regra que repete nasce na próxima data válida.
+            val amanha = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 22))
             repo.deleteOccurrence(amanha)
             assertThat(seriesDao.get(saved.series.id)!!.toDomain().skippedDates)
-                .containsExactly(LocalDate.of(2026, 8, 21))
+                .containsExactly(LocalDate.of(2026, 8, 22))
 
             repo.editOccurrence(
                 saved.occurrence.id,
                 "Remédio",
-                LocalDate.of(2026, 8, 21),
+                LocalDate.of(2026, 8, 22),
                 LocalTime.of(8, 0),
                 RecurrenceRule(RecurrenceKind.DAILY),
             )

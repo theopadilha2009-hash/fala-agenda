@@ -25,6 +25,7 @@ import org.junit.Test
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 
@@ -198,17 +199,64 @@ class PromessaDaTelaBateComOAgendamentoTest {
         assertThat(promessa.saveLabel).contains("sem aviso")
     }
 
-    /** A regra que repete continua prometendo: o aviso chega, mesmo com a hora já passada. */
+    /**
+     * O defeito relatado, com os números dele: terça, 29/09/2026, 20:00, e o chip "Hoje" com
+     * 18:00 numa regra que repete. O repositório gravava a ocorrência em 29/09 às 18:00 e
+     * entregava esse instante ao `AlarmManager`, que dispara na hora — ela cadastrava "tomar
+     * remédio, todo dia, às 18h" e o celular apitava no ato, seguindo a escada de repetições
+     * até o fim do dia.
+     *
+     * A regra que repete não pode nascer num instante já vencido: a primeira ocorrência passa
+     * para a próxima data da regra — a mesma conta que a fala já usa (`LocalTaskParser`:
+     * "natação todo dia às 18h" dita às 20h nasce amanhã).
+     *
+     * Este teste afirmava o contrário ("o aviso chega, mesmo com a hora já passada") e passava
+     * porque o `TestScheduler` só contava ids: ele consagrava a promessa que o `AlarmManager`
+     * não cumpre. Agora ele prende o **instante**.
+     */
     @Test
-    fun escolhaPassadaQueRepeteContinuaPrometendo() = runBlocking {
+    fun escolhaPassadaQueRepeteNasceNaProximaData() = runBlocking {
+        val rule = recurrenceFor(RecurrenceKind.DAILY, terca, emptySet())
+        val draft = rascunho("Remédio", terca, LocalTime.of(18, 0), rule)
+        val agoraDaNoite = terca.atTime(20, 0).atZone(zone).toInstant()
+
+        val saved = repo(agoraDaNoite).saveDraft(draft)
+        val promessa = promessa(draft, terca, agoraDaNoite)
+
+        val amanha = LocalDate.of(2026, 9, 30)
+        // As asserções falam o horário da série, e não UTC: na falha, a mensagem diz
+        // "expected: 2026-09-30T18:00 but was: 2026-09-29T18:00" — o instante vencido que ela
+        // veria no relógio.
+        val avisoNaSerie = LocalDateTime.of(2026, 9, 30, 18, 0)
+        // Banco, promessa e alarme dizem o mesmo — e o mesmo é amanhã.
+        assertThat(saved.occurrence.status).isEqualTo(OccurrenceStatus.PENDING)
+        assertThat(saved.occurrence.localDate).isEqualTo(amanha)
+        assertThat(saved.occurrence.scheduledAt.atZone(zone).toLocalDateTime())
+            .isEqualTo(avisoNaSerie)
+        assertThat(scheduler.scheduled.map { it.fireAt.atZone(zone).toLocalDateTime() })
+            .containsExactly(avisoNaSerie)
+        assertThat(promessa.recap).contains(AgendaFormat.longDate(amanha))
+        assertThat(promessa.recap).contains("18:00")
+        assertThat(promessa.recap).doesNotContain(AgendaFormat.longDate(terca))
+    }
+
+    /**
+     * O mesmo com o horário da manhã, que é o caso do dia inteiro: às 15:00 o remédio das
+     * 08:00 já passou, e o primeiro aviso é amanhã às 08:00 — dentro do dia, e não um alarme
+     * vencido que o sistema dispara no ato.
+     */
+    @Test
+    fun escolhaDaManhaJaPassadaNasceAmanha() = runBlocking<Unit> {
         val rule = recurrenceFor(RecurrenceKind.DAILY, terca, emptySet())
         val draft = rascunho("Remédio", terca, LocalTime.of(8, 0), rule)
 
         val saved = repo(agora).saveDraft(draft)
-        val promessa = promessa(draft, terca, agora)
 
+        val amanha = LocalDateTime.of(2026, 9, 30, 8, 0)
         assertThat(saved.occurrence.status).isEqualTo(OccurrenceStatus.PENDING)
-        assertThat(promessa.recap).startsWith("Vai avisar")
+        assertThat(saved.occurrence.scheduledAt.atZone(zone).toLocalDateTime()).isEqualTo(amanha)
+        assertThat(scheduler.scheduled.map { it.fireAt.atZone(zone).toLocalDateTime() })
+            .containsExactly(amanha)
     }
 
     /** Excluir no passado é o caso que o modo edição já honrava — a tela diz a mesma data. */
@@ -260,13 +308,26 @@ class PromessaDaTelaBateComOAgendamentoTest {
     )
 }
 
+/**
+ * Grava **quando** o alarme foi armado, não só que foi armado.
+ *
+ * O defeito desta suíte é o instante que chega ao `AlarmManager`: um fake que só contasse ids
+ * passava com o alarme marcado para ontem — disparo imediato — e foi assim que o defeito
+ * atravessou. [Armed.fireAt] é o `nextReminderAt` que o `ReminderScheduler` entrega a
+ * `setAlarmClock`, e é ele que os testes daqui comparam.
+ */
 private class TestScheduler : AlarmScheduler {
-    val scheduled = mutableListOf<String>()
+    data class Armed(val occurrenceId: String, val fireAt: Instant)
+
+    val scheduled = mutableListOf<Armed>()
 
     override suspend fun quietHours(): QuietHours = QuietHours()
     override fun canScheduleExact(): Boolean = true
     override fun schedule(occurrence: TaskOccurrence, series: TaskSeries, first: Boolean): SchedulerOutcome {
-        scheduled += occurrence.id
+        // Como o de verdade: sem `nextReminderAt` não há alarme para armar.
+        val fireAt = occurrence.nextReminderAt
+            ?: return SchedulerOutcome(inexact = false, scheduled = false)
+        scheduled += Armed(occurrence.id, fireAt)
         return SchedulerOutcome(inexact = false, scheduled = true)
     }
     override fun cancel(occurrenceId: String) = Unit

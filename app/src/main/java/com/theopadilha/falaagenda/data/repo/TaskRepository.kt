@@ -132,7 +132,16 @@ class TaskRepository(
             createdAt = now,
             updatedAt = now,
         )
-        val firstDate = DraftSchedule.firstOccurrenceDate(series.recurrence, series.startLocalDate)
+        // A mesma conta que a tela usa para prometer (ver `AgendaFormat.promiseOfChoice`): a
+        // primeira ocorrência de uma regra que repete nunca nasce num instante vencido — um
+        // alarme no passado dispara na hora.
+        val firstDate = DraftSchedule.firstOccurrence(
+            rule = series.recurrence,
+            chosenDate = series.startLocalDate,
+            chosenTime = series.localTime,
+            zoneId = zone,
+            now = now,
+        ).date
         var occurrence = OccurrenceLifecycle.materialize(series, firstDate, now)
         val scheduledAt = occurrence.scheduledAt
         if (DraftSchedule.bornWithoutReminder(scheduledAt, series.recurrence, now)) {
@@ -424,6 +433,13 @@ class TaskRepository(
             )
             return@withLock EditOutcome.SAVED
         }
+        // EM ABERTO: editar uma tarefa que repete para um horário de hoje já passado arma o
+        // alarme no instante vencido, e o `AlarmManager` dispara na hora do mesmo jeito. O
+        // conserto aqui seria a mesma regra da criação — não armar instante que já passou —,
+        // mas nesta estrada ela exige decidir qual data a edição materializa, e o contrato da
+        // edição é honrar a data escolhida literalmente (ver `AgendaFormat.promiseOfChoice`).
+        // Isso é decisão de produto, não deste conserto: a criação não tem esse impasse porque
+        // lá a escolha é piso e quem decide é a regra.
         val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
         occurrenceDao.applyBatch(
             seriesDao = seriesDao,

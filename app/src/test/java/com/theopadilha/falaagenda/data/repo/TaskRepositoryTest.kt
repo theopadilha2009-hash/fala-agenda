@@ -1381,7 +1381,16 @@ class TaskRepositoryTest {
         }
     }
 
-    /** O preview ancorado em hoje continua respeitando a data que o usuário excluiu. */
+    /**
+     * O preview ancorado em hoje continua respeitando a data que o usuário excluiu.
+     *
+     * A excluída é 22/08, e não 21/08: desde que a primeira ocorrência de regra recorrente
+     * parou de nascer vencida, 21/08 é a ocorrência viva da série. Apagar 21/08 deixava esta
+     * edição sem alvo — `editOccurrence` devolvia GONE, era no-op, o preview nunca rodava, e
+     * o teste passava sem exercer o guard que o nome dele promete. Excluir 22/08 mantém o
+     * alvo vivo, e o `contains("2026-08-21")` abaixo é a prova de que o preview correu até
+     * onde a exclusão mandava parar.
+     */
     @Test
     fun editarNaoRematerializaDataExcluida() {
         runBlocking {
@@ -1389,9 +1398,9 @@ class TaskRepositoryTest {
                 .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
             val saved = repo.saveDraft(draft)
             repo.rescheduleAll()
-            val amanha = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 21))
-            assertThat(occurrenceDao.get(amanha)).isNotNull()
-            repo.deleteOccurrence(amanha)
+            val excluida = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 22))
+            assertThat(occurrenceDao.get(excluida)).isNotNull()
+            repo.deleteOccurrence(excluida)
 
             repo.editOccurrence(
                 saved.occurrence.id,
@@ -1403,7 +1412,11 @@ class TaskRepositoryTest {
 
             val datas = occurrenceDao.forSeries(saved.series.id).map { it.localDate }
             assertThat(datas).contains("2026-08-20")
-            assertThat(datas).doesNotContain("2026-08-21")
+            // O preview recriou a data que a edição moveu para o passado: ele andou pela série.
+            assertThat(datas).contains("2026-08-21")
+            // ...e passou por 22/08 sem recriá-la. Matando o guard de tombstone em
+            // `OccurrenceLifecycle.advance`, esta linha é a que fica vermelha.
+            assertThat(datas).doesNotContain("2026-08-22")
         }
     }
 

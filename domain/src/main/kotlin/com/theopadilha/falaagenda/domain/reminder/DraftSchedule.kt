@@ -53,7 +53,11 @@ object DraftSchedule {
      * hora — o celular apitava no ato do cadastro e seguia a escada de repetições até o fim do
      * dia. A primeira ocorrência passa para a próxima data da regra, a mesma semântica que a
      * fala já usava (`LocalTaskParser`: sem data explícita e com regra recorrente, o horário
-     * vencido de hoje empurra para a próxima data). Aqui as duas contas são uma só.
+     * vencido de hoje empurra para a próxima data). A conta da **data persistida** é esta única:
+     * gravar e prometer consultam a mesma função. A sugestão do parser reimplementa o mesmo
+     * passo (`LocalTaskParser` monta a data a partir do texto antes de existir rascunho) — o
+     * risco de o defeito voltar pelo que é gravado está fechado aqui; alinhar o parser a esta
+     * peça é follow-up, não deste conserto.
      *
      * A regra que **não** repete continua nascendo vencida, de propósito: ela é arquivada como
      * não realizada e sem alarme nenhum — quem decide isso é [bornWithoutReminder], e ver

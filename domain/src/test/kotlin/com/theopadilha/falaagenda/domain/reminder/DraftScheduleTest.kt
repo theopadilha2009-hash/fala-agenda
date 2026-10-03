@@ -77,6 +77,28 @@ class DraftScheduleTest {
     }
 
     /**
+     * A borda do "exatamente neste minuto": o instante da escolha igual a agora não avança — o
+     * alarme toca no minuto prometido, ele acabou de chegar. É a mesma borda de
+     * [DraftSchedule.bornWithoutReminder] (`isBefore`, não `isAfter` ou igual): só o que já
+     * passou é vencido. Sem este caso, inverter a igualdade em `firstOccurrence` — passar a
+     * avançar também quando `chosenAt == now` — sobrevive verde em tudo.
+     */
+    @Test
+    fun escolhaExatamenteAgoraNaoAvanca() {
+        val agora = emHoras(18, 0)
+        val primeira = primeira(
+            rule = RecurrenceRule(RecurrenceKind.DAILY),
+            time = LocalTime.of(18, 0),
+            now = agora,
+        )
+
+        assertThat(primeira.date).isEqualTo(terca)
+        assertThat(primeira.movedBecause).isNull()
+        val instante = primeira.date.atTime(18, 0).atZone(zone).toInstant()
+        assertThat(instante).isEqualTo(agora)
+    }
+
+    /**
      * A conta antiga, que continua valendo: a data escolhida é piso, quem decide é a regra. O
      * chip "Hoje" numa terça com "dias úteis" e uma data de sábado: o primeiro aviso é segunda.
      */

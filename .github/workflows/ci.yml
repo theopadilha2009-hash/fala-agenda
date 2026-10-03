@@ -59,6 +59,14 @@ jobs:
           SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaS1zZW50aW5lbGEtZmFsYS1hZ2VuZGEiLCJyb2xlIjoiYW5vbiJ9.SENTINELA-DO-CI-NAO-E-CHAVE-REAL"
         run: |
           ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
+          # O mesmo caminho que o passo "Publicar release" de release.yml anexa ao criar a tag.
+          # Nada mais exercita release.yml antes de uma tag, entao a conferencia do mapping mora
+          # aqui, de graca, a cada PR: se AGP, saida do R8 ou buildType mudarem, o erro aparece
+          # neste job, nao numa publicacao abortada (ou pior: completada sem mapping).
+          if [ ! -f app/build/outputs/mapping/release/mapping.txt ]; then
+            echo "::error::mapping.txt do R8 ausente apos assembleRelease -- o gate da tag nao ia achar o caminho."
+            exit 1
+          fi
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
           if [ -z "$APK" ]; then
             echo "::error::APK de release nao encontrado em app/build/outputs/apk/release"

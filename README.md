@@ -150,6 +150,7 @@ Após `BOOT_COMPLETED`, mudança de fuso/hora ou concessão da permissão de ala
 
 - Mensal nos dias 29, 30 ou 31: último dia válido daquele mês.
 - Anual em 29 de fevereiro: 28 de fevereiro em ano não bissexto.
+- Tarefa recorrente criada com o horário de hoje já passado começa na próxima data válida — a mesma conta que a fala já usava.
 - O horário local fica no `ZoneId` da série (fuso do aparelho na criação). Mudança de fuso do sistema não reescreve esse horário local.
 
 ## Ativação da ajuda extra (opcional)

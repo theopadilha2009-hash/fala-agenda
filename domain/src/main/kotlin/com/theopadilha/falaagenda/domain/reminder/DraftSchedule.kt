@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.domain.reminder
 
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.recurrence.OccurrenceLifecycle
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import java.time.Instant
 import java.time.LocalDate
@@ -19,6 +20,26 @@ import java.time.ZoneId
  */
 object DraftSchedule {
     /**
+     * A primeira ocorrência de uma série que nasce com esta escolha — e por que ela não é a
+     * data escolhida, nulo quando é.
+     *
+     * O motivo faz parte da conta de propósito: a tela precisa explicar a data descartada, e
+     * uma segunda versão do "por quê", escrita na UI, voltaria a divergir do que foi gravado.
+     */
+    data class FirstOccurrence(
+        val date: LocalDate,
+        val movedBecause: Reason?,
+    ) {
+        enum class Reason {
+            /** A data escolhida não satisfaz a regra: o chip "Hoje" com "toda segunda". */
+            RULE,
+
+            /** O instante da escolha já passou e a regra repete: a primeira é a seguinte. */
+            TIME_PASSED,
+        }
+    }
+
+    /**
      * A data da primeira ocorrência de uma série que nasce com esta escolha.
      *
      * A data escolhida entra como **piso**, não como resposta: quem decide é a regra. Hoje é
@@ -27,21 +48,50 @@ object DraftSchedule {
      * no `AlarmManager`. O primeiro aviso é segunda, 05/10/2026, e é essa data que a tela
      * precisa mostrar.
      *
+     * E a regra que repete não pode nascer num instante já vencido: são 20:00 e ela escolhe
+     * "todo dia às 18h" pelos chips. Instante no passado entregue ao `AlarmManager` dispara na
+     * hora — o celular apitava no ato do cadastro e seguia a escada de repetições até o fim do
+     * dia. A primeira ocorrência passa para a próxima data da regra, a mesma semântica que a
+     * fala já usava (`LocalTaskParser`: sem data explícita e com regra recorrente, o horário
+     * vencido de hoje empurra para a próxima data). A conta da **data persistida** é esta única:
+     * gravar e prometer consultam a mesma função. A sugestão do parser reimplementa o mesmo
+     * passo (`LocalTaskParser` monta a data a partir do texto antes de existir rascunho) — o
+     * risco de o defeito voltar pelo que é gravado está fechado aqui; alinhar o parser a esta
+     * peça é follow-up, não deste conserto.
+     *
+     * A regra que **não** repete continua nascendo vencida, de propósito: ela é arquivada como
+     * não realizada e sem alarme nenhum — quem decide isso é [bornWithoutReminder], e ver
+     * `TaskRepository.saveDraft`.
+     *
      * O `?: chosenDate` é inalcançável hoje — `firstOnOrAfter` só devolve nulo para a regra que
      * não repete com `seriesStart` antes do piso, e aqui os dois argumentos são a mesma data. Fica
      * como rede: se o motor ganhar um caso nulo novo, a tela mostra a data escolhida em vez de
      * estourar no meio de um toque.
      */
-    fun firstOccurrenceDate(rule: RecurrenceRule, chosenDate: LocalDate): LocalDate =
-        RecurrenceEngine.firstOnOrAfter(rule, chosenDate, chosenDate) ?: chosenDate
-
-    /** O instante do primeiro aviso: o mesmo que o alarme vai receber. */
-    fun firstOccurrenceAt(
+    fun firstOccurrence(
         rule: RecurrenceRule,
         chosenDate: LocalDate,
         chosenTime: LocalTime,
         zoneId: ZoneId,
-    ): Instant = firstOccurrenceDate(rule, chosenDate).atTime(chosenTime).atZone(zoneId).toInstant()
+        now: Instant,
+    ): FirstOccurrence {
+        val byRule = RecurrenceEngine.firstOnOrAfter(rule, chosenDate, chosenDate) ?: chosenDate
+        if (rule.kind == RecurrenceKind.NONE) return FirstOccurrence(byRule, null)
+        val chosenAt = byRule.atTime(chosenTime).atZone(zoneId).toInstant()
+        if (!chosenAt.isBefore(now)) {
+            return FirstOccurrence(
+                date = byRule,
+                movedBecause = if (byRule == chosenDate) null else FirstOccurrence.Reason.RULE,
+            )
+        }
+        // Vencida: a primeira é a próxima data da regra depois de hoje. Um passo só da regra
+        // não bastaria — com a data escolhida já no passado ("dia 1º todo mês" dito no fim de
+        // setembro) o passo seguinte também nasceria vencido e o alarme dispararia na hora de
+        // novo. A partir de amanhã o instante é futuro para qualquer hora do dia.
+        val today = OccurrenceLifecycle.todayIn(zoneId, now)
+        val next = RecurrenceEngine.nextAfter(rule, chosenDate, today) ?: byRule
+        return FirstOccurrence(next, FirstOccurrence.Reason.TIME_PASSED)
+    }
 
     /**
      * A escolha já passou e não repete: a ocorrência nasce arquivada como não realizada e

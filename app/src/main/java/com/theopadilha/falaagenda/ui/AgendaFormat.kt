@@ -57,8 +57,8 @@ object AgendaFormat {
 
     /**
      * [editing] diz qual contrato vale, porque são dois: criar uma série ancora a primeira
-     * ocorrência na regra — a data escolhida é só piso, ver [DraftSchedule.firstOccurrenceDate]
-     * —, enquanto editar materializa a data escolhida literalmente. A tela descreve o contrato
+     * ocorrência na regra — a data escolhida é só piso, ver [DraftSchedule.firstOccurrence] —,
+     * enquanto editar materializa a data escolhida literalmente. A tela descreve o contrato
      * que vai valer, e não o que ela tocou.
      */
     fun promiseOfChoice(
@@ -70,12 +70,16 @@ object AgendaFormat {
         zone: ZoneId,
         editing: Boolean = false,
     ): DraftPromise {
-        val firstAt = DraftSchedule.firstOccurrenceAt(recurrence, chosenDate, chosenTime, zone)
+        // A data e o motivo saem da peça compartilhada — a mesma conta com que o repositório
+        // grava a primeira ocorrência —, para a tela não recalcular nem inventar explicação.
+        val first = DraftSchedule.firstOccurrence(recurrence, chosenDate, chosenTime, zone, now)
+        val promisedDate = if (editing) chosenDate else first.date
+        val promisedAt = promisedDate.atTime(chosenTime).atZone(zone).toInstant()
         // A escolha que já passou e não repete: o salvar arquiva a ocorrência como não
         // realizada e não cria alarme nenhum (ver `TaskRepository.saveDraft`). Prometer "Vai
         // avisar" aqui era o aplicativo anunciar um aviso que ele mesmo não arma — e a home,
         // no toque seguinte, mostrar "Não consegui avisar" sobre a mesma tarefa.
-        if (DraftSchedule.bornWithoutReminder(firstAt, recurrence, now)) {
+        if (DraftSchedule.bornWithoutReminder(promisedAt, recurrence, now)) {
             return DraftPromise(
                 recap = "Este horário já passou e a tarefa não repete: não vou avisar.",
                 droppedChoice = null,
@@ -83,14 +87,16 @@ object AgendaFormat {
                     "${time(chosenTime)}, sem aviso",
             )
         }
-        val promisedDate = if (editing) {
-            chosenDate
-        } else {
-            DraftSchedule.firstOccurrenceDate(recurrence, chosenDate)
-        }
         return DraftPromise(
             recap = recap(promisedDate, chosenTime, recurrence),
-            droppedChoice = droppedChoiceLine(chosenDate, promisedDate, recurrence, today),
+            droppedChoice = droppedChoiceLine(
+                chosenDate = chosenDate,
+                chosenTime = chosenTime,
+                promisedDate = promisedDate,
+                movedBecause = first.movedBecause,
+                recurrence = recurrence,
+                today = today,
+            ),
             saveLabel = "Salvar · ${dateLabel(promisedDate, today).lowercase(locale)} ${time(chosenTime)}",
         )
     }
@@ -99,15 +105,27 @@ object AgendaFormat {
      * A linha que impede a data descartada de sumir em silêncio: ela tocou o chip "Hoje" numa
      * terça com a regra "toda segunda", o aviso vai ser em 05/10, e ela precisa poder entender
      * por quê — e corrigir. Nula quando a data escolhida é a que vai valer.
+     *
+     * São dois motivos, e eles não podem virar a mesma frase: a regra que não cai naquele dia
+     * ("toda segunda" com a terça do chip) e o horário de hoje que já passou numa regra que
+     * repete, em que a escolha vale — só não hoje. Dizer "não cai nesse dia" ali seria falso, e
+     * o motivo vem de `DraftSchedule` justamente para a frase não ser uma segunda conta dele.
      */
     private fun droppedChoiceLine(
         chosenDate: LocalDate,
+        chosenTime: LocalTime,
         promisedDate: LocalDate,
+        movedBecause: DraftSchedule.FirstOccurrence.Reason?,
         recurrence: RecurrenceRule,
         today: LocalDate,
     ): String? {
         if (chosenDate == promisedDate) return null
-        return "Você escolheu ${dateLabel(chosenDate, today).lowercase(locale)}, e " +
+        val escolhido = dateLabel(chosenDate, today).lowercase(locale)
+        if (movedBecause == DraftSchedule.FirstOccurrence.Reason.TIME_PASSED) {
+            return "Você escolheu $escolhido às ${time(chosenTime)}, e esse horário já passou: " +
+                "o primeiro aviso é ${longDate(promisedDate)} às ${time(chosenTime)}."
+        }
+        return "Você escolheu $escolhido, e " +
             "“${recurrence.describePtBr()}” não cai nesse dia: o primeiro aviso é " +
             "${longDate(promisedDate)}."
     }

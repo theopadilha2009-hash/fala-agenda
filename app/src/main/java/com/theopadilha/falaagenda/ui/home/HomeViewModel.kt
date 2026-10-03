@@ -527,7 +527,7 @@ class HomeViewModel(
      * conta do predicado aqui poderia discordar do que ele acabou de gravar.
      *
      * A **data** sai da ocorrência gravada, não do rascunho: com uma regra semanal o rascunho
-     * é o piso e quem decide é a regra (ver `DraftSchedule.firstOccurrenceDate`), então o
+     * é o piso e quem decide é a regra (ver `DraftSchedule.firstOccurrence`), então o
      * resumo prometia "segunda, 05/10" e este anúncio dizia "Vai avisar hoje" — a mesma
      * contradição do defeito de origem, sobrevivendo no recado que sai depois de salvar. O
      * horário continua vindo do rascunho porque a ocorrência não o carrega; na criação os dois
@@ -551,8 +551,11 @@ class HomeViewModel(
      * novo seria a terceira cópia da regra; ver `DraftSchedule`.
      */
     private fun announceOfEdit(date: LocalDate, time: LocalTime, recurrence: RecurrenceRule): String {
-        val firstAt = DraftSchedule.firstOccurrenceAt(recurrence, date, time, ZoneId.systemDefault())
-        return if (DraftSchedule.bornWithoutReminder(firstAt, recurrence, Instant.now())) {
+        // A edição materializa a data escolhida literalmente (`TaskRepository.editOccurrence`),
+        // então o instante do primeiro aviso é o da própria escolha — e não o da primeira
+        // ocorrência da regra, que na criação é outra coisa (ver `DraftSchedule.firstOccurrence`).
+        val chosenAt = date.atTime(time).atZone(ZoneId.systemDefault()).toInstant()
+        return if (DraftSchedule.bornWithoutReminder(chosenAt, recurrence, Instant.now())) {
             SEM_AVISO
         } else {
             AgendaFormat.announce(date, time, LocalDate.now())

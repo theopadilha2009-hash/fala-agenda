@@ -41,7 +41,9 @@ jobs:
           # isNotBlank(), entao " " era aceito aqui e desligava a ajuda extra no aparelho.
           so_espaco() { [ -z "${1//[[:space:]]/}" ]; }
           faltando=0
-          # if, nao "&& { }": o runner roda com bash -e e o ramo falso abortaria o passo.
+          # if, nao "&& { }": a ausencia precisa de aviso, e aviso pede else -- && nao tem. (O
+          # ramo falso de && sob bash -e NAO aborta o passo no meio do script; so pelo exit code
+          # se for a ultima linha. Corrigido em 03/10: a frase anterior ensinava o contrario.)
 
           # O case com https://*.supabase.co era furado: em glob o * casa /, ? e # tambem, entao
           # https://evil.example#.supabase.co e https://a/b.supabase.co passavam. Como a URL vai
@@ -263,16 +265,40 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          ASSETS=("$APK" "$RUNNER_TEMP/apk.sha256")
+          # Com minify na release, stack frame de biblioteca (Compose/Tink/JNA) chega renomeado
+          # e o unico registro que decifra o crash de uma versao taggada e o mapping deste build
+          # -- que hoje morre no filesystem efemero do runner (o job inteiro dura ~4 minutos).
+          # Attach no proprio release = o mapping dura enquanto a versao dura. O app escolhe seus
+          # assets por sufixo (.apk/.sha256, AppUpdater.kt:276-277), entao um .txt a mais nao
+          # sequestra o download. if (nao &&): o ramo da ausencia precisa dar aviso, e && nao tem
+          # else; sob bash -e um && falso so derruba o passo quando e a ultima linha, pelo exit
+          # code -- no meio do script ele passa mudo.
+          MAP="app/build/outputs/mapping/release/mapping.txt"
+          if [ -f "$MAP" ]; then
+            ASSETS+=("$MAP")
+          elif [ "${PRERELEASE:-0}" = "1" ]; then
+            # No rc o publish vale mais que o gate: o rc existe para o smoke no aparelho, e
+            # travar a publicacao por falta de mapa deixaria o aparelho sem nada para testar.
+            echo "::warning::mapping.txt ausente no rc: crash desta build fica indecifavel, mas o smoke nao espera mapa."
+          else
+            # Estavel sem mapping recria a falha silenciosa na direcao oposta: publicada, passo
+            # verde, e o unico registro que existia foi junto com o runner. Se um dia o minify
+            # for desligado de proposito, o lugar de dizer isso e remover este gate -- nao deixar
+            # o arquivo sumir. O CI de PR confere o assembleRelease e o caminho (mesmo passo).
+            echo "::error::mapping.txt ausente numa estavel: com isMinifyEnabled=true isso e build sem R8 ou caminho que mudou. O CI de PR ja confere os dois; se chegou aqui, conferir app/build.gradle.kts antes de forcar a tag."
+            exit 1
+          fi
           # Pre-release nunca vira "latest" no GitHub: /releases/latest continua apontando para a
           # ultima estavel, entao o app nao oferece o rc como atualizacao.
           if [ "${PRERELEASE:-0}" = "1" ]; then
-            gh release create "$GITHUB_REF_NAME" "$APK" "$RUNNER_TEMP/apk.sha256" \
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
               --clobber \
               --prerelease
           else
-            gh release create "$GITHUB_REF_NAME" "$APK" "$RUNNER_TEMP/apk.sha256" \
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
               --clobber

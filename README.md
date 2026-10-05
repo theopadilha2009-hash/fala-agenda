@@ -56,7 +56,7 @@ O parser local é determinístico. Só se o resultado ficar **ambíguo**, a IA e
 - **O texto do recado chega à OpenAI, e só por aí.** Quando o parse local fica **ambíguo**, a ajuda por IA está ativada e há rede, o aplicativo envia `transcript`, `now`, `timezone` e `locale` para a Edge Function `parse-reminder`, que repassa o mesmo texto a `api.openai.com` (`OPENAI_MODEL`, padrão `gpt-5-nano`) para virar rascunho. A função não grava transcript nem título, e o transcript não é guardado como dado da tarefa: ele existe no rascunho, enquanto a confirmação está aberta. O **título** é outra coisa — ele *é* a tarefa, e fica no aparelho, na agenda dela. Mas **a OpenAI recebe o texto**, e a política de retenção dela é a que vale. Sem ativação, sem rede, ou com o parse local resolvido sozinho, nada **da fala** sai do aparelho.
 - O aplicativo baixa o modelo de fala offline no primeiro toque no microfone: 31 MB de `alphacephei.com` (`vosk-model-small-pt-0.3`). O endereço de partida é fixo e **o conteúdo tem que bater com o SHA-256** gravado no código, venha de onde vier. Uma vez baixado, é ele que transcreve no próprio aparelho, sem rede; se o download falhar, ele tenta de novo no próximo toque.
 - Sem URL/chave Supabase o aplicativo funciona normalmente e a ajuda extra aparece como **não ativada**.
-- **No APK de release as duas são obrigatórias**: o workflow lê os secrets `SUPABASE_URL` e `SUPABASE_ANON_KEY`, confere o **formato** dos dois e **falha o build** se faltarem, se a URL não for exatamente o host do projeto ou se a chave não for uma anon/public. Depois de compilar, o gate confere que os dois valores estão **dentro do dex**. Antes disso os releases saíam sem a ajuda extra — o gate existe para não repetir.
+- **No APK de release, configurado é para estar certo — ou não estar lá.** O workflow lê os secrets `SUPABASE_URL` e `SUPABASE_ANON_KEY` e **aborta** se a URL não for exatamente o host do projeto, se a chave não for anon/public, ou se só uma das duas estiver preenchida (meia configuração é quase sempre secret que sumiu ou nome trocado). **Os dois ausentes não travam a release**: o APK sai sem a ajuda extra, como saíram todas as releases publicadas até a v0.5.2 — o gate trata ausência como recurso desligado, e erro como erro. Depois de compilar, quando os dois existem, o gate confere que os valores estão **dentro do dex**.
 
 ## Secrets do repositório (release)
 
@@ -71,8 +71,8 @@ Em Settings → Secrets and variables → Actions → Secrets:
 
 O release confere, antes de publicar: formato da URL (regex ancorada, só `https://<projeto>.supabase.co`)
 e da chave (`role: anon`, decodificando o JWT — o valor nunca vai para o log), os dois valores dentro
-do dex, `versionName` igual à tag e impressão digital do certificado igual à da release anterior
-(senão o app instalado não aceita a atualização por cima).
+do dex **quando configurados**, `versionName` igual à tag e impressão digital do certificado igual à
+da release anterior (senão o app instalado não aceita a atualização por cima).
 
 **Pré-release**: tag com sufixo (`v0.6.0-rc1`) é comparada com a versão base (`0.6.0`, que é o
 `versionName`) e publicada marcada como pré-release. O app lê `/releases/latest`, que nunca devolve

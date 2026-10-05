@@ -554,9 +554,12 @@ Riscos residuais que os próprios reviews declararam **sem caminho natural de re
 
 ### O que fica para decidir (produto — sem recomendação)
 
-- Os secrets `SUPABASE_URL` / `SUPABASE_ANON_KEY` **precisam existir** com a chave `role: anon`,
-  ou o próximo release **falha por desenho** (`.github/workflows/release.yml` recusa vazio e
-  recusa JWT que não seja `anon`; uma `service_role` num APK distribuído entrega o banco).
+- Os secrets `SUPABASE_URL` / `SUPABASE_ANON_KEY`, **quando existem**, precisam ser o host do
+  projeto e uma chave `role: anon` — o release recusa URL fora do formato, chave que não seja
+  `anon` (uma `service_role` num APK distribuído entrega o banco) e configuração pela metade.
+  **Os dois ausentes não travam a release** (corrigido em 05/10/2026): o app roda inteiro sem
+  a ajuda extra, e foi assim que saíram todas as releases até a v0.5.2. O gate do #29 tratava
+  ausente como errado e abortou a v0.6.0-rc1 — o PR #40 separou os dois casos.
 - `JANELA_ENTREGA_PENDENTE = 6 h` (`TaskRepository.kt:589`) é **decisão de produto**: um
   lembrete mais de 6 h atrasado expira — celular desligado a noite toda não toca a dose das
   22:00 de manhã.

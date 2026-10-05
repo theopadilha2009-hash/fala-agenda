@@ -80,13 +80,31 @@ jobs:
               | base64 --decode 2>/dev/null | jq -er '.role // empty' 2>/dev/null
           }
 
-          if so_espaco "$SUPABASE_URL"; then echo "::error::SUPABASE_URL vazio"; faltando=1; fi
-          if so_espaco "$SUPABASE_ANON_KEY"; then echo "::error::SUPABASE_ANON_KEY vazio"; faltando=1; fi
-          if ! so_espaco "$SUPABASE_URL" && ! url_valida "$SUPABASE_URL"; then
+          # AUSENTE nao e o mesmo que ERRADO. As duas variaveis vazias sao o estado de todas
+          # as releases publicadas ate aqui (a v0.5.2 inclusive): o app roda inteiro sem elas,
+          # porque a ajuda extra so entra na desambiguacao (HybridParser: sem remoto, fica o
+          # rascunho local). Isso nao pode travar a publicacao de um alarme que a mae dela
+          # precisa -- foi o que aconteceu em 03/10, com a tag ja empurrada.
+          # O que continua barrando, e o motivo de este gate existir: configuracao pela METADE
+          # (uma variavel e outra nao -- quase sempre secret que sumiu ou nome trocado), URL
+          # fora do formato e, principalmente, chave com role diferente de anon. A service_role
+          # ignora RLS e entregaria o banco a quem extraisse a chave do APK.
+          URL_VAZIA=0; CHAVE_VAZIA=0
+          so_espaco "$SUPABASE_URL" && URL_VAZIA=1
+          so_espaco "$SUPABASE_ANON_KEY" && CHAVE_VAZIA=1
+
+          if [ "$URL_VAZIA" -eq 1 ] && [ "$CHAVE_VAZIA" -eq 1 ]; then
+            echo "::warning::SUPABASE_URL e SUPABASE_ANON_KEY ausentes: o APK sai sem a ajuda extra de IA (o app avisa na tela de ajustes). Alarme, fala e agenda nao dependem disso."
+          elif [ "$URL_VAZIA" -ne "$CHAVE_VAZIA" ]; then
+            echo "::error::Config do Supabase pela metade: uma variavel esta preenchida e a outra nao. Preencha as duas ou nenhuma -- meia config deixa o app achando que a ajuda extra existe e falhando no toque."
+            faltando=1
+          fi
+
+          if [ "$URL_VAZIA" -eq 0 ] && ! url_valida "$SUPABASE_URL"; then
             echo "::error::SUPABASE_URL nao e exatamente https://<projeto>.supabase.co (sem caminho, porta, ? ou #; valor nao exibido)"
             faltando=1
           fi
-          if ! so_espaco "$SUPABASE_ANON_KEY"; then
+          if [ "$CHAVE_VAZIA" -eq 0 ]; then
             PAPEL=$(papel_da_chave "$SUPABASE_ANON_KEY" || true)
             if [ "$PAPEL" != "anon" ]; then
               echo "::error::SUPABASE_ANON_KEY nao e chave anon/public (JWT com role=anon). A service_role entrega o banco a quem extrair a chave do APK. Chave e payload nao exibidos."
@@ -94,7 +112,7 @@ jobs:
             fi
           fi
           if [ "$faltando" -ne 0 ]; then
-            echo "Sem as duas o APK sai sem a ajuda extra (SupabaseConfig.isConfigured = false)."
+            echo "O app sai sem a ajuda extra ate isto ser corrigido (SupabaseConfig.isConfigured = false)."
             echo "Configure em Settings > Secrets and variables > Actions > Secrets:"
             echo "  SUPABASE_URL      = https://SEU-PROJETO.supabase.co"
             echo "  SUPABASE_ANON_KEY = chave anon/publica (JWT com role=anon; nunca a service_role)"
@@ -131,7 +149,16 @@ jobs:
             exit 1
           fi
 
-          # (a) a config do Supabase tem que estar dentro do dex
+          # (a) a config do Supabase tem que estar dentro do dex -- SO quando ela existe.
+          #
+          # O par ausente e o estado aceito desde 03/10 (o app roda inteiro sem a ajuda extra;
+          # ver o passo de conferencia). Pular o bloco inteiro e obrigatorio, e nao so o `exit`:
+          # `grep -aqF -- ""` casa QUALQUER byte de qualquer arquivo, entao rodar os greps com a
+          # variavel vazia daria verde sem provar nada -- pior que o aborto, porque a release
+          # sairia com a confianca de uma checagem que nao aconteceu.
+          #
+          # Config pela METADE nao chega aqui (o passo anterior aborta), mas o guard fica: metade
+          # e erro, ausencia nao, e essa distincao nao pode depender de um passo la atras.
           falhou=0
           so_espaco() { [ -z "${1//[[:space:]]/}" ]; }
           # Mesma regex ancorada do passo de conferencia: aqui SUPABASE_URL vem do GITHUB_ENV,
@@ -142,29 +169,35 @@ jobs:
             esac
             printf '%s' "$1" | grep -qE '^https://[a-z0-9-]+\.supabase\.co/?$'
           }
-          if so_espaco "$SUPABASE_URL" || so_espaco "$SUPABASE_ANON_KEY"; then
-            echo "::error::SUPABASE_URL/SUPABASE_ANON_KEY vazios neste step (repository secrets nao configurados)."
+          URL_VAZIA=0; CHAVE_VAZIA=0
+          so_espaco "$SUPABASE_URL" && URL_VAZIA=1
+          so_espaco "$SUPABASE_ANON_KEY" && CHAVE_VAZIA=1
+          if [ "$URL_VAZIA" -eq 1 ] && [ "$CHAVE_VAZIA" -eq 1 ]; then
+            echo "::warning::Sem SUPABASE_URL/SUPABASE_ANON_KEY: pulando a conferencia da config no dex (o APK sai sem a ajuda extra, como as releases anteriores)."
+          elif [ "$URL_VAZIA" -ne "$CHAVE_VAZIA" ]; then
+            echo "::error::SUPABASE_URL/SUPABASE_ANON_KEY: so um dos dois chegou neste step (repository secrets pela metade)."
             exit 1
-          fi
-          # Busca por espaco em branco casaria com qualquer byte do dex e passaria verde.
-          if ! url_valida "$SUPABASE_URL"; then
-            echo "::error::SUPABASE_URL nao e exatamente https://<projeto>.supabase.co"
-            falhou=1
-          fi
-          DEX="$RUNNER_TEMP/dex"
-          rm -rf "$DEX"
-          mkdir -p "$DEX"
-          if ! unzip -o -q "$APK" "classes*.dex" -d "$DEX" || [ -z "$(ls -A "$DEX")" ]; then
-            echo "::error::Nao consegui extrair classes*.dex de $APK"
-            exit 1
-          fi
-          if ! grep -aqF -- "$SUPABASE_URL" "$DEX"/classes*.dex; then
-            echo "::error::SUPABASE_URL nao esta no dex: o APK foi compilado sem essa variavel."
-            falhou=1
-          fi
-          if ! grep -aqF -- "$SUPABASE_ANON_KEY" "$DEX"/classes*.dex; then
-            echo "::error::SUPABASE_ANON_KEY nao esta no dex: o APK foi compilado sem essa variavel."
-            falhou=1
+          else
+            # Busca por espaco em branco casaria com qualquer byte do dex e passaria verde.
+            if ! url_valida "$SUPABASE_URL"; then
+              echo "::error::SUPABASE_URL nao e exatamente https://<projeto>.supabase.co"
+              falhou=1
+            fi
+            DEX="$RUNNER_TEMP/dex"
+            rm -rf "$DEX"
+            mkdir -p "$DEX"
+            if ! unzip -o -q "$APK" "classes*.dex" -d "$DEX" || [ -z "$(ls -A "$DEX")" ]; then
+              echo "::error::Nao consegui extrair classes*.dex de $APK"
+              exit 1
+            fi
+            if ! grep -aqF -- "$SUPABASE_URL" "$DEX"/classes*.dex; then
+              echo "::error::SUPABASE_URL nao esta no dex: o APK foi compilado sem essa variavel."
+              falhou=1
+            fi
+            if ! grep -aqF -- "$SUPABASE_ANON_KEY" "$DEX"/classes*.dex; then
+              echo "::error::SUPABASE_ANON_KEY nao esta no dex: o APK foi compilado sem essa variavel."
+              falhou=1
+            fi
           fi
 
           # (b) versionName do APK tem que casar com a tag. Tag com sufixo (v0.6.0-rc1) e

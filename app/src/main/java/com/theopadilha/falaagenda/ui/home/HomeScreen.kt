@@ -883,6 +883,10 @@ internal fun homeHeadline(
 ): String {
     val agenda = agendaUi.sections
     val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
+    // O mesmo `missedReason` que decide as seções de baixo: a manchete não pode ter a sua
+    // própria noção de "eu não avisei", senão o topo diz "3 recados ficaram para trás" e a
+    // seção logo abaixo diz "Não consegui avisar" sobre o mesmo item. Uma conta, dois usos.
+    val naoAvisados = agenda.missed.count { missedReason(it) == MissedReason.NOT_WARNED }
     return AgendaFormat.headline(
         nowTime = nowTime,
         today = today,
@@ -891,6 +895,7 @@ internal fun homeHeadline(
         nextTime = next?.series?.localTime,
         missedCount = agendaUi.sections.missed.size,
         leituraFalhou = agendaUi.failed,
+        naoAvisados = naoAvisados,
     )
 }
 

@@ -173,7 +173,7 @@ jobs:
           so_espaco "$SUPABASE_URL" && URL_VAZIA=1
           so_espaco "$SUPABASE_ANON_KEY" && CHAVE_VAZIA=1
           if [ "$URL_VAZIA" -eq 1 ] && [ "$CHAVE_VAZIA" -eq 1 ]; then
-            echo "Sem SUPABASE_URL/SUPABASE_ANON_KEY: pulando a conferencia da config no dex (o APK sai sem a ajuda extra, como as releases anteriores)."
+            echo "::warning::Sem SUPABASE_URL/SUPABASE_ANON_KEY: pulando a conferencia da config no dex (o APK sai sem a ajuda extra, como as releases anteriores)."
           elif [ "$URL_VAZIA" -ne "$CHAVE_VAZIA" ]; then
             echo "::error::SUPABASE_URL/SUPABASE_ANON_KEY: so um dos dois chegou neste step (repository secrets pela metade)."
             exit 1

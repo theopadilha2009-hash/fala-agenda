@@ -245,7 +245,14 @@ jobs:
             VC_ATUAL=$(grep -oE '"versionCode": *[0-9]+' app/build/outputs/apk/release/output-metadata.json \
               | head -n 1 | grep -oE '[0-9]+$' || true)
           fi
-          ANTERIOR=$(gh release list --exclude-drafts --limit 10 --json tagName --jq '.[].tagName' 2>/dev/null \
+          # `--exclude-pre-releases` e obrigatorio aqui: sem ele, ao taguear a ESTAVEL seguinte
+          # (v0.6.0, mesmo versionCode 15 do rc1, como manda o fluxo de release candidate) o
+          # ANTERIOR seria o proprio rc1 -- vc 15 -- e a checagem de rebaixamento reprovaria a
+          # estavel. O gate so passou a ter esse risco quando o rc1 virou publicavel (o publish
+          # estava quebrado com --clobber); antes, nenhum pre-release entrava nesta lista. O app
+          # le /releases/latest, que ja ignora pre-release -- o gate tem que enxergar o mesmo
+          # universo que o updater, senao compara com uma versao que ninguem recebeu.
+          ANTERIOR=$(gh release list --exclude-drafts --exclude-pre-releases --limit 10 --json tagName --jq '.[].tagName' 2>/dev/null \
             | grep -vx -- "$GITHUB_REF_NAME" | head -n 1 || true)
           # Fail-open so quando a release anterior nao pode ser determinada (nao existe, ou a
           # listagem falhou): o gate segue e o aviso fica no log. Travar a publicacao por causa
@@ -323,26 +330,35 @@ jobs:
             exit 1
           fi
           # Re-run da mesma tag: a release pode ja existir (o passo falhou depois de criar, ou
-          # alguem re-disparou o job). `gh release create` nao tem --clobber -- essa flag existe
-          # so no `upload`, e a linha com ela derrubava o passo com "unknown flag" em TODA tag
-          # (o erro ficou latente de 28/09 a 05/10 porque nenhuma release rodou este passo: a
-          # v0.5.2 saiu em 21/08, antes da flag). A idempotencia de verdade e apagar os assets
-          # existentes e subir os novos -- `create` com a release ja criada falha, entao ela e
-          # removida antes. Apagar a release tambem apaga a tag? Nao: `gh release delete` sem
-          # --cleanup-tag deixa a tag em pe, que e o que queremos num re-run.
+          # alguem re-disparou o job). `gh release create` nao tem --clobber -- a flag existe em
+          # `upload` e em `download`, nunca em `create`, e a linha com ela derrubava o passo com
+          # "unknown flag" em TODA tag (entrou em 0a46352, 27/09, e ficou latente ate 05/10
+          # porque nenhuma release rodou este passo desde entao: a v0.5.2 saiu em 21/08). A
+          # idempotencia de verdade e apagar a release existente (assets, notas e estado) e
+          # recriar -- `create` com a release ja criada falha. Apagar a release tambem apaga a
+          # tag? Nao: `gh release delete` sem --cleanup-tag deixa a tag em pe, que e o que um
+          # re-run precisa. A janela entre delete e create nao e atomica: se o create falhar, a
+          # release some e a tag fica orfa -- re-disparar o job resolve (o create roda de novo),
+          # e por isso a tag ficar em pe importa.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "Release $GITHUB_REF_NAME ja existe; recriando para o re-run (a tag fica)."
             gh release delete "$GITHUB_REF_NAME" --yes
           fi
           # Pre-release nunca vira "latest" no GitHub: /releases/latest continua apontando para a
           # ultima estavel, entao o app nao oferece o rc como atualizacao.
+          # --verify-tag: sem ele, se a tag nao existisse no remoto o `create` criaria uma tag
+          # nova a partir da branch default, publicando um release que nao corresponde ao commit
+          # tagueado. O workflow dispara por push de tag, entao a tag existe; a flag e a garantia
+          # de que o release e sempre do commit certo.
           if [ "${PRERELEASE:-0}" = "1" ]; then
             gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
+              --verify-tag \
               --prerelease
           else
             gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes
+              --generate-notes \
+              --verify-tag
           fi

@@ -322,17 +322,27 @@ jobs:
             echo "::error::mapping.txt ausente numa estavel: com isMinifyEnabled=true isso e build sem R8 ou caminho que mudou. O CI de PR ja confere os dois; se chegou aqui, conferir app/build.gradle.kts antes de forcar a tag."
             exit 1
           fi
+          # Re-run da mesma tag: a release pode ja existir (o passo falhou depois de criar, ou
+          # alguem re-disparou o job). `gh release create` nao tem --clobber -- essa flag existe
+          # so no `upload`, e a linha com ela derrubava o passo com "unknown flag" em TODA tag
+          # (o erro ficou latente de 28/09 a 05/10 porque nenhuma release rodou este passo: a
+          # v0.5.2 saiu em 21/08, antes da flag). A idempotencia de verdade e apagar os assets
+          # existentes e subir os novos -- `create` com a release ja criada falha, entao ela e
+          # removida antes. Apagar a release tambem apaga a tag? Nao: `gh release delete` sem
+          # --cleanup-tag deixa a tag em pe, que e o que queremos num re-run.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME ja existe; recriando para o re-run (a tag fica)."
+            gh release delete "$GITHUB_REF_NAME" --yes
+          fi
           # Pre-release nunca vira "latest" no GitHub: /releases/latest continua apontando para a
           # ultima estavel, entao o app nao oferece o rc como atualizacao.
           if [ "${PRERELEASE:-0}" = "1" ]; then
             gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
-              --clobber \
               --prerelease
           else
             gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes \
-              --clobber
+              --generate-notes
           fi

@@ -160,11 +160,95 @@ class HomeHeadlineTest {
         assertThat(text).doesNotContain("recado")
     }
 
+    /**
+     * O que o aplicativo deixou de avisar não pode virar "recado que ficou para trás" na
+     * manchete: aquela frase põe a falha nas costas dela, no lugar mais visível da tela, e a
+     * seção logo abaixo já diz "Não consegui avisar" assumindo a culpa. O app assume o mesmo
+     * no topo.
+     */
+    @Test
+    fun oQueOAppNaoAvisouANaoViraRecadoQueElaDeixouParaTras() {
+        val naoAvisados = AgendaSections(
+            today = emptyList(),
+            upcoming = emptyList(),
+            completed = emptyList(),
+            missed = listOf(
+                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), Instant.EPOCH, avisada = false),
+            ),
+        )
+
+        val text = homeHeadline(
+            agendaUi = agendaUi(naoAvisados, failed = false),
+            nowTime = LocalTime.of(19, 0),
+            today = hoje,
+        )
+
+        assertThat(text).isEqualTo("Boa noite. Nada marcado agora. Não consegui avisar 1 tarefa.")
+        assertThat(text).doesNotContain("ficou para trás")
+    }
+
+    /**
+     * Os dois motivos convivem, e cada um conta uma vez só. Sem a subtração, a mesma
+     * ocorrência entraria nas duas frases ("1 recado ficou para trás. Não consegui avisar 1
+     * tarefa" sobre um remédio só); sem o contador, o que ela não fez sumiria da manchete.
+     */
+    @Test
+    fun osDoisMotivosNaoContamDuasVezesAMesmaOcorrencia() {
+        val misturado = AgendaSections(
+            today = emptyList(),
+            upcoming = emptyList(),
+            completed = emptyList(),
+            missed = listOf(
+                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), Instant.EPOCH, avisada = false),
+                item("Consulta", hoje.minusDays(2), LocalTime.of(9, 0), Instant.EPOCH, avisada = true),
+            ),
+        )
+
+        val text = homeHeadline(
+            agendaUi = agendaUi(misturado, failed = false),
+            nowTime = LocalTime.of(19, 0),
+            today = hoje,
+        )
+
+        assertThat(text).isEqualTo(
+            "Boa noite. Nada marcado agora. 1 recado ficou para trás. Não consegui avisar 1 tarefa.",
+        )
+    }
+
+    /** Só o que ela deixou de fazer: nenhuma menção a falha do app quando não houve. */
+    @Test
+    fun semFalhaDoAppAMancheteNaoFalaEmNaoConseguirAvisar() {
+        val soEla = AgendaSections(
+            today = emptyList(),
+            upcoming = emptyList(),
+            completed = emptyList(),
+            missed = listOf(
+                item("Consulta", hoje.minusDays(2), LocalTime.of(9, 0), Instant.EPOCH, avisada = true),
+            ),
+        )
+
+        val text = homeHeadline(
+            agendaUi = agendaUi(soEla, failed = false),
+            nowTime = LocalTime.of(19, 0),
+            today = hoje,
+        )
+
+        assertThat(text).isEqualTo("Boa noite. Nada marcado agora. 1 recado ficou para trás.")
+        assertThat(text).doesNotContain("Não consegui avisar")
+    }
+
+    /**
+     * [avisada] diz qual dos dois motivos a ocorrência carrega, porque a manchete agora os
+     * separa: `lastReminderAt == null` é "o aplicativo não avisou" (a seção "Não consegui
+     * avisar" da home), e preenchido é "avisou e ela não fez" (a seção "Não realizadas").
+     * O default é o segundo — um teste que quer o primeiro passa `avisada = false`.
+     */
     private fun item(
         title: String,
         localDate: LocalDate,
         localTime: LocalTime,
         scheduledAt: Instant,
+        avisada: Boolean = true,
     ): AgendaItem {
         val serie = TaskSeries(
             id = "s-$title",
@@ -183,6 +267,7 @@ class HomeHeadlineTest {
                 localDate = localDate,
                 scheduledAt = scheduledAt,
                 status = OccurrenceStatus.PENDING,
+                lastReminderAt = if (avisada) Instant.EPOCH else null,
             ),
             series = serie,
         )

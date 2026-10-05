@@ -172,6 +172,19 @@ object AgendaFormat {
      * próximo, ele continua na frase (pode estar velho, e é o cartão da home que avisa
      * isso); não havendo, a frase do vazio vira a de falha — a saudação fica, que o relógio
      * não depende da leitura.
+     *
+     * [naoAvisados] é o subconjunto de [missedCount] que o **aplicativo** deixou de avisar
+     * (ver `missedReason`/`NOT_WARNED` na home). Os dois entram separados porque a manchete
+     * era o único lugar do app que tratava os dois motivos como um só: "3 recados ficaram
+     * para trás" no topo da tela, sobre um remédio que ninguém lembrou de avisar, é a frase
+     * que faz uma senhora de 70 anos se achar esquecida por uma falha do aplicativo — e a
+     * seção logo abaixo já diz "Não consegui avisar", assumindo a culpa. O que ela não fez
+     * continua contado, mas sem verbo que a acuse.
+     *
+     * O contador é do que **ela** deixou de fazer (`missedCount - naoAvisados`): somar os
+     * dois contaria duas vezes a mesma ocorrência, e a frase sairia "2 recados ficaram para
+     * trás. Não consegui avisar 1 tarefa" sobre um único remédio. Cada motivo tem um sujeito,
+     * e nenhuma ocorrência entra nos dois.
      */
     fun headline(
         nowTime: LocalTime,
@@ -181,12 +194,23 @@ object AgendaFormat {
         nextTime: LocalTime?,
         missedCount: Int,
         leituraFalhou: Boolean = false,
+        naoAvisados: Int = 0,
     ): String {
         val greet = greeting(nowTime)
-        val recados = when (missedCount) {
+        val porFazer = (missedCount - naoAvisados).coerceAtLeast(0)
+        val recados = when (porFazer) {
             0 -> ""
             1 -> " 1 recado ficou para trás."
-            else -> " $missedCount recados ficaram para trás."
+            else -> " $porFazer recados ficaram para trás."
+        }
+        // O que o app deixou de avisar entra com o app como sujeito, e só quando há: com zero
+        // não há falha a assumir, e repetir "0 avisos" seria ruído. O verbo é o mesmo da seção
+        // logo abaixo ("Não consegui avisar") — duas frases para a mesma falha, com palavras
+        // diferentes, fariam parecer dois problemas.
+        val falhaDoApp = when (naoAvisados) {
+            0 -> ""
+            1 -> " Não consegui avisar 1 tarefa."
+            else -> " Não consegui avisar $naoAvisados tarefas."
         }
         // O contador entra montado dentro de cada ramo, e não deduzido à parte por uma
         // segunda conta de "há próximo": escrita duas vezes, a condição do ramo e a da
@@ -201,7 +225,7 @@ object AgendaFormat {
             // [lateMark]); o cabeçalho diz o mesmo. Com próximo o contador fica: ali o dado
             // veio de uma leitura real, mesmo quando a última tentativa falhou.
             val lead = if (lateMark(nextDate, today) != null) "Atrasada" else "Próximo"
-            " $lead: $nextTitle, $whenLabel às ${time(nextTime)}.$recados"
+            " $lead: $nextTitle, $whenLabel às ${time(nextTime)}.$recados$falhaDoApp"
         } else if (leituraFalhou) {
             // Sem próximo não há o que mostrar, e afirmar ausência é justamente o que a
             // falha não pode fazer: é a mentira que o cartão da home existe para matar,
@@ -209,7 +233,7 @@ object AgendaFormat {
             // porque ao lado dessa frase ele diria que algo foi lido.
             " Não consegui ler a sua agenda agora."
         } else {
-            " Nada marcado agora.$recados"
+            " Nada marcado agora.$recados$falhaDoApp"
         }
         return "$greet.$next"
     }

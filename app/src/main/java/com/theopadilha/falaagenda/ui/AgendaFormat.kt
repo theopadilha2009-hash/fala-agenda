@@ -174,12 +174,17 @@ object AgendaFormat {
      * não depende da leitura.
      *
      * [naoAvisados] é o subconjunto de [missedCount] que o **aplicativo** deixou de avisar
-     * (ver `missedReason`/`NOT_WARNED` na home). Os dois entram separados porque a manchete
-     * era o único lugar do app que tratava os dois motivos como um só: "3 recados ficaram
-     * para trás" no topo da tela, sobre um remédio que ninguém lembrou de avisar, é a frase
-     * que faz uma senhora de 70 anos se achar esquecida por uma falha do aplicativo — e a
-     * seção logo abaixo já diz "Não consegui avisar", assumindo a culpa. O que ela não fez
+     * (ver `missedReason`/`NOT_WARNED` na home). Os dois entram separados porque "3 recados
+     * ficaram para trás" no topo da tela, sobre um remédio que ninguém lembrou de avisar, é a
+     * frase que faz uma senhora de 70 anos se achar esquecida por uma falha do aplicativo — e
+     * a seção logo abaixo já diz "Não consegui avisar", assumindo a culpa. O que ela não fez
      * continua contado, mas sem verbo que a acuse.
+     *
+     * Este não é o único lugar do app que funde os dois motivos: o cartão de recap da home
+     * (`HomeScreen`) e o resumo do mês (`MonthSummaryScreen`) contam "não realizadas" a partir
+     * de `MonthInsights.of`, que olha só o `status` e não o `lastReminderAt` — uma tarefa que
+     * nasce vencida é `MISSED` sem nunca ter sido avisada, e entra nesses dois rótulos. Fica
+     * registrado aqui porque a manchete foi a primeira a ser corrigida, não a única.
      *
      * O contador é do que **ela** deixou de fazer (`missedCount - naoAvisados`): somar os
      * dois contaria duas vezes a mesma ocorrência, e a frase sairia "2 recados ficaram para

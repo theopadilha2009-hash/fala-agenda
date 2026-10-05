@@ -80,13 +80,31 @@ jobs:
               | base64 --decode 2>/dev/null | jq -er '.role // empty' 2>/dev/null
           }
 
-          if so_espaco "$SUPABASE_URL"; then echo "::error::SUPABASE_URL vazio"; faltando=1; fi
-          if so_espaco "$SUPABASE_ANON_KEY"; then echo "::error::SUPABASE_ANON_KEY vazio"; faltando=1; fi
-          if ! so_espaco "$SUPABASE_URL" && ! url_valida "$SUPABASE_URL"; then
+          # AUSENTE nao e o mesmo que ERRADO. As duas variaveis vazias sao o estado de todas
+          # as releases publicadas ate aqui (a v0.5.2 inclusive): o app roda inteiro sem elas,
+          # porque a ajuda extra so entra na desambiguacao (HybridParser: sem remoto, fica o
+          # rascunho local). Isso nao pode travar a publicacao de um alarme que a mae dela
+          # precisa -- foi o que aconteceu em 03/10, com a tag ja empurrada.
+          # O que continua barrando, e o motivo de este gate existir: configuracao pela METADE
+          # (uma variavel e outra nao -- quase sempre secret que sumiu ou nome trocado), URL
+          # fora do formato e, principalmente, chave com role diferente de anon. A service_role
+          # ignora RLS e entregaria o banco a quem extraisse a chave do APK.
+          URL_VAZIA=0; CHAVE_VAZIA=0
+          so_espaco "$SUPABASE_URL" && URL_VAZIA=1
+          so_espaco "$SUPABASE_ANON_KEY" && CHAVE_VAZIA=1
+
+          if [ "$URL_VAZIA" -eq 1 ] && [ "$CHAVE_VAZIA" -eq 1 ]; then
+            echo "::warning::SUPABASE_URL e SUPABASE_ANON_KEY ausentes: o APK sai sem a ajuda extra de IA (o app avisa na tela de ajustes). Alarme, fala e agenda nao dependem disso."
+          elif [ "$URL_VAZIA" -ne "$CHAVE_VAZIA" ]; then
+            echo "::error::Config do Supabase pela metade: uma variavel esta preenchida e a outra nao. Preencha as duas ou nenhuma -- meia config deixa o app achando que a ajuda extra existe e falhando no toque."
+            faltando=1
+          fi
+
+          if [ "$URL_VAZIA" -eq 0 ] && ! url_valida "$SUPABASE_URL"; then
             echo "::error::SUPABASE_URL nao e exatamente https://<projeto>.supabase.co (sem caminho, porta, ? ou #; valor nao exibido)"
             faltando=1
           fi
-          if ! so_espaco "$SUPABASE_ANON_KEY"; then
+          if [ "$CHAVE_VAZIA" -eq 0 ]; then
             PAPEL=$(papel_da_chave "$SUPABASE_ANON_KEY" || true)
             if [ "$PAPEL" != "anon" ]; then
               echo "::error::SUPABASE_ANON_KEY nao e chave anon/public (JWT com role=anon). A service_role entrega o banco a quem extrair a chave do APK. Chave e payload nao exibidos."
@@ -94,7 +112,7 @@ jobs:
             fi
           fi
           if [ "$faltando" -ne 0 ]; then
-            echo "Sem as duas o APK sai sem a ajuda extra (SupabaseConfig.isConfigured = false)."
+            echo "O app sai sem a ajuda extra ate isto ser corrigido (SupabaseConfig.isConfigured = false)."
             echo "Configure em Settings > Secrets and variables > Actions > Secrets:"
             echo "  SUPABASE_URL      = https://SEU-PROJETO.supabase.co"
             echo "  SUPABASE_ANON_KEY = chave anon/publica (JWT com role=anon; nunca a service_role)"

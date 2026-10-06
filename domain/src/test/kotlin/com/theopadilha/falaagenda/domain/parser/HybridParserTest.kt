@@ -426,4 +426,51 @@ class HybridParserTest {
         assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 8, 5))
         assertThat(draft.notes.joinToString()).contains("já passou")
     }
+
+    /**
+     * A nota do instante vencido fala do **resultado**, não de quem trouxe cada metade.
+     *
+     * `marcar reunião hoje às 8h e pagar conta` às 10h: o instante do local (20/08 08:00) já
+     * passou, então escala; a IA devolve só a hora, `23:00`, e o final vira 20/08 23:00 — futuro.
+     * Desmentindo o instante pelas duas metades do remoto, a nota "Essa data e horário já passaram."
+     * ficava em vermelho logo acima de um instante futuro, e a caixa rápida confirmava assim
+     * (`qc=true`). É a mesma contradição visível que o desmentido existe para evitar.
+     */
+    @Test
+    fun aNotaDoInstanteVencidoSaiQuandoORascunhoFinalEhFuturo() = runBlocking {
+        val localDraft = local.parse("marcar reunião hoje às 8h e pagar conta")
+        assertThat(localDraft.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(localDraft.notes.joinToString()).contains("já passaram")
+
+        val remoto = object : RemoteDraftParser {
+            override suspend fun parse(
+                transcript: String,
+                nowIso: String,
+                timezone: String,
+                locale: String,
+            ): ParsedTaskDraft = ParsedTaskDraft(
+                title = "Reunião",
+                localDate = null,
+                localTime = LocalTime.of(23, 0),
+                confidence = 0.9,
+                missingFields = emptySet(),
+                ambiguous = false,
+                transcript = transcript,
+                notes = emptyList(),
+                source = DraftSource.AI,
+            )
+        }
+        val hybrid = HybridParser(
+            local = local,
+            clock = clock,
+            remote = remoto,
+            network = NetworkStatus { true },
+            isAiEnabled = { true },
+        )
+        val draft = hybrid.parse("marcar reunião hoje às 8h e pagar conta")
+
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(23, 0))
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.notes.joinToString()).doesNotContain("já passaram")
+    }
 }

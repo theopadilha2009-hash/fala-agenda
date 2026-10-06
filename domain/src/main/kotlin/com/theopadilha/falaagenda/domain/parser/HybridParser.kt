@@ -100,6 +100,8 @@ class HybridParser(
                 remotas = remoteDraft.notes,
                 remotoTrouxeData = remoteDraft.localDate != null,
                 remotoTrouxeHora = remoteDraft.localTime != null,
+                finalTemData = mergedDate != null,
+                finalTemHora = mergedTime != null,
             ),
         )
     }
@@ -126,17 +128,28 @@ class HybridParser(
      * ano; ficou em 2027", e a tela mostrava 2027 em silêncio, sem a nota que existe justamente
      * para explicar esse 2027. A pergunta certa é "a IA resolveu a data?", não "o rascunho tem
      * data?".
+     *
+     * O instante vencido é a exceção, e por um motivo: as notas de "falta" falam do campo (a IA
+     * preencheu a hora?), mas [NotasDoRascunho.INSTANTE_PASSADO] fala do **resultado** — "essa data
+     * e horário já passaram". Quem decide se isso é verdade é o instante final, não quem trouxe
+     * cada metade. Exigir as duas do remoto deixava a nota ao lado de um instante futuro: com
+     * `marcar reunião hoje às 8h e pagar conta` (20/08 08:00, já passado) o remoto devolve só a hora
+     * `23:00`, o final vira 20/08 23:00 — futuro — e a nota continuava dizendo "já passaram", com
+     * `qc=true`. O remoto só acrescenta campos, então "final completo" já implica que o palpite
+     * local não está mais sozinho.
      */
     private fun notasDomescladas(
         locais: List<String>,
         remotas: List<String>,
         remotoTrouxeData: Boolean,
         remotoTrouxeHora: Boolean,
+        finalTemData: Boolean,
+        finalTemHora: Boolean,
     ): List<String> {
         val desmentidas = buildSet {
             if (remotoTrouxeData) addAll(NotasDoRascunho.SOBRE_A_DATA)
             if (remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_A_HORA)
-            if (remotoTrouxeData && remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
+            if (finalTemData && finalTemHora) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
         }
         return (locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } } + remotas)
             .distinct()

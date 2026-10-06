@@ -12,10 +12,15 @@ import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -161,14 +166,31 @@ fun OnboardingScreen(
     }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
+        // A rolagem e o piso andam juntos, e nenhum dos dois sozinho resolve.
+        //
+        // Sem a rolagem, as mensagens de recusa (microfone e avisos negados) empurravam as
+        // duas saídas para fora da tela quando a fonte do sistema estava grande: medido com
+        // `GraphicsMode.NATIVE` + `@Config(fontScale = 1.5f)`, o "Continuar" ficava com 4 dp de
+        // altura, e em 2,0x as duas saíam com bounds (0,0,0,0). Era o primeiro contato dela com
+        // o aplicativo e não havia como sair dele.
+        //
+        // Sem o piso de altura, a rolagem cobra o preço que a auditoria avisou: dentro de um
+        // `Column` rolável o `weight` dos dois espaçadores não recebe altura para distribuir,
+        // os dois colapsam e o conteúdo inteiro encolhe para o tamanho do texto — os botões
+        // sobem para o meio da tela, que era o layout certo em 1,0x. O `heightIn(min = maxHeight)`
+        // devolve a altura da janela à coluna; quando o conteúdo passa disso, ela rola, e
+        // quando não passa nada mudou.
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(padding)
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
             Spacer(Modifier.weight(1f))
             // Ilustração: aqui não há ação para descrever, e anunciar "Microfone" era uma
             // parada de foco que não respondia ao toque duplo.
@@ -239,6 +261,7 @@ fun OnboardingScreen(
             // "Agora não" pula o microfone, não os avisos: sair daqui sem pedir a permissão
             // de aviso é o caminho por onde o lembrete nunca tocou.
             SecondaryButton("Agora não") { requestNotifications(exitAfter = true) }
+            }
         }
     }
 }

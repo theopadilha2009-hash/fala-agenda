@@ -49,11 +49,16 @@ fun PulsingMic(
     val description = contentDescription
     // Sem ação o microfone não é o mesmo botão verde cheio: durante os ~20 s de
     // "Entendendo o recado…" ele parecia clicável e o toque não devolvia nada. O disco fica
-    // no `outline` do tema: um cinza neutro, pouco acima ou abaixo do fundo (#E4DFD4 sobre
-    // o creme no claro, 1,2:1; #3A4742 sobre o verde-escuro no escuro, 1,7:1), então quem
-    // sustenta a leitura é o ícone — 5,9:1 no claro e 8,9:1 no escuro contra o fundo. O
-    // pulso para junto.
-    val fill = if (actionable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    // no `outlineVariant` do tema — a linha clara, não o contorno do cartão: um cinza neutro,
+    // pouco acima ou abaixo do fundo (#E4DFD4 sobre o creme no claro, 1,2:1; #3A4742 sobre o
+    // verde-escuro no escuro, 1,7:1), então quem sustenta a leitura é o ícone — 5,0:1 no claro
+    // e 5,3:1 no escuro. O pulso para junto.
+    //
+    // Não pode ser o `outline`: ele escureceu para o contorno do cartão se enxergar sobre o
+    // fundo (3,3:1), e com ele aqui o ícone cairia para 1,8:1 — o disco vira uma bola chapada
+    // sem o desenho dentro, que é justamente a leitura que este estado precisa dar.
+    val fill =
+        if (actionable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
     val iconTint =
         if (actionable) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     val pulse = rememberInfiniteTransition(label = "mic-pulse")

@@ -78,7 +78,12 @@ fun PrimaryButton(
             // Ela tocava num "Salvar" que não respondia e não enxergava que o botão existia.
             // O cinza neutro fica em 5,0:1 (claro) e 5,3:1 (escuro), e não se confunde com
             // o verde do botão ligado.
-            disabledContainerColor = MaterialTheme.colorScheme.outline,
+            //
+            // É o `outlineVariant` (a linha clara) e não o `outline`: o contorno do cartão
+            // escureceu para se enxergar sobre o fundo, e com ele aqui o texto do botão
+            // desabilitado cairia para 1,8:1 — some justamente quando ela precisa ler que o
+            // botão existe.
+            disabledContainerColor = MaterialTheme.colorScheme.outlineVariant,
             disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),

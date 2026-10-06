@@ -1596,27 +1596,6 @@ class LocalTaskParserTest {
         assertThat(parser.parse("quarta-feira de cinzas missa às 19h").title).isEqualTo("Missa")
     }
 
-    @Test
-    fun emPontoEhQualificadorDaHoraNaoDoTitulo() {
-        // B: "em ponto" vazava para o título ("Ponto") e, sem o "às", a hora se perdia.
-        val oitoEMeia = parser.parse("oito e meia em ponto")
-        assertThat(oitoEMeia.localTime).isEqualTo(LocalTime.of(8, 30))
-        assertThat(oitoEMeia.title).isEmpty()
-
-        val meioDia = parser.parse("meio-dia em ponto")
-        assertThat(meioDia.localTime).isEqualTo(LocalTime.of(12, 0))
-        assertThat(meioDia.title).isEmpty()
-
-        val tres = parser.parse("três em ponto")
-        assertThat(tres.localTime).isEqualTo(LocalTime.of(3, 0))
-        assertThat(tres.title).isEmpty()
-
-        // "às três em ponto" continua 03:00 (ambíguo de manhã/tarde), sem "Ponto" no título.
-        val asTres = parser.parse("às três em ponto")
-        assertThat(asTres.localTime).isEqualTo(LocalTime.of(3, 0))
-        assertThat(asTres.title).isEmpty()
-    }
-
     // ---- Regressões NOVAS da 2ª revisão (P0-1 a P2-8) ----
 
     @Test
@@ -1881,5 +1860,94 @@ class LocalTaskParserTest {
             .isEqualTo(LocalDate.of(2026, 8, 27))
         assertThat(parser.parse("daqui a uma semana e meia dentista").localDate)
             .isEqualTo(LocalDate.of(2026, 8, 30))
+    }
+
+    /**
+     * O "em ponto" qualifica uma hora que o parser JÁ reconheceu — inclusive quando a hora vem
+     * escrita por extenso ("meio-dia", "meia-noite"), não só por número.
+     *
+     * A regra da casa é `emPontoNaoInventaHoraNemSobraNoTitulo`: sem hora reconhecida o qualificador
+     * não cria uma. Mas o inverso também vale, e era o buraco: com hora reconhecida ele tem de sair
+     * do texto que sobra para o título. Os ramos do "meio-dia" e da "meia-noite" retornavam antes de
+     * `consumirEmPonto`, então o qualificador vazava: "meio-dia em ponto" virava a tarefa **"Ponto"**,
+     * com a hora 12:00 certa e um título que ela não reconhece. Medido na `main` antes do fix.
+     */
+    @Test
+    fun emPontoNaoSobraNoTituloDoMeioDiaNemDaMeiaNoite() {
+        val meioDia = parser.parse("meio-dia em ponto")
+        assertThat(meioDia.localTime).isEqualTo(LocalTime.of(12, 0))
+        assertThat(meioDia.title).isEmpty()
+
+        val meiaNoite = parser.parse("meia-noite em ponto")
+        assertThat(meiaNoite.localTime).isEqualTo(LocalTime.of(0, 0))
+        assertThat(meiaNoite.title).isEmpty()
+
+        // Com tarefa junto, o qualificador sai e o nome fica.
+        val comTarefa = parser.parse("tomar remédio meio-dia em ponto")
+        assertThat(comTarefa.localTime).isEqualTo(LocalTime.of(12, 0))
+        assertThat(comTarefa.title).isEqualTo("Tomar remédio")
+
+        // A regra da casa não regride: sem hora reconhecida o "em ponto" não inventa uma.
+        assertThat(parser.parse("amanhã três horas em ponto").localTime).isNull()
+    }
+
+    @Test
+    fun feiraComoDiaNaoVoltaAoTituloComDeterminante() {
+        // P1-A (3ª revisão): o guard do substantivo poupava o "feira" de QUALQUER "feira" seguido
+        // de de/do/da/dos/das. Como o dia com ESPAÇO só consome o " feira" quando o próximo token
+        // não é um desses, o sufixo do dia sobrava órfão e o guard o poupava: "sexta feira do
+        // dentista" virava título "Feira dentista" — regressão contra o main ("Dentista").
+        // A classe inteira fecha: o guard só poupa o "feira" quando ele ENCABEÇA o sintagma
+        // nominal ("feira de ciências"), onde o determinante vem depois do próprio substantivo.
+        val sexta = parser.parse("sexta feira do dentista às 8h")
+        assertThat(sexta.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(sexta.title).isEqualTo("Dentista")
+
+        assertThat(parser.parse("segunda feira do médico às 8h").title).isEqualTo("Médico")
+        assertThat(parser.parse("terça feira da natação às 18h").title).isEqualTo("Natação")
+        assertThat(parser.parse("quarta feira do curso às 19h").title).isEqualTo("Curso")
+        assertThat(parser.parse("quinta feira da reunião às 9h").title).isEqualTo("Reunião")
+        // O "feira" que é o mercado continua no título, com o dia nomeado depois.
+        assertThat(parser.parse("ir na feira do bairro sábado às 10h").title.lowercase())
+            .contains("feira")
+
+        // O substantivo encabeçando o sintagma (P2-3) não pode regredir.
+        assertThat(parser.parse("sexta feira de ciências às 8h").title.lowercase()).contains("feira")
+        assertThat(parser.parse("sábado feira às 8h").title).isEqualTo("Feira")
+        assertThat(parser.parse("sexta-feira do dentista às 8h").title).isEqualTo("Dentista")
+        assertThat(parser.parse("na sexta feira dentista às 8h").title).isEqualTo("Dentista")
+    }
+
+    @Test
+    fun diaDitoComRelativoNaoSeContradiz() {
+        // P1-B (3ª revisão): o ramo do "daqui a N dias/semanas" devolvia a conta crua sem nunca
+        // olhar o dia nomeado na mesma frase. Quinta 20/08, "sexta daqui a dois dias" caía no
+        // SÁBADO 22/08 — e como não marcava ambíguo, a caixa rápida confirmava em silêncio um dia
+        // que ela não disse. O dia nomeado é a expressão específica: ele manda.
+        val sexta = parser.parse("sexta daqui a dois dias pagar conta às 10h")
+        assertThat(sexta.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(sexta.title).isEqualTo("Pagar conta")
+
+        assertThat(parser.parse("domingo daqui a dois dias pagar conta às 10h").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 23))
+        assertThat(parser.parse("segunda daqui a dois dias pagar conta às 10h").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 24))
+
+        // Com a semana o deslocamento cru cai em quinta: o dia dito ganha e é a PRIMEIRA sexta
+        // depois de hoje, sem pular uma semana inteira.
+        assertThat(parser.parse("sexta daqui a uma semana pagar conta às 10h").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(parser.parse("sexta daqui a duas semanas pagar conta às 10h").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 21))
+
+        // Quando o dia dito e a conta concordam, nada muda e a caixa rápida continua confirmando.
+        val sabado = parser.parse("sábado daqui a dois dias pagar conta às 10h")
+        assertThat(sabado.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+        assertThat(sabado.ambiguous).isFalse()
+        assertThat(sabado.canQuickConfirm(clock.instant(), zone)).isTrue()
+
+        // Sem dia nomeado o relativo continua valendo sozinho.
+        assertThat(parser.parse("daqui a dois dias pagar conta às 10h").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 22))
     }
 }

@@ -428,15 +428,19 @@ class LocalTaskParser(
             )
         }
 
+        // O "em ponto" também qualifica estas duas horas, e o ramo do relógio comum já o consumia
+        // (`consumirEmPonto`); estes dois retornavam antes disso, então o qualificador sobrava no
+        // título: "meio-dia em ponto" virava a tarefa "Ponto". Vale para a palavra escrita, não só
+        // para "12h" — a hora reconhecida é a mesma coisa, venha ela de número ou de nome.
         Regex("""\bmeio[-\s]?dia\b""").find(remaining)?.let { m ->
             val tail = trailingMinutes(remaining, m.range.last + 1)
             remaining = remaining.replace(m.value + (tail?.second ?: ""), " ")
-            return TimeHit(LocalTime.of(12, tail?.first ?: 0), remaining, false)
+            return TimeHit(LocalTime.of(12, tail?.first ?: 0), consumirEmPonto(remaining), false)
         }
         Regex("""\bmeia[-\s]?noite\b""").find(remaining)?.let { m ->
             val tail = trailingMinutes(remaining, m.range.last + 1)
             remaining = remaining.replace(m.value + (tail?.second ?: ""), " ")
-            return TimeHit(LocalTime.of(0, tail?.first ?: 0), remaining, false)
+            return TimeHit(LocalTime.of(0, tail?.first ?: 0), consumirEmPonto(remaining), false)
         }
 
         data class ClockMatch(val match: MatchResult, val hourRaw: Int, val minute: Int, val period: String)
@@ -690,6 +694,26 @@ class LocalTaskParser(
                 }
             }
             remaining = stripDayWords(remaining.replace(consumed, " "))
+            // "sexta daqui a dois dias": a conta crua (hoje + 2) dá SÁBADO, e o dia que ela disse
+            // ficava sem quem o ouvisse — o rascunho saía completo e não-ambíguo, e a caixa rápida
+            // confirmava o sábado em silêncio (P1-B da 3ª revisão do #55).
+            //
+            // O dia nomeado é a expressão específica e manda: vale a PRIMEIRA ocorrência dele a
+            // partir de hoje, e não "a primeira depois da conta crua". A diferença aparece quando a
+            // conta crua já passou do dia: quinta + 1 semana = quinta, e o "on-or-after" dava a sexta
+            // da semana SEGUINTE, pulando a de amanhã. Como as datas cruas aqui são "hoje + N" e o
+            // intervalo entre ocorrências do mesmo dia é de 7 dias, "a partir de hoje" nunca produz
+            // uma data anterior à que ela pediu — o que era o risco de descartar a conta.
+            val namedDay = extractWeekDays(remaining)
+            if (namedDay.size == 1) {
+                remaining = stripWeekDays(remaining)
+                val onNamedDay = RecurrenceEngine.firstOnOrAfter(
+                    RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = namedDay),
+                    today,
+                    today,
+                )
+                return DateHit(onNamedDay ?: date, remaining, false)
+            }
             return DateHit(date, remaining, false)
         }
 
@@ -1428,12 +1452,17 @@ class LocalTaskParser(
          * o título virava "Feira dentista" (P0-3). Consumindo o " feira" junto com o dia, não sobra
          * nada para o guard ver.
          *
-         * A forma com ESPAÇO não come o "feira" quando ele encabeça um sintagma nominal ("feira
-         * DE ciências", "feira DO livro"): ali o "feira" é o substantivo, não o sufixo do dia. A
-         * forma com hífen continua inteira — o hífen é sinal forte do dia (P2-3).
+         * A forma com ESPAÇO não come o "feira" só quando ele encabeça o sintagma nominal com o
+         * "de" do complemento ("feira DE ciências"): ali o "feira" é o substantivo, não o sufixo do
+         * dia. A forma com hífen continua inteira — o hífen é sinal forte do dia (P2-3).
+         *
+         * O guard olha SÓ o "de", não o resto dos determinantes: em "sexta feira DO dentista" o
+         * "feira" é o sufixo do dia, e poupá-lo devolvia o "Feira" ao título. O determinante que
+         * denuncia o substantivo é o "de" do complemento ("feira de ciências"), não o que abre o
+         * sintagma seguinte.
          */
         private const val FEIRA_NOUN_TAIL_SRC = """(?:de|do|da|dos|das)\b"""
-        private const val FEIRA_NOUN = """\s+feira(?!\s+$FEIRA_NOUN_TAIL_SRC)"""
+        private const val FEIRA_NOUN = """\s+feira(?!\s+de\b)"""
         private val FEIRA_NOUN_TAIL = Regex("""^\s+$FEIRA_NOUN_TAIL_SRC""")
         private val WEEKDAY_PATTERNS = listOf(
             // "sábado"/"domingo" NÃO levam o sufixo "-feira" (só segunda a sexta): o "feira" depois

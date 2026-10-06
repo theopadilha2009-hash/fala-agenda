@@ -389,11 +389,25 @@ class TaskRepository(
         }
         val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
         val pending = existing.filter { it.status == OccurrenceStatus.PENDING }
-        pending.forEach { scheduler.cancel(it.id) }
+        // A edição reescreve o cartão que ela tocou e o que vem da data nova para frente. O que
+        // fica estritamente antes disso não foi tocado na tela — são justamente as doses de hoje
+        // e de amanhã —, e é isso que a edição destruía: cancelava o alarme de **todas** as
+        // pendentes, apagava as linhas e movia `startLocalDate` para a data tocada, e a varredura
+        // não as trazia de volta porque só materializa datas iguais ou posteriores ao início da
+        // série. No aparelho dela: "mudei o horário do remédio de amanhã e o de hoje/amanhã
+        // parou de tocar".
+        //
+        // A série tem UM horário, então o horário novo não pode valer para a dose de hoje: a de
+        // amanhã, que também não foi tocada, continua tocando no horário dela. A dose que fica
+        // entre a data antiga e a nova também não foi tocada e continua de pé — por isso o cartão
+        // tocado entra pelo id, e não pelo corte de data.
+        val reescritas = pending.filter {
+            it.id == original.id || !it.localDate.isBefore(date)
+        }
+        reescritas.forEach { scheduler.cancel(it.id) }
         val updatedSeries = series.copy(
             title = title.trim(),
             localTime = time,
-            startLocalDate = date,
             recurrence = recurrence,
             amountCents = amountCents,
             observation = observation.trim(),
@@ -402,9 +416,15 @@ class TaskRepository(
             // marcado junto da ocorrência viva, a data ficaria bloqueada em toda
             // materialização futura.
             skippedDates = OccurrenceLifecycle.unskipDate(series.skippedDates, date),
+            // `startLocalDate` só se move quando a data muda. Movê-lo também na edição do mesmo
+            // dia era a outra metade do mesmo defeito: o início da série é o piso de toda
+            // materialização (a varredura e o preview só criam datas iguais ou posteriores a
+            // ele), então mover a série para frente apagava as datas anteriores de uma vez — e
+            // nem o restart as recriava.
+            startLocalDate = if (date != original.localDate) date else series.startLocalDate,
         )
         val serieRow = updatedSeries.toEntity()
-        val substituidas = pending.map { it.id }
+        val substituidas = reescritas.map { it.id }
         // A edição honra a data que ela tocou, mas instante vencido nunca fica pendente com
         // alarme — `occurrencesForChoice` arquiva a data vencida como não realizada e, na regra
         // que repete, arma a próxima. Era aqui que editar "todo dia às 08:00" para as 18:00 de
@@ -429,10 +449,17 @@ class TaskRepository(
             series = serieRow,
             deleteSeriesRow = false,
         )
-        // O preview é sobre o que vem depois: ancorado na data editada, editar uma data
-        // passada criava três datas vencidas, o próximo avanço marcava todas como não
-        // realizadas e a agenda ficava sem as futuras até o app reabrir.
-        spawnUpcomingPreview(updatedSeries, OccurrenceLifecycle.todayIn(clock.zoneId(), now))
+        // O preview recobre a partir da data nova: as doses que a edição reescreveu (a tocada e
+        // as que vêm depois dela) são justamente as que ele tem que rematerializar com a série
+        // nova. Com o piso em hoje ele parava antes delas — editar a dose de 22/08 cancelava a
+        // de 23/08 e o preview não a trazia de volta, que é a mesma perda por outro caminho. O
+        // piso de hoje continua valendo por baixo: ancorado numa data passada, o preview criava
+        // três datas vencidas, o próximo avanço marcava todas como não realizadas e a agenda
+        // ficava sem as futuras até o app reabrir.
+        spawnUpcomingPreview(
+            updatedSeries,
+            maxOf(date, OccurrenceLifecycle.todayIn(clock.zoneId(), now)),
+        )
         EditOutcome.SAVED
     }
 

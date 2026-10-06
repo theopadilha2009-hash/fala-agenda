@@ -759,7 +759,10 @@ class LocalTaskParserTest {
     fun todaSemanaEhSerieSemanal() {
         val draft = parser.parse("toda semana limpar a casa")
         assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
-        assertThat(draft.localDate).isNotNull()
+        // O dia da semana É a asserção que faltava: sem ela, "toda semana na terça" ancorava a
+        // série em HOJE (quinta 20/08) e a suíte inteira continuava verde (F12).
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(draft.localDate!!.dayOfWeek).isEqualTo(DayOfWeek.THURSDAY)
         assertThat(draft.title).isEqualTo("Limpar casa")
     }
 
@@ -1430,5 +1433,146 @@ class LocalTaskParserTest {
         val almoco = parser.parse("depois do almoço")
         assertThat(almoco.localTime).isNull()
         assertThat(almoco.ambiguous).isTrue()
+    }
+
+    // ---- Regressões do PR #55 (revisão independente de 06/10/2026): data/hora errada, completa e não-ambígua ----
+
+    @Test
+    fun todaSemanaComDiaDaSemanaAncoraNoDiaDito() {
+        // F1: o bloco de "toda semana" rodava ANTES do dia da semana e ancorava a série em HOJE
+        // (quinta 20/08), não na terça — a caixa rápida confirmava o dia errado em silêncio.
+        val limpar = parser.parse("toda semana na terça limpar a casa às 8h")
+        assertThat(limpar.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(limpar.recurrence.weekDays).containsExactly(DayOfWeek.TUESDAY)
+        assertThat(limpar.localDate).isEqualTo(LocalDate.of(2026, 8, 25))
+        assertThat(limpar.localDate!!.dayOfWeek).isEqualTo(DayOfWeek.TUESDAY)
+        assertThat(limpar.localTime).isEqualTo(LocalTime.of(8, 0))
+
+        val natacao = parser.parse("toda semana na terça natação às 18h")
+        assertThat(natacao.localDate).isEqualTo(LocalDate.of(2026, 8, 25))
+        assertThat(natacao.localTime).isEqualTo(LocalTime.of(18, 0))
+    }
+
+    @Test
+    fun relativoEmDiasNaoFabricaHora() {
+        // F2: "daqui a duas semanas ... às 9h" produzia a hora do relógio de agora (10:00), não 9h.
+        val comHora = parser.parse("daqui a duas semanas dentista às 9h")
+        assertThat(comHora.localDate).isEqualTo(LocalDate.of(2026, 9, 3))
+        assertThat(comHora.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(comHora.ambiguous).isFalse()
+
+        // Sem hora dita, escala (não inventa a hora de agora).
+        val semHora = parser.parse("daqui a duas semanas dentista")
+        assertThat(semHora.localDate).isEqualTo(LocalDate.of(2026, 9, 3))
+        assertThat(semHora.localTime).isNull()
+        assertThat(semHora.missingFields).contains(MissingDraftField.TIME)
+    }
+
+    @Test
+    fun diaDasMaesEDosPaisNaoPulamNemVoltamNoTempo() {
+        // F3: o corte por dia-do-mês (dia > 10 / dia > 9) não corresponde ao 2º domingo real.
+        // Em 13/05/2028 (véspera do Dia das Mães de 2028, 14/05) o corte antigo pulava para 2029.
+        val vespera = parserEm(LocalDateTime.of(2028, 5, 13, 10, 0))
+        assertThat(vespera.parse("dia das mães almoço").localDate).isEqualTo(LocalDate.of(2028, 5, 14))
+
+        // Em 10/05/2027 (o dia seguinte ao Dia das Mães de 2027, 09/05) o corte antigo devolvia
+        // 09/05/2027 — uma data no PASSADO.
+        val depois = parserEm(LocalDateTime.of(2027, 5, 10, 10, 0))
+        assertThat(depois.parse("dia das mães almoço").localDate).isEqualTo(LocalDate.of(2028, 5, 14))
+
+        // 2º domingo de agosto de 2026 (09/08) já passou; o próximo é 08/08/2027.
+        assertThat(parser.parse("dia dos pais almoço").localDate).isEqualTo(LocalDate.of(2027, 8, 8))
+
+        // Em 09/08/2027 (dia seguinte ao Dia dos Pais de 2027, 08/08) o corte antigo devolvia
+        // 08/08/2027 — outra data no passado.
+        val depoisPais = parserEm(LocalDateTime.of(2027, 8, 9, 10, 0))
+        assertThat(depoisPais.parse("dia dos pais almoço").localDate).isEqualTo(LocalDate.of(2028, 8, 13))
+    }
+
+    @Test
+    fun substantivoComumNaoViraDataNomeada() {
+        // F4: "natal" e "cinzas" casavam como substantivo comum e viravam 25/12 e a Quarta-feira
+        // de Cinzas, completos e não-ambíguos, sem a IA consultar.
+        val terraNatal = parser.parse("voltar para minha terra natal às 10h")
+        assertThat(terraNatal.localDate).isNull()
+        assertThat(terraNatal.localTime).isEqualTo(LocalTime.of(10, 0))
+        assertThat(terraNatal.missingFields).contains(MissingDraftField.DATE)
+
+        val cinzas = parser.parse("limpar as cinzas da churrasqueira às 10h")
+        assertThat(cinzas.localDate).isNull()
+        assertThat(cinzas.missingFields).contains(MissingDraftField.DATE)
+
+        // As formas de data continuam valendo.
+        assertThat(parser.parse("no Natal almoço às 13h").localDate).isEqualTo(LocalDate.of(2026, 12, 25))
+        assertThat(parser.parse("dia de Natal almoço às 13h").localDate).isEqualTo(LocalDate.of(2026, 12, 25))
+    }
+
+    @Test
+    fun fimEMeioDoMesQueVemVaoParaOMesSeguinte() {
+        // F5: o "que vem" era ignorado e a borda voltava o mês ATUAL.
+        val fim = parser.parse("fim do mês que vem pagar conta")
+        assertThat(fim.localDate).isEqualTo(LocalDate.of(2026, 9, 30))
+        assertThat(fim.title).isEqualTo("Pagar conta")
+
+        val meio = parser.parse("meio do mês que vem pagar conta")
+        assertThat(meio.localDate).isEqualTo(LocalDate.of(2026, 9, 15))
+
+        val comeco = parser.parse("começo do mês que vem pagar conta")
+        assertThat(comeco.localDate).isEqualTo(LocalDate.of(2026, 9, 1))
+
+        // Sem o "que vem", o espelho que já funcionava não pode regredir.
+        assertThat(parser.parse("fim do mês pagar conta").localDate).isEqualTo(LocalDate.of(2026, 8, 31))
+    }
+
+    @Test
+    fun todoDiaVinteECincoDoMesQueVemContinuaMensal() {
+        // F6: a exclusão "(?!que vem)" da regex mensal derrubava a série; a frase virava DIÁRIA
+        // e o 25 sumia.
+        val draft = parser.parse("todo dia 25 do mês que vem caminhar")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.MONTHLY)
+        assertThat(draft.recurrence.dayOfMonth).isEqualTo(25)
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 25))
+    }
+
+    @Test
+    fun sextaSantaSemFeiraNaoViraASextaDestaSemana() {
+        // F7: a regex exigia "feira", então "sexta santa" caía no dia da semana comum e devolvia
+        // a PRÓXIMA sexta (21/08/2026) — o mesmo defeito D1 que este PR existia para matar.
+        val draft = parser.parse("sexta santa missa às 15h")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 3, 26))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(draft.title).isEqualTo("Missa")
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun todaSemanaQueVemComecaNaProximaSemana() {
+        // F8: o "que vem" era engolido e a série começava hoje.
+        val draft = parser.parse("toda semana que vem limpar a casa às 8h")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 27))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(draft.title).isEqualTo("Limpar casa")
+    }
+
+    @Test
+    fun emDuasSemanasEhRelativoEmDias() {
+        // F9: "em duas semanas" ficava pela metade (sem data) com a hora fabricada.
+        val draft = parser.parse("em duas semanas dentista")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 9, 3))
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.title).isEqualTo("Dentista")
+    }
+
+    @Test
+    fun intervaloComHoraDitaNaoPedeAHoraDeNovo() {
+        // F10: a nota do intervalo dizia "diga o horário da primeira vez" na mesma frase em que
+        // ela tinha dito "às 9h" — a nota contradizia a hora declarada.
+        val draft = parser.parse("de 15 em 15 dias às 9h")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(draft.localDate).isNull()
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.notes.joinToString()).contains("intervalo")
+        assertThat(draft.notes.joinToString()).doesNotContain("Diga o horário")
     }
 }

@@ -640,4 +640,145 @@ class LocalTaskParserTest {
         assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.MONTHLY)
         assertThat(draft.recurrence.dayOfMonth).isEqualTo(15)
     }
+
+    // ---- Período do dia: "depois do jantar", "pela manhã", hora falada sem o "às", "em ponto" e
+    //      "meio/começo/fim da tarde". Confirmados contra o parser real de main (auditoria 05/10). ----
+
+    @Test
+    fun depoisDoJantarComHoraDeUmAOnzeViraNoite() {
+        // "amanhã depois do jantar às oito" saía 2026-08-21 08:00 com faltam=[] e conf 0.85: a caixa
+        // rápida confirmava sem consultar a IA e a tarefa era agendada de manhã em silêncio.
+        val depois = parser.parse("amanhã depois do jantar às oito")
+        assertThat(depois.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(depois.localTime).isEqualTo(LocalTime.of(20, 0))
+        assertThat(depois.title).doesNotContain("Jantar")
+
+        val antes = parser.parse("amanhã antes do jantar às oito")
+        assertThat(antes.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(antes.localTime).isEqualTo(LocalTime.of(20, 0))
+    }
+
+    @Test
+    fun antesDoJantarComHoraDaTardeNaoViraMadrugada() {
+        val draft = parser.parse("amanhã antes do jantar às seis")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(18, 0))
+    }
+
+    @Test
+    fun depoisDoJantarSemHoraNaoInventaHorario() {
+        val draft = parser.parse("tomar remédio depois do jantar")
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.missingFields).contains(MissingDraftField.TIME)
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun depoisDoJantarComTarefaNaoDeixaOJantarNoTitulo() {
+        val draft = parser.parse("tomar remédio depois do jantar às oito")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(20, 0))
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun pelaManhaNaoVazaParaOTitulo() {
+        val draft = parser.parse("tomar remédio pela manhã")
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.missingFields).contains(MissingDraftField.TIME)
+    }
+
+    @Test
+    fun pelaManhaAsOitoNaoChamaATarefaDePela() {
+        // "amanhã pela manhã às oito" saía com título "Pela", faltam=[] e conf 0.85 — a tarefa se
+        // chamava "Pela" e o horário 08:00 era agendado sem escalar.
+        val semTarefa = parser.parse("amanhã pela manhã às oito")
+        assertThat(semTarefa.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(semTarefa.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(semTarefa.title).doesNotContain("Pela")
+
+        val comTarefa = parser.parse("tomar remédio pela manhã às oito")
+        assertThat(comTarefa.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(comTarefa.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun horaFaladaSemAsComPeriodo() {
+        // O reconhecedor de fala derruba o "às": sem ele a hora ficava nula e a palavra sobrava no
+        // título ("Tomar remédio duas"), escalando para a IA sem necessidade.
+        val duas = parser.parse("tomar remédio duas da tarde")
+        assertThat(duas.localTime).isEqualTo(LocalTime.of(14, 0))
+        assertThat(duas.title).isEqualTo("Tomar remédio")
+        assertThat(duas.ambiguous).isFalse()
+
+        val oito = parser.parse("tomar remédio 8 da manhã")
+        assertThat(oito.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(oito.title).isEqualTo("Tomar remédio")
+
+        val tres = parser.parse("tomar remédio três da tarde")
+        assertThat(tres.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(tres.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun horaFaladaSemAsContinuaSomandoOPeriodo() {
+        // "oito da noite" sem o "às" também soma 12 (20h), como com o "às".
+        val noite = parser.parse("tomar remédio oito da noite")
+        assertThat(noite.localTime).isEqualTo(LocalTime.of(20, 0))
+
+        // Contraste que já funcionava: com o "às" não pode regredir.
+        val comAs = parser.parse("tomar remédio às 8 da noite")
+        assertThat(comAs.localTime).isEqualTo(LocalTime.of(20, 0))
+    }
+
+    @Test
+    fun emPontoNaoViraHoraNemSobraNoTitulo() {
+        // "amanhã três horas em ponto" ficava sem hora e com título "Três ponto"; com o "às" a hora
+        // saía certa mas o título virava "Ponto tomar remédio".
+        val tresHoras = parser.parse("amanhã três horas em ponto")
+        assertThat(tresHoras.localTime).isEqualTo(LocalTime.of(3, 0))
+        assertThat(tresHoras.title).doesNotContain("Ponto")
+
+        val oito = parser.parse("tomar remédio oito em ponto")
+        assertThat(oito.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(oito.title).isEqualTo("Tomar remédio")
+
+        val comAs = parser.parse("às três em ponto tomar remédio")
+        assertThat(comAs.localTime).isEqualTo(LocalTime.of(3, 0))
+        assertThat(comAs.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun faixaDoDiaNaoViraTitulo() {
+        // "meio da tarde" virava título "Meio" com faltam=[] e conf 0.85 (não escalava).
+        val meioTarde = parser.parse("amanhã meio da tarde às quatro")
+        assertThat(meioTarde.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(meioTarde.localTime).isEqualTo(LocalTime.of(16, 0))
+        assertThat(meioTarde.title).doesNotContain("Meio")
+
+        val meioManha = parser.parse("tomar remédio meio da manhã às oito")
+        assertThat(meioManha.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(meioManha.title).isEqualTo("Tomar remédio")
+
+        // "começo da tarde" é a faixa das 13–14h; "às três" já vira 15h pelo período "da tarde" e a
+        // hora dita manda — o valor fica na faixa vizinha, não é reescrito para a referência.
+        val comecoTarde = parser.parse("tomar remédio começo da tarde às três")
+        assertThat(comecoTarde.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(comecoTarde.title).isEqualTo("Tomar remédio")
+
+        // "fim de tarde às cinco" (17h) já está na faixa — a hora dita manda.
+        val fimTarde = parser.parse("tomar remédio fim de tarde às cinco")
+        assertThat(fimTarde.localTime).isEqualTo(LocalTime.of(17, 0))
+        assertThat(fimTarde.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun faixaDoDiaSemHoraNaoInventaHorario() {
+        val draft = parser.parse("tomar remédio meio da tarde")
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.missingFields).contains(MissingDraftField.TIME)
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
 }

@@ -201,12 +201,16 @@ fun MonthSummaryScreen(
 /**
  * "ainda" só cabe no mês corrente: quem navega para um mês passado sem concluídas lia
  * "Nada neste mês ainda", como se o mês não tivesse acontecido.
+ *
+ * O verbo é o dela, não o do código: o botão da agenda diz "Concluir", mas quem fala com o
+ * app diz "fiz". "Marcou como feito" é o mesmo gesto nas duas línguas — antes a tela
+ * respondia em jargão ("concluído") a uma ação que ela chama pelo outro nome.
  */
 fun emptyFrequentMessage(month: YearMonth, today: YearMonth = YearMonth.now()): String =
     if (month.isBefore(today)) {
-        "Nada foi concluído neste mês."
+        "Você não marcou nada como feito neste mês."
     } else {
-        "Nada neste mês ainda. Quando concluir tarefas, elas aparecem aqui."
+        "Você ainda não marcou nada como feito neste mês. Quando marcar, aparece aqui."
     }
 
 fun AgendaSections.insightRows(): List<InsightRow> =

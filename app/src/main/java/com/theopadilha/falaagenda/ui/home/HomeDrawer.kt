@@ -73,7 +73,7 @@ fun HomeDrawerSheet(
                 icon = { Icon(Icons.Outlined.Share, contentDescription = null) },
             )
             NavigationDrawerItem(
-                label = { Text(if (batteryOk) "Avisos liberados" else "Não matar alarmes") },
+                label = { Text(if (batteryOk) "Avisos liberados" else "Fazer os avisos tocarem sempre") },
                 selected = false,
                 onClick = onBattery,
                 icon = { Icon(Icons.Outlined.BatteryAlert, contentDescription = null) },

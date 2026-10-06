@@ -414,10 +414,6 @@ fun ConfirmDraftScreen(
                     SecondaryButton("Encerrar série", enabled = !saving) { confirmingEndSeries = true }
                 }
             }
-            Text(
-                "Os campos ausentes não foram preenchidos automaticamente.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
         }
     }
 

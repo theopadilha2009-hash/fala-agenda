@@ -184,20 +184,9 @@ class VoiceCaptureController(
     }
 
     private fun failWith(error: Int) {
-        val human = when (error) {
-            SpeechRecognizer.ERROR_NO_MATCH,
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-            -> "Não consegui ouvir. Toque no microfone, espere “Pode falar agora” e fale."
-            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS,
-            -> "Preciso da permissão do microfone para ouvir você."
-            SpeechRecognizer.ERROR_NETWORK,
-            SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
-            -> "A fala precisa de um reconhecimento do aparelho. Tente de novo ou escreva o recado."
-            else -> "Não consegui ouvir. Toque de novo ou escreva o recado."
-        }
         session = false
         stopSourceOnly()
-        _ui.value = VoiceUiState(state = VoiceState.ERROR, error = human)
+        _ui.value = VoiceUiState(state = VoiceState.ERROR, error = voiceErrorMessage(error))
     }
 
     private fun switchOrFail(error: Int) {
@@ -292,6 +281,27 @@ class VoiceCaptureController(
         const val LISTENING_TIMEOUT_MS = 20_000L
         const val UNDERSTANDING_TIMEOUT_MS = 8_000L
     }
+}
+
+/**
+ * O texto que ela lê quando a escuta falha. Mora fora da classe, como
+ * [com.theopadilha.falaagenda.ui.month.emptyFrequentMessage], para o teste poder prendê-lo
+ * sem dirigir o `SpeechRecognizer`.
+ *
+ * Frases curtas e concretas: quem lê é uma pessoa idosa, e "reconhecimento do aparelho" não
+ * diz a ela o que fazer. O ramo de rede continua separado dos demais — trocar a causa não
+ * era o pedido —, mas agora sem o jargão.
+ */
+internal fun voiceErrorMessage(error: Int): String = when (error) {
+    SpeechRecognizer.ERROR_NO_MATCH,
+    SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+    -> "Não consegui ouvir. Fale mais perto do microfone."
+    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS,
+    -> "Preciso da permissão do microfone para ouvir você."
+    SpeechRecognizer.ERROR_NETWORK,
+    SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
+    -> "Não consegui ouvir. Tente de novo ou escreva o recado."
+    else -> "Não consegui ouvir. Toque de novo ou escreva o recado."
 }
 
 internal fun unwrapActivity(context: Context): Context {

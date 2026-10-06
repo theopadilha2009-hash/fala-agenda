@@ -12,19 +12,36 @@ class MonthSummaryTextTest {
     fun mesPassadoNaoFalaEmAinda() {
         val text = emptyFrequentMessage(YearMonth.of(2026, 7), august)
         assertThat(text).doesNotContain("ainda")
-        assertThat(text).isEqualTo("Nada foi concluído neste mês.")
+        assertThat(text).isEqualTo("Você não marcou nada como feito neste mês.")
     }
 
     @Test
     fun mesCorrenteMantemOTextoDeAinda() {
         assertThat(emptyFrequentMessage(august, august))
-            .isEqualTo("Nada neste mês ainda. Quando concluir tarefas, elas aparecem aqui.")
+            .isEqualTo("Você ainda não marcou nada como feito neste mês. Quando marcar, aparece aqui.")
     }
 
     /** Mês futuro também está por vir: o texto com "ainda" continua valendo. */
     @Test
     fun mesFuturoUsaOTextoDoMesCorrente() {
         assertThat(emptyFrequentMessage(YearMonth.of(2026, 9), august))
-            .isEqualTo("Nada neste mês ainda. Quando concluir tarefas, elas aparecem aqui.")
+            .isEqualTo("Você ainda não marcou nada como feito neste mês. Quando marcar, aparece aqui.")
+    }
+
+    /**
+     * O vocabulário é o dela. O botão da agenda diz "Concluir", mas o que ela fala é "fiz";
+     * "concluído" e "concluir tarefas" são a língua do código, não a da conversa — e era o
+     * que a tela respondia quando não havia nada na lista.
+     */
+    @Test
+    fun oRecadoVazioFalaComoElaENaoComoOCodigo() {
+        val passado = emptyFrequentMessage(YearMonth.of(2026, 7), august)
+        val corrente = emptyFrequentMessage(august, august)
+
+        listOf(passado, corrente).forEach { text ->
+            assertThat(text).contains("marcou")
+            assertThat(text).doesNotContain("concluí")
+            assertThat(text).doesNotContain("concluir")
+        }
     }
 }

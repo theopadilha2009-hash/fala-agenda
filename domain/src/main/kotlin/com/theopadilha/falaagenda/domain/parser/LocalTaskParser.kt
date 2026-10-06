@@ -72,7 +72,7 @@ class LocalTaskParser(
         if (dateHit.ambiguous) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += "A data ficou ambígua."
+            notes += dateHit.note ?: "A data ficou ambígua."
         }
 
         val periodHit = extractPeriodHint(remaining)
@@ -212,7 +212,11 @@ class LocalTaskParser(
         // está falando do dia inteiro, não do 5º do mês. Exigir o "do mês" evita a recorrência
         // mensal silenciosa que aparecia quando ela omitia o "às". "no dia 15 do mês" (sem o
         // "todo") é a mesma coisa: com o "do mês", é o 15º dia, todo mês.
-        val monthly = Regex("""\b(?:(?:to[doas]+|nos?)\s+)?dia\s+(\d{1,2})\s+do\s+mes\b""")
+        //
+        // "do mês que vem" fica de fora: é uma data única no mês seguinte, não uma série que
+        // repete todo mês. Sem a exclusão, "amanhã dia 25 do mês que vem às 9h" casava aqui e
+        // nascia uma série MONTHLY que ela não pediu.
+        val monthly = Regex("""\b(?:(?:to[doas]+|nos?)\s+)?dia\s+(\d{1,2})\s+do\s+mes\b(?!\s+que\s+vem)""")
         monthly.find(remaining)?.let { m ->
             val day = m.groupValues[1].toInt()
             remaining = remaining.replace(m.value, " ")
@@ -221,6 +225,13 @@ class LocalTaskParser(
                 remaining,
                 day !in 1..31,
             )
+        }
+
+        // "toda semana" é semanal (a série repete no mesmo dia da semana). Vem antes do "toda"
+        // genérico: sem ele a frase ficava sem recorrência e com "Toda semana" colado no título.
+        if (EVERY_WEEK.containsMatchIn(remaining)) {
+            remaining = TextNormalizer.compactSpaces(remaining.replace(EVERY_WEEK, " "))
+            return RecurrenceHit(RecurrenceRule(RecurrenceKind.WEEKLY), remaining, false)
         }
 
         val weekdaysPhrase =
@@ -296,14 +307,27 @@ class LocalTaskParser(
             )
         }
 
+        // "de 15 em 15 dias": mesma ideia, em dias. Antes a frase ficava sem data nem hora e o
+        // "dias" sobrava no título.
+        INTERVAL_DAY.find(remaining)?.let { m ->
+            remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            return TimeHit(
+                null,
+                remaining,
+                true,
+                "“${m.value}” é um intervalo, não um horário do dia. Diga o horário da primeira vez.",
+            )
+        }
+
         val relative = extractRelative(remaining)
         if (relative != null) {
-            val marker = if (relative.date == clock.today()) " hoje " else " amanha "
-            return TimeHit(
-                relative.time,
-                TextNormalizer.compactSpaces(marker + relative.remaining),
-                false,
-            )
+            val date = if (relative.date != null) {
+                val marker = if (relative.date == clock.today()) " hoje " else " amanha "
+                TextNormalizer.compactSpaces(marker + relative.remaining)
+            } else {
+                relative.remaining
+            }
+            return TimeHit(relative.time, date, false)
         }
 
         // "daqui a pouco" é relativo, mas o quanto é vago demais para virar hora exata. Marca
@@ -450,7 +474,13 @@ class LocalTaskParser(
         return if (extra in 0..59) extra to m.value else null
     }
 
-    private data class RelativeHit(val time: LocalTime, val date: LocalDate, val remaining: String)
+    /**
+     * Relativo de relógio ("daqui a meia hora"): [time] e [date] preenchidos. Relativo de dia
+     * ("daqui a dois dias"): a hora é a de agora e o dia vem da expressão de data — [time] existe
+     * para a hora aparecer no rascunho, [date] é `null` para o ramo de data continuar vendo o
+     * "daqui a dois dias" e resolvê-lo pelo mesmo caminho de "amanhã".
+     */
+    private data class RelativeHit(val time: LocalTime, val date: LocalDate?, val remaining: String)
 
     private fun extractRelative(text: String): RelativeHit? {
         val meiaHora = Regex("""\b(?:daqui(?:\s+a)?|em)\s+meia\s+hora\b""")
@@ -489,14 +519,85 @@ class LocalTaskParser(
                 remaining = text.replace(consumed, " "),
             )
         }
+
+        // "daqui a dois dias", "daqui a duas semanas": relativo em dias/semanas. Antes só
+        // minutos/horas existiam, então a frase ficava sem data e o "dois dias" ia para o título.
+        // A hora sai da hora atual: o deslocamento é de dias, não de relógio.
+        val dayAmount = Regex(
+            """\b(?:daqui(?:\s+a)?|em)\s+(\d+|[a-z]+(?:\s+e\s+[a-z]+)?)\s+(dias?|semanas?)(?!\w)""",
+        )
+        dayAmount.find(text)?.let { m ->
+            val raw = TextNormalizer.compactSpaces(m.groupValues[1])
+            val unit = m.groupValues[2]
+            val n = raw.toIntOrNull() ?: WORD_AMOUNTS[raw] ?: return null
+            val target = if (unit.startsWith("semana")) {
+                clock.now().plusWeeks(n.toLong())
+            } else {
+                clock.now().plusDays(n.toLong())
+            }
+            // A expressão fica no texto de propósito: quem resolve a data é `extractDate`, no
+            // mesmo ramo de "amanhã". Consumida aqui, ela nunca chegaria lá.
+            return RelativeHit(
+                time = target.toLocalTime().withSecond(0).withNano(0),
+                date = null,
+                remaining = text,
+            )
+        }
         return null
     }
 
-    private data class DateHit(val date: LocalDate?, val remaining: String, val ambiguous: Boolean)
+    private data class DateHit(
+        val date: LocalDate?,
+        val remaining: String,
+        val ambiguous: Boolean,
+        val note: String? = null,
+    )
 
     private fun extractDate(text: String, recurrence: RecurrenceRule): DateHit {
         var remaining = text
         val today = clock.today()
+
+        // Data nomeada (Natal, Páscoa, Sexta-feira Santa, finados) e as expressões de mês
+        // ("fim do mês", "meio do mês") vêm antes de tudo: sem isto "sexta-feira santa" casava o
+        // dia da semana e virava a sexta DESTA semana, e "amanhã no fim do mês" entregava o
+        // "amanhã" — data errada, completa e não-ambígua, que a caixa rápida confirmava em
+        // silêncio, sem nunca consultar a IA. As duas são a expressão mais específica da frase e
+        // por isso ganham do "amanhã"/"hoje", que sai do texto junto.
+        namedDate(remaining, today)?.let { hit ->
+            return DateHit(hit.date, stripDayWords(hit.remaining), false)
+        }
+        monthEdge(remaining, today)?.let { hit ->
+            return DateHit(hit.date, stripDayWords(hit.remaining), false)
+        }
+
+        // "dia 25 do mês que vem": data única no mês seguinte. Vem antes do "amanhã" e do dia
+        // avulso porque é a leitura específica — sem este ramo o mês era ignorado e a frase
+        // virava o "amanhã" (ou uma série MONTHLY no dia 25 DESTE mês) sem avisar.
+        NEXT_MONTH_DAY.find(remaining)?.let { m ->
+            val day = m.groupValues[1].toInt()
+            remaining = stripDayWords(remaining.replace(m.value, " "))
+            if (day !in 1..31) return DateHit(null, remaining, true)
+            val next = today.plusMonths(1)
+            return DateHit(
+                RecurrenceEngine.clampToValidDate(next.year, next.monthValue, day),
+                remaining,
+                false,
+            )
+        }
+
+        // "daqui a dois dias", "daqui a duas semanas": a hora já veio de `extractRelative`; aqui
+        // só a data. Mesmo deslocamento, mesma regra de "amanhã".
+        RELATIVE_DAY.find(remaining)?.let { m ->
+            val raw = TextNormalizer.compactSpaces(m.groupValues[1])
+            val n = raw.toIntOrNull() ?: WORD_AMOUNTS[raw] ?: return@let
+            remaining = stripDayWords(remaining.replace(m.value, " "))
+            val date = if (m.groupValues[2].startsWith("semana")) {
+                today.plusWeeks(n.toLong())
+            } else {
+                today.plusDays(n.toLong())
+            }
+            return DateHit(date, remaining, false)
+        }
 
         Regex("""\bdepois\s+de\s+amanha\b""").find(remaining)?.let {
             remaining = remaining.replace(it.value, " ")
@@ -572,13 +673,6 @@ class LocalTaskParser(
             return DateHit(RecurrenceEngine.clampToValidDate(year, month, day), remaining, false)
         }
 
-        MONTH_START.find(remaining)?.let { m ->
-            remaining = remaining.replace(m.value, " ")
-            val first = today.withDayOfMonth(1)
-            val date = if (first.isAfter(today)) first else first.plusMonths(1)
-            return DateHit(date, remaining, false)
-        }
-
         // "semana que vem" sozinha: mesma data, próxima semana. "quinta que vem" tem dia e cai no
         // ramo de dia da semana abaixo, que já resolve a semana certa.
         if (extractWeekDays(remaining).isEmpty()) {
@@ -610,6 +704,136 @@ class LocalTaskParser(
         }
 
         return DateHit(null, remaining, false)
+    }
+
+    /**
+     * Datas nomeadas: as fixas do calendário (Natal, finados, namorados, mães, pais) e as móveis
+     * deriváveis da Páscoa (Cinzas, Sexta-feira Santa, Corpus Christi).
+     *
+     * O que já resolvemos, resolvemos; o que não dá para derivar com segurança sai `null` de
+     * propósito, para a frase continuar sem data e escalar, nunca virar a sexta desta semana em
+     * silêncio. É o caso da Páscoa: cai entre 22/03 e 25/04, e chutar "este ano, 22 de março" com
+     * cara de certeza é exatamente o erro que este ramo existe para impedir.
+     */
+    private fun namedDate(text: String, today: LocalDate): NamedDateHit? {
+        NAMED_FIXED.forEach { (regex, target) ->
+            regex.find(text)?.let { m ->
+                val remaining = text.replace(m.value, " ")
+                if (target == null) return NamedDateHit(null, remaining)
+                val month = today.monthValue
+                val year = if (month < target.month || (month == target.month && today.dayOfMonth <= target.day)) {
+                    today.year
+                } else {
+                    today.year + 1
+                }
+                return NamedDateHit(
+                    RecurrenceEngine.clampToValidDate(year, target.month, target.day),
+                    remaining,
+                )
+            }
+        }
+
+        NAMED_MOTHERS.find(text)?.let { m ->
+            val remaining = text.replace(m.value, " ")
+            val year = if (today.monthValue > 5 || (today.monthValue == 5 && today.dayOfMonth > 10)) {
+                today.year + 1
+            } else {
+                today.year
+            }
+            return NamedDateHit(nthWeekdayOf(year, 5, DayOfWeek.SUNDAY, 2), remaining)
+        }
+        NAMED_FATHERS.find(text)?.let { m ->
+            val remaining = text.replace(m.value, " ")
+            val year = if (today.monthValue > 8 || (today.monthValue == 8 && today.dayOfMonth > 9)) {
+                today.year + 1
+            } else {
+                today.year
+            }
+            return NamedDateHit(nthWeekdayOf(year, 8, DayOfWeek.SUNDAY, 2), remaining)
+        }
+
+        // As móveis derivam da Páscoa. A do ano corrente pode já ter passado (a Sexta-feira Santa
+        // de 2026 foi em 03/04, e hoje é agosto): nesse caso vale a do ano que vem, como no Natal.
+        val movable = listOf(
+            // A mais específica primeiro: "corpus christi" e "sexta-feira santa" contêm palavras
+            // que a regex de cinzas também casaria.
+            NAMED_CORPUS to 60,
+            NAMED_SEXTA_SANTA to -2,
+            NAMED_CINZAS to -46,
+        )
+        movable.forEach { (regex, offset) ->
+            regex.find(text)?.let { m ->
+                var date = pascoaOf(today.year).plusDays(offset.toLong())
+                if (date.isBefore(today)) date = pascoaOf(today.year + 1).plusDays(offset.toLong())
+                return NamedDateHit(date, text.replace(m.value, " "))
+            }
+        }
+        return null
+    }
+
+    private data class NamedDateHit(val date: LocalDate?, val remaining: String)
+
+    /** Data fixa do calendário, mês e dia. */
+    private data class FixedDate(val month: Int, val day: Int)
+
+    private fun nthWeekdayOf(year: Int, month: Int, dayOfWeek: DayOfWeek, n: Int): LocalDate {
+        val first = LocalDate.of(year, month, 1)
+        val offset = (dayOfWeek.value - first.dayOfWeek.value + 7) % 7
+        return first.plusDays((offset + (n - 1) * 7).toLong())
+    }
+
+    /** Domingo de Páscoa (algoritmo de Meeus/Jones/Butcher, calendário gregoriano). */
+    private fun pascoaOf(year: Int): LocalDate {
+        val a = year % 19
+        val b = year / 100
+        val c = year % 100
+        val d = b / 4
+        val e = b % 4
+        val f = (b + 8) / 25
+        val g = (b - f + 1) / 3
+        val h = (19 * a + b - d - g + 15) % 30
+        val i = c / 4
+        val k = c % 4
+        val l = (32 + 2 * e + 2 * i - h - k) % 7
+        val m = (a + 11 * h + 22 * l) / 451
+        val month = (h + l - 7 * m + 114) / 31
+        val day = (h + l - 7 * m + 114) % 31 + 1
+        return LocalDate.of(year, month, day)
+    }
+
+    /**
+     * Bordas do mês: "começo/início" (dia 1), "meio" (dia 15) e "fim/final" (último dia). Todas
+     * caem no mês corrente se a data ainda não passou, senão no seguinte — a mesma regra do
+     * `MONTH_START`. Antes só o "começo" existia: "no fim do mês pagar conta" ficava sem data e o
+     * "Fim" ia para o título, e "amanhã no fim do mês" entregava o "amanhã" sem avisar.
+     */
+    private fun monthEdge(text: String, today: LocalDate): MonthEdgeHit? {
+        val edges = listOf(
+            MONTH_START to { m: YearMonth -> m.atDay(1) },
+            MONTH_MIDDLE to { m: YearMonth -> m.atDay(15) },
+            MONTH_END to { m: YearMonth -> m.atEndOfMonth() },
+        )
+        edges.forEach { (regex, dateOf) ->
+            regex.find(text)?.let { m ->
+                val candidate = dateOf(YearMonth.from(today))
+                val date = if (candidate.isAfter(today)) candidate else dateOf(YearMonth.from(today.plusMonths(1)))
+                return MonthEdgeHit(date, text.replace(m.value, " "))
+            }
+        }
+        return null
+    }
+
+    private data class MonthEdgeHit(val date: LocalDate, val remaining: String)
+
+    /**
+     * "amanhã no fim do mês", "hoje no Natal": a expressão relativa e a nomeada não podem valer
+     * as duas, e a nomeada é a específica. O "amanhã"/"hoje" sai do texto — senão sobraria no
+     * título ("Amanhã") e ainda casaria o ramo de dia avulso.
+     */
+    private fun stripDayWords(text: String): String {
+        var remaining = text.replace(Regex("""\bdepois\s+de\s+amanha\b"""), " ")
+        remaining = remaining.replace(Regex("""\bamanha\b|\bhoje\b"""), " ")
+        return TextNormalizer.compactSpaces(remaining)
     }
 
     private data class PeriodHit(val hint: String?, val label: String, val remaining: String)
@@ -818,6 +1042,49 @@ class LocalTaskParser(
                 """|\b(?:a\s+)?cada\s+(?:\d{1,2}|[a-z]+)\s+(?:horas?|minutos?)\b""",
         )
 
+        /**
+         * "de 15 em 15 dias", "a cada duas semanas": intervalo em dias, não uma data. A hora do
+         * dia não foi dita; marcar ambíguo para ela confirmar é melhor que cravar um horário.
+         */
+        private val INTERVAL_DAY = Regex(
+            """\bde\s+(?:\d{1,2}|[a-z]+)\s+em\s+(?:\d{1,2}|[a-z]+)\s+(?:dias?|semanas?)\b""" +
+                """|\b(?:a\s+)?cada\s+(?:\d{1,2}|[a-z]+)\s+(?:dias?|semanas?)\b""",
+        )
+
+        /** "toda semana" sozinha: série semanal. Exige o "toda" para não comer "semana que vem". */
+        private val EVERY_WEEK = Regex("""\btodas?\s+(?:as?\s+)?semanas?\b""")
+
+        /** "dia 25 do mês que vem": data única no mês seguinte, não série mensal. */
+        private val NEXT_MONTH_DAY = Regex("""\bdia\s+(\d{1,2})\s+do\s+mes\s+que\s+vem\b""")
+
+        /** Bordas do mês: o último dia, o dia 15 e o dia 1 (mesmo tratamento do "começo"). */
+        private val MONTH_END = Regex("""\b(?:no\s+)?(?:fim|final)\s+do\s+mes\b""")
+        private val MONTH_MIDDLE = Regex("""\b(?:no\s+)?meio\s+do\s+mes\b""")
+
+        /** Datas fixas do calendário. `null` = sabida mas não derivável com segurança (Páscoa). */
+        private val NAMED_FIXED: List<Pair<Regex, FixedDate?>> = listOf(
+            Regex("""\b(?:no\s+|em\s+)?natal\b""") to FixedDate(12, 25),
+            Regex("""\b(?:dia\s+de\s+)?finados\b""") to FixedDate(11, 2),
+            Regex("""\bdia\s+dos\s+namorados\b""") to FixedDate(6, 12),
+            // A Páscoa cai entre 22/03 e 25/04: sem o ano, cravar uma data seria chute. Sem data,
+            // a frase escala — o desfecho honesto.
+            Regex("""\b(?:na\s+|no\s+|em\s+)?pascoa\b""") to null,
+        )
+
+        /** "daqui a dois dias"/"daqui a duas semanas": deslocamento de dia, não de relógio. */
+        private val RELATIVE_DAY = Regex(
+            """\bdaqui(?:\s+a)?\s+(\d+|[a-z]+(?:\s+e\s+[a-z]+)?)\s+(dias?|semanas?)(?!\w)""",
+        )
+
+        /** Dia das Mães / dos Pais: segundo domingo de maio e de agosto. */
+        private val NAMED_MOTHERS = Regex("""\bdia\s+das\s+maes\b""")
+        private val NAMED_FATHERS = Regex("""\bdia\s+dos\s+pais\b""")
+
+        /** Móveis derivadas da Páscoa: cinzas (-46), sexta-feira santa (-2), corpus christi (+60). */
+        private val NAMED_CINZAS = Regex("""\b(?:quarta[-\s]?feira\s+de\s+)?cinzas\b""")
+        private val NAMED_SEXTA_SANTA = Regex("""\bsexta[-\s]?feira\s+santa\b""")
+        private val NAMED_CORPUS = Regex("""\bcorpus\s+christi\b""")
+
         /** "daqui a duas horas e meia": o "e meia" depois do valor relativo vale 30 minutos. */
         private val MEIA_HORA_TAIL = Regex("""\s*e\s+meia(?:\s+horas?)?\b""")
 
@@ -881,8 +1148,8 @@ class LocalTaskParser(
         /** "semana que vem" sozinha (sem dia da semana): a data é a próxima semana, no mesmo dia. */
         private val WEEK_PHRASE = Regex("""\b(?:na\s+|da\s+)?semana\s+que\s+vem\b""")
 
-        /** "no começo do mês": primeiro dia do mês seguinte quando o dia 1 já passou. */
-        private val MONTH_START = Regex("""\b(?:no\s+)?comeco\s+do\s+mes\b""")
+        /** "no começo/início do mês": primeiro dia do mês seguinte quando o dia 1 já passou. */
+        private val MONTH_START = Regex("""\b(?:no\s+)?(?:comeco|inicio)\s+do\s+mes\b""")
 
         /** "daqui a pouco": o horário exato não foi dito — não inventamos, só marcamos para confirmar. */
         private val SOON = Regex("""\bdaqui\s+a\s+pouco\b""")
@@ -1012,7 +1279,7 @@ class LocalTaskParser(
             "lembrete", "agendar", "agenda", "por", "favor", "preciso", "tenho",
             "marcar", "anota", "anotar", "tarefa", "compromisso", "e", "eh",
             "daqui", "hora", "horas", "minuto", "minutos", "meia",
-            "noite", "manha", "tarde", "madrugada", "almoco", "depois",
+            "noite", "manha", "tarde", "madrugada", "depois",
             "cada", "mes", "ano", "nos", "nas",
         )
     }

@@ -72,17 +72,17 @@ class HybridParser(
         transcript: String,
     ): ParsedTaskDraft {
         val title = remoteDraft.title.ifBlank { localDraft.title }
-        val localDate = remoteDraft.localDate ?: localDraft.localDate
-        val localTime = remoteDraft.localTime ?: localDraft.localTime
+        val mergedDate = remoteDraft.localDate ?: localDraft.localDate
+        val mergedTime = remoteDraft.localTime ?: localDraft.localTime
         val missing = buildSet {
             if (title.isBlank()) add(MissingDraftField.TITLE)
-            if (localDate == null) add(MissingDraftField.DATE)
-            if (localTime == null) add(MissingDraftField.TIME)
+            if (mergedDate == null) add(MissingDraftField.DATE)
+            if (mergedTime == null) add(MissingDraftField.TIME)
         }
         return remoteDraft.copy(
             title = title,
-            localDate = localDate,
-            localTime = localTime,
+            localDate = mergedDate,
+            localTime = mergedTime,
             recurrence = if (remoteDraft.recurrence.isRecurring) {
                 remoteDraft.recurrence
             } else {
@@ -95,7 +95,12 @@ class HybridParser(
             // rápida continuaria barrada (`canQuickConfirm`) por uma dúvida que a IA já resolveu.
             ambiguous = remoteDraft.ambiguous && missing.isNotEmpty(),
             transcript = transcript,
-            notes = notasDomescladas(localDraft.notes, remoteDraft.notes, localDate, localTime),
+            notes = notasDomescladas(
+                locais = localDraft.notes,
+                remotas = remoteDraft.notes,
+                remotoTrouxeData = remoteDraft.localDate != null,
+                remotoTrouxeHora = remoteDraft.localTime != null,
+            ),
         )
     }
 
@@ -113,17 +118,25 @@ class HybridParser(
      * de data que este lote criou — ficava de fora dela sem que nada avisasse: a tela mostrava em
      * vermelho "“05/08” já passou este ano" logo acima da data que a IA tinha acabado de resolver.
      * Com o assunto marcado na origem, a nota nova nasce desmentível.
+     *
+     * O que desmente é o que **a IA trouxe**, não o rascunho final ter o campo. A diferença importa
+     * no caminho mais comum da escalação: "reunião 05/08 de manhã" tem data do local e hora
+     * faltando, então escala; a IA devolve só a hora. Com o rascunho final como critério, a data
+     * "2027-08-05" — que é o palpite que o **local** deu — desmentia a nota "“05/08” já passou este
+     * ano; ficou em 2027", e a tela mostrava 2027 em silêncio, sem a nota que existe justamente
+     * para explicar esse 2027. A pergunta certa é "a IA resolveu a data?", não "o rascunho tem
+     * data?".
      */
     private fun notasDomescladas(
         locais: List<String>,
         remotas: List<String>,
-        localDate: LocalDate?,
-        localTime: LocalTime?,
+        remotoTrouxeData: Boolean,
+        remotoTrouxeHora: Boolean,
     ): List<String> {
         val desmentidas = buildSet {
-            if (localDate != null) addAll(NotasDoRascunho.SOBRE_A_DATA)
-            if (localTime != null) addAll(NotasDoRascunho.SOBRE_A_HORA)
-            if (localDate != null && localTime != null) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
+            if (remotoTrouxeData) addAll(NotasDoRascunho.SOBRE_A_DATA)
+            if (remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_A_HORA)
+            if (remotoTrouxeData && remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
         }
         return (locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } } + remotas)
             .distinct()

@@ -379,4 +379,51 @@ class HybridParserTest {
 
         assertThat(draft.notes).doesNotContain(notaDaData)
     }
+
+    /**
+     * A nota de data só cai quando a **IA** resolveu a data — não quando o rascunho final tem data.
+     *
+     * "reunião 05/08 de manhã" tem data do local (o palpite de 2027) e hora faltando, então
+     * escala; a IA devolve só a hora, e a data do rascunho final continua sendo o palpite do local.
+     * Desmentir a nota pelo rascunho final apagava justamente a nota que existe para explicar o
+     * 2027, e a tela mostrava "2027" em silêncio — o defeito que este lote veio corrigir.
+     */
+    @Test
+    fun aNotaDaDataFicaQuandoIaTrazSoOHorario() = runBlocking {
+        val localDraft = local.parse("reunião 05/08 de manhã")
+        assertThat(localDraft.localDate).isEqualTo(LocalDate.of(2027, 8, 5))
+        assertThat(localDraft.localTime).isNull()
+        assertThat(localDraft.notes.joinToString()).contains("já passou")
+
+        val remoto = object : RemoteDraftParser {
+            override suspend fun parse(
+                transcript: String,
+                nowIso: String,
+                timezone: String,
+                locale: String,
+            ): ParsedTaskDraft = ParsedTaskDraft(
+                title = "Reunião",
+                localDate = null,
+                localTime = LocalTime.of(9, 0),
+                confidence = 0.9,
+                missingFields = emptySet(),
+                ambiguous = false,
+                transcript = transcript,
+                notes = emptyList(),
+                source = DraftSource.AI,
+            )
+        }
+        val hybrid = HybridParser(
+            local = local,
+            clock = clock,
+            remote = remoto,
+            network = NetworkStatus { true },
+            isAiEnabled = { true },
+        )
+        val draft = hybrid.parse("reunião 05/08 de manhã")
+
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 8, 5))
+        assertThat(draft.notes.joinToString()).contains("já passou")
+    }
 }

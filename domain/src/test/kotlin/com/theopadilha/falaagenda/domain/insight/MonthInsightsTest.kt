@@ -86,6 +86,45 @@ class MonthInsightsTest {
         assertThat(insight.completed).isEqualTo(1)
     }
 
+    /**
+     * Uma ocorrência pode ficar para trás por dois motivos, e o resumo só contava um. A que
+     * nasceu vencida — criada para um horário que já passou — nunca teve aviso
+     * (`lastReminderAt` nulo): quem falhou foi o aplicativo, e o resumo não pode cobrar dela
+     * essa falta. É a mesma separação que a home já faz em "Não consegui avisar".
+     */
+    @Test
+    fun naoRealizadaSemAvisoNaoEntraComoFaltaDela() {
+        val rows = listOf(
+            semAviso("Tomar remédio", 1),
+            comAviso("Caminhada", 2),
+        )
+        val insight = MonthInsights.of(rows, august)
+        // O total continua sendo o total: nada some da contagem.
+        assertThat(insight.missed).isEqualTo(2)
+        assertThat(insight.naoAvisadas).isEqualTo(1)
+        assertThat(insight.naoRealizadas).isEqualTo(1)
+        assertThat(insight.naoAvisadasLabel()).isEqualTo("Não consegui avisar 1 tarefa")
+    }
+
+    /** Só falhas do app: nenhuma não realizada é dela. */
+    @Test
+    fun aFalhaDoAppNaoSobraComoNaoRealizada() {
+        val rows = listOf(semAviso("Tomar remédio", 1), semAviso("Água", 3))
+        val insight = MonthInsights.of(rows, august)
+        assertThat(insight.missed).isEqualTo(2)
+        assertThat(insight.naoRealizadas).isEqualTo(0)
+        assertThat(insight.naoAvisadasLabel()).isEqualTo("Não consegui avisar 2 tarefas")
+    }
+
+    /** Sem falha do app não há o que assumir: "0 avisos" não se lê. */
+    @Test
+    fun semFalhaDoAppORotuloDaFalhaFicaVazio() {
+        val insight = MonthInsights.of(listOf(comAviso("Caminhada", 2)), august)
+        assertThat(insight.naoAvisadas).isEqualTo(0)
+        assertThat(insight.naoAvisadasLabel()).isEmpty()
+        assertThat(insight.naoRealizadas).isEqualTo(1)
+    }
+
     @Test
     fun parseReais() {
         assertThat(Money.parseReais("80")).isEqualTo(8000)
@@ -101,5 +140,21 @@ class MonthInsightsTest {
         date = LocalDate.of(2026, 8, day),
         status = OccurrenceStatus.COMPLETED,
         amountCents = cents,
+    )
+
+    /** Ficou para trás sem nenhum aviso ter saído: falha do app. */
+    private fun semAviso(title: String, day: Int) = InsightRow(
+        title = title,
+        date = LocalDate.of(2026, 8, day),
+        status = OccurrenceStatus.MISSED,
+        naoAvisada = true,
+    )
+
+    /** Ficou para trás com o aviso entregue: falta dela. */
+    private fun comAviso(title: String, day: Int) = InsightRow(
+        title = title,
+        date = LocalDate.of(2026, 8, day),
+        status = OccurrenceStatus.MISSED,
+        naoAvisada = false,
     )
 }

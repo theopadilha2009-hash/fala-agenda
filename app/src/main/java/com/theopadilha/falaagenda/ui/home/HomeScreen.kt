@@ -93,6 +93,7 @@ import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.month.insightRows
+import com.theopadilha.falaagenda.ui.month.monthRecapLine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -649,11 +650,7 @@ fun HomeScreen(
                                         style = MaterialTheme.typography.titleMedium,
                                     )
                                     Text(
-                                        buildString {
-                                            append("${insight.completed} feitas")
-                                            if (insight.missed > 0) append(" · ${insight.missed} não realizadas")
-                                            if (insight.spentCents > 0) append(" · ${insight.spentLabel()}")
-                                        },
+                                        monthRecapLine(insight),
                                         style = MaterialTheme.typography.bodyMedium,
                                     )
                                 }

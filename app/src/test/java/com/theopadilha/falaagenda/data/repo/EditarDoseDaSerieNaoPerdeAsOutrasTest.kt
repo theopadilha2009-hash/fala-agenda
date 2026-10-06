@@ -69,31 +69,35 @@ class EditarDoseDaSerieNaoPerdeAsOutrasTest {
     private val seriesId = "s-rem"
     private val idDe = { dia: Int -> OccurrenceIds.of(seriesId, LocalDate.of(2026, 8, dia)) }
 
-    private fun repo() = TaskRepository(
+    private fun repo(agora: LocalDateTime = LocalDateTime.of(2026, 8, 20, 10, 0)) = TaskRepository(
         seriesDao,
         occurrenceDao,
-        FixedAppClock(LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant(), zone),
+        FixedAppClock(agora.atZone(zone).toInstant(), zone),
         ReminderScheduler(context, SettingsStore(context)),
     )
 
     /**
-     * Semeia a série e as quatro doses já materializadas e armadas — o estado do aparelho
+     * Semeia a série e as doses já materializadas e armadas — o estado do aparelho
      * depois de um start do processo (`rescheduleAll`), que é como as doses chegam vivas ao
      * toque dela.
      */
-    private suspend fun serieComQuatroDosesArmadas(): TaskRepository {
+    private suspend fun serieComDosesArmadas(
+        dias: IntRange = 20..23,
+        agora: LocalDateTime = LocalDateTime.of(2026, 8, 20, 10, 0),
+        inicioDaSerie: LocalDate = hoje,
+    ): TaskRepository {
         val series = TaskSeries(
             id = seriesId,
             title = "Remédio",
             zoneId = zone,
             localTime = LocalTime.of(8, 0),
-            startLocalDate = hoje,
+            startLocalDate = inicioDaSerie,
             recurrence = RecurrenceRule(RecurrenceKind.DAILY),
             createdAt = Instant.parse("2026-08-19T10:00:00Z"),
             updatedAt = Instant.parse("2026-08-19T10:00:00Z"),
         )
         seriesDao.upsert(series.toEntity())
-        (20..23).forEach { dia ->
+        dias.forEach { dia ->
             val data = LocalDate.of(2026, 8, dia)
             val em = data.atTime(8, 0).atZone(zone).toInstant()
             occurrenceDao.upsert(
@@ -107,14 +111,16 @@ class EditarDoseDaSerieNaoPerdeAsOutrasTest {
                 ).toEntity(),
             )
         }
-        val repo = repo()
+        val repo = repo(agora)
         repo.rescheduleAll()
         return repo
     }
 
+    private suspend fun serieComQuatroDosesArmadas(): TaskRepository = serieComDosesArmadas()
+
     /** Os alarmes de dose armados, por ocorrência — a varredura da virada do dia não entra. */
     private fun alarmesDeDose(): Map<String, Instant> {
-        val porRequestCode = (20..23).associate { dia ->
+        val porRequestCode = (20..25).associate { dia ->
             AlarmIds.requestCode(idDe(dia), AlarmIds.ACTION_FIRE) to idDe(dia)
         }
         return shadowOf(alarmManager).scheduledAlarms.mapNotNull { alarm ->
@@ -169,8 +175,6 @@ class EditarDoseDaSerieNaoPerdeAsOutrasTest {
             // aparelho dela: era ela que sumia, com o banco confirmando a perda no restart.
             assertThat(occurrenceDao.get(idDe(21))).isNotNull()
             assertThat(occurrenceDao.get(idDe(20))).isNotNull()
-            assertThat(alarmesDeDose().keys).contains(idDe(21))
-            assertThat(alarmesDeDose().keys).contains(idDe(23))
             // E a série não foi empurrada para frente: o âncora da regra é piso de toda
             // materialização, e movê-lo apagava as datas anteriores.
             assertThat(seriesDao.get(seriesId)!!.toDomain().startLocalDate).isEqualTo(hoje)
@@ -271,6 +275,175 @@ class EditarDoseDaSerieNaoPerdeAsOutrasTest {
             assertThat(depois[idDe(23)]).isEqualTo(antes[idDe(23)])
             assertThat(depois[idDe(20)]).isEqualTo(antes[idDe(20)])
             assertThat(depois[idDe(22)]).isEqualTo(antes[idDe(22)])
+        }
+    }
+
+    /**
+     * A dose de hoje, preservada pela edição, não pode mudar de horário no próximo start.
+     *
+     * O horário novo da série vale do cartão tocado para frente, e é isso que a edição grava:
+     * às 07:00 de 20/08, editar a dose de **amanhã** (21/08) para as 14:00 deixa a de hoje
+     * intacta em 08:00. Só que a série tem UM horário, e ele agora é 14:00 — e o `rescheduleAll`
+     * de todo boot/abertura rematerializa a ocorrência do dia com o horário da série, sem saber
+     * que a de hoje foi preservada de propósito. No aparelho dela: "mudei o horário do remédio de
+     * amanhã e o de hoje parou de tocar" — o de hoje passava a tocar 14:00 em silêncio.
+     *
+     * O start é um repositório novo sobre o mesmo banco, que é o que o boot faz.
+     */
+    @Test
+    fun doseDeHojePreservadaPelaEdicaoMantemOHorarioDepoisDoRestart() {
+        runBlocking {
+            val repo = serieComDosesArmadas(
+                dias = 20..23,
+                agora = LocalDateTime.of(2026, 8, 20, 7, 0),
+            )
+            val deHoje = emSaoPaulo(20, 8)
+            assertThat(alarmesDeDose()[idDe(20)]).isEqualTo(deHoje)
+
+            repo.editOccurrence(
+                idDe(21),
+                "Remédio",
+                LocalDate.of(2026, 8, 21),
+                LocalTime.of(14, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            // A edição preserva a dose de hoje...
+            assertThat(alarmesDeDose()[idDe(20)]).isEqualTo(deHoje)
+            // ...e a série segue no horário novo da data tocada para frente.
+            assertThat(alarmesDeDose()[idDe(21)]).isEqualTo(emSaoPaulo(21, 14))
+
+            repo(LocalDateTime.of(2026, 8, 20, 7, 0)).rescheduleAll()
+
+            // O restart não pode reescrever a dose de hoje com o horário da série: o que ela
+            // tocou foi a de amanhã, e o alarme de hoje tem que continuar onde estava.
+            assertThat(alarmesDeDose()[idDe(20)]).isEqualTo(deHoje)
+            val hoje = occurrenceDao.get(idDe(20))!!.toDomain()
+            assertThat(hoje.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(hoje.scheduledAt).isEqualTo(deHoje)
+            assertThat(hoje.nextReminderAt).isEqualTo(deHoje)
+            // E a série continua no horário novo para o resto.
+            assertThat(alarmesDeDose()[idDe(21)]).isEqualTo(emSaoPaulo(21, 14))
+        }
+    }
+
+    /**
+     * Mover o cartão de 25/08 para 20/08 não pode apagar as doses do meio (23 e 24/08).
+     *
+     * O corte das linhas reescritas é pela **data nova**, então tudo que é `>= 20/08` era
+     * cancelado e apagado — inclusive as doses de 23 e 24/08, que vêm depois da data nova mas
+     * antes do cartão que ela tocou e que, pela regra da edição, deviam ficar intactas. O
+     * preview só materializa três datas a partir da data nova, então as duas não voltavam nem
+     * no restart: é o P0 original na direção oposta.
+     */
+    @Test
+    fun moverADataParaTrasNaoApagaAsDosesQueFicamNoMeio() {
+        runBlocking {
+            val repo = serieComDosesArmadas(dias = 20..25)
+            val antes = alarmesDeDose()
+            assertThat(antes.keys)
+                .containsExactly(idDe(20), idDe(21), idDe(22), idDe(23), idDe(24), idDe(25))
+
+            repo.editOccurrence(
+                idDe(25),
+                "Remédio",
+                LocalDate.of(2026, 8, 20),
+                LocalTime.of(20, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            // O cartão que ela tocou aterrissa na data nova, no horário novo...
+            assertThat(alarmesDeDose()[idDe(20)]).isEqualTo(emSaoPaulo(20, 20))
+            // ...e a linha que ele deixou para trás não fica pendurada.
+            assertThat(occurrenceDao.get(idDe(25))).isNull()
+            // ...e o que está estritamente antes do cartão tocado permanece intacto — mesmo
+            // vindo depois da data nova.
+            listOf(21, 22, 23, 24).forEach { dia ->
+                assertThat(occurrenceDao.get(idDe(dia))).isNotNull()
+                assertThat(alarmesDeDose()[idDe(dia)]).isEqualTo(emSaoPaulo(dia, 8))
+            }
+
+            repo().rescheduleAll()
+
+            listOf(21, 22, 23, 24).forEach { dia ->
+                assertThat(occurrenceDao.get(idDe(dia))).isNotNull()
+                assertThat(alarmesDeDose()[idDe(dia)]).isEqualTo(emSaoPaulo(dia, 8))
+            }
+        }
+    }
+
+    /**
+     * A data de destino já vencida não pode ficar com o alarme velho de pé.
+     *
+     * O cartão de 25/08 passa a valer em 20/08, cujo instante (08:00) já passou quando o relógio
+     * está em 10:00: a peça da escolha arquiva 20/08 como não realizada e arma a próxima data
+     * viva, que é 21/08. O corte não alcança a data de destino por data — ela é **anterior** ao
+     * cartão tocado, que é justamente o que o "antes" preserva —, então é o cartão tocado que
+     * arrasta a data de destino para a lista de reescritas. Sem isso, a linha de 20/08 ficava
+     * armada num estado que o banco já dá como não realizada: ocorrência não realizada não
+     * carrega alarme, e o aviso velho dela continuava entregue ao `AlarmManager`.
+     */
+    @Test
+    fun moverParaUmaDataVencidaNaoDeixaOAlarmeDaquelaDataDePe() {
+        runBlocking {
+            val repo = serieComDosesArmadas(dias = 20..25)
+            // Ponto de partida: a data de destino está armada no horário da série.
+            assertThat(alarmesDeDose()[idDe(20)]).isEqualTo(emSaoPaulo(20, 8))
+
+            repo.editOccurrence(
+                idDe(25),
+                "Remédio",
+                LocalDate.of(2026, 8, 20),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            // A data de destino venceu: virou não realizada...
+            assertThat(occurrenceDao.get(idDe(20))!!.toDomain().status)
+                .isEqualTo(OccurrenceStatus.MISSED)
+            // ...e o alarme dela saiu junto, em vez de ficar armado numa ocorrência arquivada.
+            assertThat(alarmesDeDose().keys).doesNotContain(idDe(20))
+            // O cartão tocado não fica pendurado na data antiga...
+            assertThat(occurrenceDao.get(idDe(25))).isNull()
+            // ...e a próxima data viva continua tocando às 08:00.
+            assertThat(alarmesDeDose()[idDe(21)]).isEqualTo(emSaoPaulo(21, 8))
+        }
+    }
+
+    /**
+     * A data nova pode cair antes do início da série — o `startLocalDate` desce junto e vira o
+     * piso da materialização. O que está estritamente antes do cartão tocado continua de pé.
+     */
+    @Test
+    fun moverADataParaAntesDoInicioDaSerieNaoApagaAsAnterioresAoTocado() {
+        runBlocking {
+            val repo = serieComDosesArmadas(dias = 20..23)
+
+            repo.editOccurrence(
+                idDe(22),
+                "Remédio",
+                LocalDate.of(2026, 8, 18),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            assertThat(seriesDao.get(seriesId)!!.toDomain().startLocalDate)
+                .isEqualTo(LocalDate.of(2026, 8, 18))
+            // As doses de 20 e 21/08 vêm antes do cartão tocado e continuam armadas no horário
+            // delas. O alarme da de hoje é a prova: ela já tocou às 08:00 e o relógio está em
+            // 10:00, então o instante dela é passado — recriada pelo preview, ela não seria
+            // armada, e é justamente o que acontecia quando o corte era pela data nova (18/08).
+            listOf(20, 21).forEach { dia ->
+                assertThat(occurrenceDao.get(idDe(dia))).isNotNull()
+                assertThat(alarmesDeDose()[idDe(dia)]).isEqualTo(emSaoPaulo(dia, 8))
+            }
+
+            repo().rescheduleAll()
+
+            listOf(20, 21).forEach { dia ->
+                assertThat(occurrenceDao.get(idDe(dia))).isNotNull()
+                assertThat(alarmesDeDose()[idDe(dia)]).isEqualTo(emSaoPaulo(dia, 8))
+            }
         }
     }
 }

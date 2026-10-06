@@ -827,15 +827,17 @@ datas da série: [22/08, 23/08, 24/08]   ← 20 e 21 desapareceram
 
 No app da mãe: *"mudei o horário do remédio de amanhã e o de hoje/amanhã parou de tocar, sem aviso."* Qualquer item de "Próximas" é editável (`HomeScreen.kt:730`) e o `onSave` aplica à série (`FalaAgendaRoot.kt:411-435`).
 
-### [2] PERDE O TOQUE — doses de 23:01–23:59 não têm lembrete nenhum · confiança MÉDIA
+### [2] PERDE O TOQUE — doses de 23:45–23:59 não têm lembrete nenhum · confiança MÉDIA · CORRIGIDO no #65
 
 ```
-ocorrência 22:30 -> 2026-08-21T08:00 (s1 SILÊNCIO)  FIM
-ocorrência 23:00 -> 2026-08-21T08:00 (s1 SILÊNCIO)  FIM
+ocorrência 23:44 -> 2026-08-21T08:00 (s1 SILÊNCIO)  FIM   ← já tinha o degrau
+ocorrência 23:45 -> FIM                              ← nenhum degrau
 ocorrência 23:59 -> FIM                              ← nenhum degrau
 ```
 
-O passo 1 (`+15`) cruza o dia → `ended()` → **nenhuma insistência** (`ReminderPolicy.kt:69-90`). O passo 0 toca no horário; se esse toque for perdido, um "remédio às 23:30" tem **um tiro só**. Não é o snooze que atravessa a meia-noite (isso é do #51, de propósito) — é a escada de repetição sem degrau algum nesse recorte.
+O passo 1 (`+15`) cruza o dia → `ended()` → **nenhuma insistência** (`ReminderPolicy.kt:69-90`). O passo 0 toca no horário; se esse toque for perdido, um "remédio às 23:50" tem **um tiro só**. Não é o snooze que atravessa a meia-noite (isso é do #51, de propósito) — é a escada de repetição sem degrau algum nesse recorte.
+
+**Correção da medição (06/10/2026):** a faixa é **23:45–23:59**, não 23:01–23:59. A amostra original mediu só 23:00 e 23:59 e generalizou; hora a hora, 23:44 e 23:00 já tinham degrau. O #65 corrigiu a escada (o fim do dia passou a ser decidido pelo instante ajustado, não pelo cru), e `ReminderLadderTest` prende a fronteira nos dois lados — 23:44 e 23:45.
 
 ### [3] TOCA A MENOS — editar para uma data futura apaga as doses entre hoje e a editada · confiança MÉDIA
 

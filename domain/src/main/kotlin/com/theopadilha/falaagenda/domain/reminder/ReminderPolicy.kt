@@ -24,7 +24,7 @@ import java.time.temporal.ChronoUnit
  * A única travessia é o adiamento do silêncio, que empurra a última repetição do dia para
  * as 08:00 do dia seguinte — e é o último degrau. Quem decide o fim do dia é o instante
  * ajustado pelo silêncio, e não o instante cru: um passo que já cruza a meia-noite por si só
- * (a dose das 23:01-23:59) cai no silêncio e é empurrado para as 08:00, como os anteriores —
+ * (a dose das 23:45-23:59) cai no silêncio e é empurrado para as 08:00, como os anteriores —
  * medir pelo cru dava a essa faixa uma escada sem nenhum degrau.
  */
 object ReminderPolicy {
@@ -83,9 +83,9 @@ object ReminderPolicy {
         // A repetição não atravessa o fim do dia da ocorrência — a única travessia é o
         // adiamento do silêncio, que empurra a última repetição do dia para o fim dele (08:00)
         // do dia seguinte. Quem decide isso é o instante **ajustado**, e não o cru: o passo de
-        // uma dose das 23:01-23:59 já cruza a meia-noite antes de o silêncio agir (23:50 + 15 =
+        // uma dose das 23:45-23:59 já cruza a meia-noite antes de o silêncio agir (23:50 + 15 =
         // 00:05, dentro de 22:00-08:00), e medir pelo cru encerrava a escada antes de a dose ter
-        // qualquer insistência — um "remédio às 23:30" ficava com um tiro só, e o segundo
+        // qualquer insistência — um "remédio às 23:50" ficava com um tiro só, e o segundo
         // perdido (Doze, som, ela dormindo) não tinha quem o repetisse.
         //
         // Quando o silêncio move o instante, a travessia é a dele e é o último degrau: o passo

@@ -276,10 +276,12 @@ class LocalTaskParserTest {
     }
 
     @Test
-    fun asTresSemPeriodoNaoInventa() {
+    fun asTresSemPeriodoViraAmbigua() {
+        // "amanhã às três" pode ser 3 da manhã ou 3 da tarde. Antes cravava 03:00 com cara de
+        // certeza; agora mantém o palpite no rascunho mas marca ambíguo, para escalar/confirmar.
         val draft = parser.parse("reunião amanhã às 3")
         assertThat(draft.localTime).isEqualTo(LocalTime.of(3, 0))
-        assertThat(draft.ambiguous).isFalse()
+        assertThat(draft.ambiguous).isTrue()
     }
 
     @Test
@@ -447,5 +449,195 @@ class LocalTaskParserTest {
         val draft = parser.parse("tomar remédio às 12 da noite")
         assertThat(draft.localTime).isEqualTo(LocalTime.of(0, 0))
         assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
+
+    // ---- Frases que ela realmente fala: duas tarefas, horas por extenso, datas relativas, dia por extenso ----
+
+    @Test
+    fun duasTarefasNaMesmaFraseViramAmbiguas() {
+        // "marcar médico terça e tomar remédio às oito": dois verbos, um dia e uma hora.
+        // Antes o parser colava tudo num título só ("Marcar médico tomar remédio"), terça 08:00,
+        // com cara de certeza. Agora marca ambíguo para escalar/confirmar em vez de adivinhar.
+        val draft = parser.parse("marcar médico terça e tomar remédio às oito")
+        assertThat(draft.ambiguous).isTrue()
+    }
+
+    @Test
+    fun duasTarefasComRecorrenciaNaSegundaViramAmbiguas() {
+        val draft = parser.parse("marcar médico terça e tomar remédio todo dia às oito")
+        assertThat(draft.ambiguous).isTrue()
+    }
+
+    @Test
+    fun umaTarefaSoNaoViraAmbigua() {
+        val draft = parser.parse("buscar as crianças amanhã às 15h")
+        assertThat(draft.ambiguous).isFalse()
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(15, 0))
+    }
+
+    @Test
+    fun horasPorExtensoDaTardeENoite() {
+        val quinze = parser.parse("fisioterapia às quinze horas")
+        assertThat(quinze.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(quinze.ambiguous).isFalse()
+
+        val dezesseis = parser.parse("tomar remédio às dezesseis horas")
+        assertThat(dezesseis.localTime).isEqualTo(LocalTime.of(16, 0))
+
+        val vinteETres = parser.parse("dormir às vinte e três horas")
+        assertThat(vinteETres.localTime).isEqualTo(LocalTime.of(23, 0))
+    }
+
+    @Test
+    fun relogioPorExtensoComMinutosSemAs() {
+        // O Vosk pt-BR costuma devolver a hora por extenso ("oito e meia"); sem o "às" o parser não achava nada.
+        val draft = parser.parse("tomar remédio oito e meia")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 30))
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun semanaQueVemSemDiaDaSemana() {
+        val draft = parser.parse("reunião semana que vem às 15h")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 27))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(draft.title).isEqualTo("Reunião")
+    }
+
+    @Test
+    fun noDiaVinteECincoDoMes() {
+        val draft = parser.parse("pagar conta no dia 25 às 15h")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 25))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(draft.title).isEqualTo("Pagar conta")
+    }
+
+    @Test
+    fun noComecoDoMesViraPrimeiroDoProximo() {
+        val draft = parser.parse("pagar aluguel no começo do mês")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 9, 1))
+        assertThat(draft.title).isEqualTo("Pagar aluguel")
+    }
+
+    @Test
+    fun daquiAPoucoNaoInventaHoraExata() {
+        val draft = parser.parse("tomar remédio daqui a pouco")
+        assertThat(draft.ambiguous).isTrue()
+    }
+
+    @Test
+    fun noitinhaViraNoite() {
+        val draft = parser.parse("tomar remédio à noitinha às oito")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(20, 0))
+        assertThat(draft.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun diaDoMesPorExtenso() {
+        val draft = parser.parse("pagar conta dois de maio às 15h")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 5, 2))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(15, 0))
+    }
+
+    @Test
+    fun asDozeEMeiaDaNoiteViraMeiaNoiteEMeia() {
+        val draft = parser.parse("dormir às 12 e meia da noite")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(0, 30))
+        assertThat(draft.title).isEqualTo("Dormir")
+    }
+
+    @Test
+    fun todoDiaComNumeroSemMesContinuaDiario() {
+        // "todo dia 5" é todo dia; mensal é "todo dia 5 do mês". Antes virava mensal em silêncio.
+        val draft = parser.parse("todo dia 5 caminhar")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.DAILY)
+        assertThat(draft.recurrence.dayOfMonth).isNull()
+    }
+
+    // ---- Correções do review: o parser não pode cravar hora/data errada com cara de certeza ----
+
+    @Test
+    fun relogioPorExtensoComMinutoComposto() {
+        // B1: "oito e vinte e cinco" sem o "às" é 08:25. A versão anterior lia só a dezena (08:20)
+        // e ainda comia o "cinco" do título.
+        val vinteCinco = parser.parse("tomar remédio oito e vinte e cinco")
+        assertThat(vinteCinco.localTime).isEqualTo(LocalTime.of(8, 25))
+        assertThat(vinteCinco.title).isEqualTo("Tomar remédio")
+
+        val quarentaCinco = parser.parse("tomar remédio oito e quarenta e cinco")
+        assertThat(quarentaCinco.localTime).isEqualTo(LocalTime.of(8, 45))
+        assertThat(quarentaCinco.title).isEqualTo("Tomar remédio")
+
+        // Contraste que já funcionava: com o "às".
+        val comAs = parser.parse("tomar remédio às oito e vinte e cinco")
+        assertThat(comAs.localTime).isEqualTo(LocalTime.of(8, 25))
+    }
+
+    @Test
+    fun diaDoMesPorExtensoNaoViraHora() {
+        // B2: "às vinte e cinco de maio" é a data (25 de maio), não 20:00 com o dia 5.
+        val draft = parser.parse("pagar conta às vinte e cinco de maio")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 5, 25))
+        assertThat(draft.localTime).isNull()
+
+        // Sem o "às" já funcionava — não pode regredir.
+        val semAs = parser.parse("pagar conta vinte e cinco de maio")
+        assertThat(semAs.localDate).isEqualTo(LocalDate.of(2027, 5, 25))
+    }
+
+    @Test
+    fun horaVinteECompostoNaoDeixaRestoNoTitulo() {
+        // B3: "às vinte e cinco" não é 20:00 com o "cinco" sobrando no título; 25 não é hora válida,
+        // então fica ambíguo em vez de cravar.
+        val vinteCinco = parser.parse("tomar remédio às vinte e cinco")
+        assertThat(vinteCinco.ambiguous).isTrue()
+        assertThat(vinteCinco.title).isEqualTo("Tomar remédio")
+
+        val vinteQuatro = parser.parse("tomar remédio às vinte e quatro")
+        assertThat(vinteQuatro.ambiguous).isTrue()
+        assertThat(vinteQuatro.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun periodoDaNoiteComHoraMadrugadaNaoViraTarde() {
+        // B4: "às 3 e meia da noite" é 03:30 (madrugada), não 15:30.
+        val noite = parser.parse("tomar remédio às 3 e meia da noite")
+        assertThat(noite.localTime).isEqualTo(LocalTime.of(3, 30))
+
+        // "da tarde" continua somando 12.
+        val tarde = parser.parse("tomar remédio às 3 e meia da tarde")
+        assertThat(tarde.localTime).isEqualTo(LocalTime.of(15, 30))
+
+        // "da noite" com hora de fim de tarde/noite continua somando 12.
+        val oito = parser.parse("tomar remédio às 8 e meia da noite")
+        assertThat(oito.localTime).isEqualTo(LocalTime.of(20, 30))
+    }
+
+    @Test
+    fun duasTarefasComSegundaOracaoSemVerboViramAmbiguas() {
+        // B5: a segunda oração sem verbo ("e remédio às oito") é a forma natural na fala dela —
+        // o dia e a hora caem em orações diferentes, o sinal de duas tarefas.
+        val draft = parser.parse("marcar médico terça e remédio às oito")
+        assertThat(draft.ambiguous).isTrue()
+
+        // Uma série ("toda terça e quinta às 18h") tem dia e hora na mesma oração: não é ambígua.
+        val serie = parser.parse("toda terça e quinta natação às 18h")
+        assertThat(serie.ambiguous).isFalse()
+    }
+
+    @Test
+    fun doisDiasDoMesNaMesmaFraseViraAmbiguo() {
+        // B6: "no dia 25 e no dia 30" são duas datas, não a primeira em silêncio.
+        val draft = parser.parse("pagar conta no dia 25 e no dia 30")
+        assertThat(draft.ambiguous).isTrue()
+    }
+
+    @Test
+    fun noDiaQuinzeDoMesViraMensal() {
+        // B7: "no dia 15 do mês" (com o "do mês") é mensal; antes não virava data nem recorrência.
+        val draft = parser.parse("pagar conta no dia 15 do mês")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.MONTHLY)
+        assertThat(draft.recurrence.dayOfMonth).isEqualTo(15)
     }
 }

@@ -636,6 +636,157 @@ class LocalTaskParserTest {
         assertThat(draft.ambiguous).isTrue()
     }
 
+    // ---- Auditoria de 06/10/2026: datas nomeadas, bordas do mês, "do mês que vem" e relativos em dias ----
+
+    @Test
+    fun sextaFeiraSantaNaoViraASextaDestaSemana() {
+        // O pior do lote: "sexta-feira santa" casava o dia da semana e devolvia a sexta DESTA
+        // semana (21/08/2026) às 15h, completa e não-ambígua — a caixa rápida confirmava e a missa
+        // era agendada no dia errado, sem nunca consultar a IA. A Sexta-feira Santa de 2026 já
+        // passou (03/04); a próxima é 26/03/2027.
+        val draft = parser.parse("sexta-feira santa missa às 15h")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 3, 26))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(draft.title).isEqualTo("Missa")
+        assertThat(draft.missingFields).isEmpty()
+        assertThat(draft.ambiguous).isFalse()
+    }
+
+    @Test
+    fun cinzasECorpusChristiDerivamDaPascoa() {
+        // Cinzas e Corpus Christi de 2026 já passaram (18/02 e 04/06): as próximas são de 2027.
+        val cinzas = parser.parse("quarta-feira de cinzas missa às 19h")
+        assertThat(cinzas.localDate).isEqualTo(LocalDate.of(2027, 2, 10))
+        assertThat(cinzas.title).isEqualTo("Missa")
+
+        val corpus = parser.parse("corpus christi missa às 9h")
+        assertThat(corpus.localDate).isEqualTo(LocalDate.of(2027, 5, 27))
+        assertThat(corpus.title).isEqualTo("Missa")
+    }
+
+    @Test
+    fun movelDoAnoQueVemQuandoODeHojeJaPassou() {
+        // Em janeiro, a Sexta-feira Santa de 2027 ainda não passou: fica no próprio ano.
+        val janeiro = parserEm(LocalDateTime.of(2027, 1, 10, 10, 0))
+        assertThat(janeiro.parse("sexta-feira santa missa às 15h").localDate)
+            .isEqualTo(LocalDate.of(2027, 3, 26))
+    }
+
+    @Test
+    fun pascoaSemAnoNaoCravaData() {
+        // A Páscoa cai entre 22/03 e 25/04: sem o ano, cravar seria chute. Fica sem data e o
+        // `HybridParser` escala — o desfecho honesto.
+        val draft = parser.parse("na Páscoa missa")
+        assertThat(draft.localDate).isNull()
+        assertThat(draft.missingFields).contains(MissingDraftField.DATE)
+    }
+
+    @Test
+    fun datasFixasDoCalendario() {
+        val natal = parser.parse("no Natal almoço às 13h")
+        assertThat(natal.localDate).isEqualTo(LocalDate.of(2026, 12, 25))
+        assertThat(natal.localTime).isEqualTo(LocalTime.of(13, 0))
+
+        val finados = parser.parse("dia de finados missa às 10h")
+        assertThat(finados.localDate).isEqualTo(LocalDate.of(2026, 11, 2))
+        assertThat(finados.title).isEqualTo("Missa")
+
+        // 12/06/2026 já passou (hoje é 20/08/2026): o próximo é 2027.
+        val namorados = parser.parse("no dia dos namorados jantar às 20h")
+        assertThat(namorados.localDate).isEqualTo(LocalDate.of(2027, 6, 12))
+        assertThat(namorados.title).isEqualTo("Jantar")
+    }
+
+    @Test
+    fun diaDasMaesEhOSegundoDomingoDeMaio() {
+        // 2º domingo de maio de 2027 (maio de 2026 já passou).
+        val draft = parser.parse("dia das mães almoço")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 5, 9))
+    }
+
+    @Test
+    fun fimDoMesViraOUltimoDia() {
+        // "amanhã no fim do mês": o "amanhã" ganhava em silêncio e entregava 21/08 completo e
+        // não-ambíguo. A data certa é o último dia do mês.
+        val comAmanha = parser.parse("amanhã no fim do mês às 10h")
+        assertThat(comAmanha.localDate).isEqualTo(LocalDate.of(2026, 8, 31))
+        assertThat(comAmanha.localTime).isEqualTo(LocalTime.of(10, 0))
+
+        // Sem o "amanhã", a frase ficava SEM DATA e com o "Fim" no título.
+        val semAmanha = parser.parse("no fim do mês pagar conta")
+        assertThat(semAmanha.localDate).isEqualTo(LocalDate.of(2026, 8, 31))
+        assertThat(semAmanha.title).isEqualTo("Pagar conta")
+
+        val final = parser.parse("final do mês pagar conta")
+        assertThat(final.localDate).isEqualTo(LocalDate.of(2026, 8, 31))
+        assertThat(final.title).isEqualTo("Pagar conta")
+    }
+
+    @Test
+    fun inicioEMeioDoMes() {
+        // O dia 1 deste mês já passou (hoje é 20/08): vai para 01/09, como o "começo do mês".
+        val inicio = parser.parse("início do mês pagar conta")
+        assertThat(inicio.localDate).isEqualTo(LocalDate.of(2026, 9, 1))
+        assertThat(inicio.title).isEqualTo("Pagar conta")
+
+        // O dia 15 deste mês já passou: 15/09.
+        val meio = parser.parse("meio do mês pagar conta")
+        assertThat(meio.localDate).isEqualTo(LocalDate.of(2026, 9, 15))
+        assertThat(meio.title).isEqualTo("Pagar conta")
+
+        // O espelho que já funcionava não pode regredir.
+        val comeco = parser.parse("no começo do mês pagar conta")
+        assertThat(comeco.localDate).isEqualTo(LocalDate.of(2026, 9, 1))
+        assertThat(comeco.title).isEqualTo("Pagar conta")
+    }
+
+    @Test
+    fun diaDoMesQueVemEhDataUnicaNoMesSeguinte() {
+        // O "amanhã" ganhava em silêncio (21/08) E uma série MONTHLY nascia por cima. É uma data
+        // única no mês seguinte: 25/09, sem recorrência.
+        val comAmanha = parser.parse("amanhã dia 25 do mês que vem às 9h")
+        assertThat(comAmanha.localDate).isEqualTo(LocalDate.of(2026, 9, 25))
+        assertThat(comAmanha.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(comAmanha.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+
+        val semAmanha = parser.parse("pagar conta dia 25 do mês que vem")
+        assertThat(semAmanha.localDate).isEqualTo(LocalDate.of(2026, 9, 25))
+        assertThat(semAmanha.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+        assertThat(semAmanha.title).isEqualTo("Pagar conta")
+    }
+
+    @Test
+    fun todaSemanaEhSerieSemanal() {
+        val draft = parser.parse("toda semana limpar a casa")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(draft.localDate).isNotNull()
+        assertThat(draft.title).isEqualTo("Limpar casa")
+    }
+
+    @Test
+    fun daquiADoisDiasEDuasSemanas() {
+        val doisDias = parser.parse("daqui a dois dias")
+        assertThat(doisDias.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+
+        val duasSemanas = parser.parse("daqui a duas semanas dentista")
+        assertThat(duasSemanas.localDate).isEqualTo(LocalDate.of(2026, 9, 3))
+        assertThat(duasSemanas.title).isEqualTo("Dentista")
+
+        val numerico = parser.parse("daqui a 3 dias pagar conta às 9h")
+        assertThat(numerico.localDate).isEqualTo(LocalDate.of(2026, 8, 23))
+    }
+
+    @Test
+    fun intervaloEmDiasNaoViraData() {
+        // "de 15 em 15 dias" é intervalo, como o "de 8 em 8 horas": sem data e sem hora, ambíguo
+        // para ela confirmar. Antes ficava tudo nulo com o "Dias" no título.
+        val draft = parser.parse("de 15 em 15 dias")
+        assertThat(draft.localDate).isNull()
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.notes.joinToString()).contains("intervalo")
+    }
+
     @Test
     fun noDiaQuinzeDoMesViraMensal() {
         // B7: "no dia 15 do mês" (com o "do mês") é mensal; antes não virava data nem recorrência.

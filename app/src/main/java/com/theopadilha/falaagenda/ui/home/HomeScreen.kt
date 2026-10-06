@@ -118,8 +118,8 @@ import java.time.ZoneId
  */
 internal const val AVISO_INEXATO_SNACKBAR =
     "O aviso pode atrasar alguns minutos. Dá para deixar no horário certo."
-internal const val AVISO_INEXATO_CARTAO =
-    "A tarefa foi salva, mas neste celular o aviso pode tocar alguns minutos depois da hora. Toque para deixar no horário certo."
+// O cartão de alarme inexato que ficava aqui era transitório (só no salvamento, e sumia no
+// toque). O texto dele agora vive no `AlarmHealthCard`, que a home lê do aparelho a cada resume.
 internal const val AVISO_INEXATO_BOTAO = "Deixar no horário certo"
 internal const val AVISO_INEXATO_FALHA_AO_ABRIR =
     "Não consegui abrir a tela para deixar o aviso no horário certo."
@@ -178,12 +178,19 @@ fun HomeScreen(
     var micGranted by remember { mutableStateOf(hasMicPermission(context)) }
     var micRefused by rememberSaveable { mutableStateOf(false) }
     var alerts by remember { mutableStateOf(NotificationHelper.reminderAlerts(context)) }
+    // A permissão de alarme exato vem do ViewModel, e não de um booleano do salvar: ela pode
+    // ser revogada depois (Android 14 revoga alarmes exatos de quem fica meses sem abrir o app),
+    // e o cartão que só era alimentado no salvamento nunca voltava a aparecer.
+    val canScheduleExact by viewModel.canScheduleExact.collectAsState()
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         // Voltou dos Ajustes: o cartão some sozinho quando o que faltava foi ligado.
         micGranted = hasMicPermission(context)
         alerts = NotificationHelper.reminderAlerts(context)
         batteryOk = DeviceIntents.isBatteryUnrestricted(context)
+        // A permissão de alarme exato também se lê de novo: sem isto, ligar o acesso nos
+        // Ajustes e voltar deixava o cartão "o aviso pode atrasar" na tela, mentindo.
+        viewModel.refreshAlarmHealth()
     }
 
     // Negado nesta sessão: no Android 11+ a rationale continua true depois da primeira
@@ -633,22 +640,45 @@ fun HomeScreen(
                         }
                     }
                 }
-                if (inexact) {
+                // O cartão de saúde do alarme, no mesmo desenho do `reminderAlertCard` dos
+                // avisos: aparece sempre que o aparelho pode não avisar na hora — bateria
+                // restrita (o sistema pode matar o alarme) ou sem o acesso a alarmes exatos
+                // (o aviso atrasa). A leitura é fresca, refeita no resume: revogar a permissão
+                // depois de salvar voltava a ser invisível.
+                alarmHealthCard(batteryUnrestricted = batteryOk, canScheduleExact = canScheduleExact)?.let { card ->
                     item {
                         QuietCard {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(AVISO_INEXATO_CARTAO)
-                                TextButton(onClick = {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        openOrReport(
-                                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                                data = Uri.parse("package:${context.packageName}")
-                                            },
-                                            AVISO_INEXATO_FALHA_AO_ABRIR,
-                                        )
-                                    }
-                                    viewModel.setInexactWarning(false)
-                                }) { Text(AVISO_INEXATO_BOTAO) }
+                                Text(card.title, style = MaterialTheme.typography.titleMedium)
+                                Text(card.text, style = MaterialTheme.typography.bodyMedium)
+                                TextButton(
+                                    onClick = {
+                                        when (alarmHealthFix(batteryOk, canScheduleExact)) {
+                                            AlarmHealthFix.BATTERY -> {
+                                                // Só oferece a tela quando há o que pedir ali; já
+                                                // liberada, o guia do fabricante é o caminho.
+                                                val tela = DeviceIntents.batterySettingsIntentOrNull(context)
+                                                if (tela != null) {
+                                                    openOrReport(tela, SAUDE_BATERIA_FALHA_AO_ABRIR)
+                                                } else {
+                                                    batteryHelp = true
+                                                }
+                                            }
+                                            AlarmHealthFix.EXACT_ALARM -> if (
+                                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                                            ) {
+                                                openOrReport(
+                                                    Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                                                        data = Uri.parse("package:${context.packageName}")
+                                                    },
+                                                    AVISO_INEXATO_FALHA_AO_ABRIR,
+                                                )
+                                            }
+                                            null -> Unit
+                                        }
+                                    },
+                                    modifier = Modifier.heightIn(min = 56.dp),
+                                ) { Text(card.button, style = MaterialTheme.typography.labelLarge) }
                             }
                         }
                     }

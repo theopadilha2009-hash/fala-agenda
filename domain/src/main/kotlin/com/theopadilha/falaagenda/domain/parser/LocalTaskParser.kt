@@ -94,24 +94,41 @@ class LocalTaskParser(
                 if (resolved.hour !in faixaHourRange(periodHint)) {
                     ambiguous = true
                     confidence = minOf(confidence, 0.5)
-                    notes += "“${periodHit.label}” e a hora dita não batem. Confirme o horário."
+                    notes += "“${periodHit.label}” é uma faixa do dia, não a hora que você disse. Confirme o horário."
                 }
             }
         } else if (periodHint != null) {
-            // "jantar" é ≈20h. No "depois", a hora 1–6 somada dá 13–18h — a tarde, que é ANTES do
-            // jantar; contradiz o "depois". No "antes", a hora 9–11 somada dá 21–23h — depois do
-            // jantar; contradiz o "antes". Nos dois casos ambíguo, não crava. ("antes do jantar às
-            // seis" já virou 18h em extractTime; "às oito" (20h) e o "depois" de 7–11 ficam como o
-            // período resolve.)
-            val jantar = periodHint == "jantar"
-            val antesDoJantar = jantar && periodHit.label == "antes do jantar"
-            val contradiz = jantar &&
-                ((!antesDoJantar && localTime != null && localTime.hour in 1..6) ||
-                    (antesDoJantar && localTime != null && localTime.hour in 9..11))
-            if (contradiz) {
-                ambiguous = true
-                confidence = minOf(confidence, 0.5)
-                notes += "“${periodHit.label}” e a hora dita não batem. Confirme o horário."
+            // O PERÍODO EXPLÍCITO vence o marco: "antes do jantar às seis da manhã" é 06:00 — o "da
+            // manhã" que ela disse não pode ser sobrescrito pelo jantar (≈20h).
+            if (timeHit.hadPeriod) {
+                // Horário já resolvido pelo período dito; nada a fazer.
+            } else if (periodHint == "jantar") {
+                // "jantar" é ≈20h. No "depois", a hora 1–6 somada dá 13–18h — a tarde, que é ANTES
+                // do jantar; contradiz o "depois". No "antes", 1–6 vira jantar−2h (18h) e 7–11
+                // vira 19–23h — depois do jantar, contradiz o "antes"; e o "às oito" (20h) já É o
+                // jantar, não "antes" dele. Nesses casos ambíguo, não crava.
+                val antesDoJantar = periodHit.label == "antes do jantar"
+                val contradiz = localTime != null &&
+                    if (antesDoJantar) {
+                        localTime.hour in 7..11 || localTime.hour == 20
+                    } else {
+                        localTime.hour in 1..6
+                    }
+                if (contradiz) {
+                    ambiguous = true
+                    confidence = minOf(confidence, 0.5)
+                    notes += "“${periodHit.label}” e a hora dita não batem. Confirme o horário."
+                } else if (localTime != null && localTime.hour in 1..6) {
+                    // "antes do jantar às seis": o jantar é ≈20h, o "antes" é a hora da tarde —
+                    // 18h, não 06:00.
+                    localTime = LocalTime.of(localTime.hour + 12, localTime.minute)
+                } else if (localTime != null && localTime.hour in 7..11) {
+                    localTime = applyPeriod(localTime, periodHint)
+                } else if (localTime == null) {
+                    ambiguous = true
+                    confidence = minOf(confidence, 0.5)
+                    notes += "“${periodHit.label}” não é um horário exato. Complete o horário — não inventamos."
+                }
             } else if (localTime != null && localTime.hour in 1..11) {
                 localTime = applyPeriod(localTime, periodHint)
             } else if (localTime == null) {
@@ -128,6 +145,9 @@ class LocalTaskParser(
             ambiguous = true
             confidence = minOf(confidence, 0.45)
             notes += "Parece haver mais de uma tarefa na mesma frase. Vamos separar?"
+            // "tomar duas da manhã e duas da noite": uma hora só no rascunho ainda é uma hora
+            // completa com uma dose a menos. Sem hora, ela confirma em vez de a agenda comer uma.
+            localTime = null
         }
 
         if (localDate == null && recurrence.isRecurring) {
@@ -314,6 +334,8 @@ class LocalTaskParser(
         val remaining: String,
         val ambiguous: Boolean,
         val note: String? = null,
+        /** A hora veio com o período dito ("da manhã"): o horário já está resolvido. */
+        val hadPeriod: Boolean = false,
     )
 
     private fun extractTime(text: String): TimeHit {
@@ -328,22 +350,6 @@ class LocalTaskParser(
                 true,
                 "“${m.value}” é um intervalo, não um horário do dia. Diga o horário da primeira dose.",
             )
-        }
-
-        // "antes do jantar às seis": o jantar é ≈20h e o "antes" fica perto dele — 18h, não 06:00.
-        // Só a hora da tarde (1–6) vira o jantar menos 2h; acima disso o "antes" já passou do jantar
-        // (10h, 11h) e cravar +12 daria 22h/23h, que é DEPOIS do jantar — contradiz o "antes". Nesses
-        // casos deixa a hora como está: o período "jantar" e o "antes do jantar" marcam ambíguo.
-        ANTES_DO_JANTAR.find(remaining)?.let { m ->
-            val raw = m.groupValues[1]
-            val hourRaw = raw.toIntOrNull() ?: WORD_HOURS[raw] ?: return@let
-            val minuteRaw = m.groupValues[2].ifBlank { m.groupValues[3] }
-            val minute = minuteRaw.ifBlank { "0" }.toIntOrNull()
-                ?: MINUTE_TAIL_WORDS[minuteRaw] ?: 0
-            if (hourRaw in 1..6 && minute in 0..59) {
-                remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
-                return TimeHit(LocalTime.of(hourRaw + 12, minute), remaining, false)
-            }
         }
 
         val relative = extractRelative(remaining)
@@ -412,7 +418,14 @@ class LocalTaskParser(
                 ?: MINUTE_TAIL_WORDS[minutes] ?: 0
             if (hourRaw !in 0..23 || minute !in 0..59) return@let
             val period = m.groups["periodo"]?.value.orEmpty()
-            remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            val stripped = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            // "às 8 em ponto e às 20h": este ramo retornava antes do guard de múltiplos relógios,
+            // então a segunda hora nunca era vista — 08:00 com cara de certeza. Duas horas na mesma
+            // frase são ambíguas, como no main.
+            if (CLOCK_NUMERIC.containsMatchIn(stripped) || CLOCK_BARE.containsMatchIn(stripped)) {
+                return TimeHit(null, stripped, true, "Há mais de um horário na frase. Confirme o horário.")
+            }
+            remaining = stripped
             return TimeHit(
                 LocalTime.of(applyPeriodHour(hourRaw, if (period.isBlank()) "" else "da $period") % 24, minute),
                 remaining,
@@ -463,27 +476,11 @@ class LocalTaskParser(
         if (found.size > 1) {
             return TimeHit(null, remaining, true)
         }
-        // O reconhecedor de fala derruba o "às" com frequência ("tomar remédio duas da tarde"). A hora
-        // por extenso ou em dígito seguida do período do dia é hora de verdade: sem isto a hora ficava
-        // nula, a palavra ia para o título ("Tomar remédio duas") e escalava para a IA sem necessidade.
-        if (found.isEmpty()) {
-            BARE_HOUR_PERIOD.find(remaining)?.let { m ->
-                // "dia 5 da manhã": o "5" é o dia do mês, não a hora. Sem este guard o "5" virava
-                // 05:00 e a data correta (o dia 5) era substituída por "amanhã".
-                if (DIA_DO_MES_BEFORE.containsMatchIn(remaining.substring(0, m.range.first))) return@let
-                val raw = m.groupValues[1]
-                val hourRaw = raw.toIntOrNull() ?: WORD_HOURS[raw] ?: return@let
-                if (hourRaw in 0..23) {
-                    val period = m.groupValues[2]
-                    remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
-                    return TimeHit(
-                        LocalTime.of(applyPeriodHour(hourRaw, "da $period") % 24, 0),
-                        remaining,
-                        false,
-                    )
-                }
-            }
-        }
+        // D3 revertido: "duas da tarde" sem o "às" era reconhecido como hora por compensar a
+        // hipótese de que o Vosk derruba o "às" — hipótese nunca medida. Sem o "às" não dá para
+        // separar hora ("duas da tarde") de dose ("duas da manhã"), data ("25/12 da tarde") e
+        // recorrência ("todo dia 5 da tarde"), e a regra cravava hora/data errada com
+        // ambiguous=false. Na dúvida, ambíguo: escala para a IA em vez de agendar errado em silêncio.
         val hit = found.firstOrNull() ?: return TimeHit(null, remaining, false)
         if (hit.hourRaw !in 0..23 || hit.minute !in 0..59) {
             return TimeHit(null, remaining.replace(hit.match.value, " "), true)
@@ -521,6 +518,7 @@ class LocalTaskParser(
             remaining,
             ambiguous = noPeriod && hit.hourRaw in 1..6,
             note = "“$consumed” pode ser de manhã ou de tarde. Confirme o horário.",
+            hadPeriod = period.isNotBlank(),
         )
     }
 
@@ -823,10 +821,6 @@ class LocalTaskParser(
         }
         if (weekdayList) return false
 
-        // "tomar duas da tarde e três da noite": duas doses/horas, uma em cada oração. Sem verbo na
-        // segunda, o parser colava as duas numa hora só e uma dose sumia da agenda.
-        if (clauses.count { DOSE_PERIOD.containsMatchIn(it) } >= 2) return true
-
         if (clauses.none { TASK_VERB.containsMatchIn(it) }) return false
 
         // O dia numa oração e a hora em outra denunciam tarefas diferentes, mesmo sem verbo na
@@ -918,15 +912,6 @@ class LocalTaskParser(
         private val CLOCK_BARE = Regex(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
-        // "duas da tarde"/"8 da manhã" sem o "às" (o Vosk derruba o "às"): hora por extenso ou em
-        // dígito seguida do período, com o ARTIGO ("da"/"na"/"à"). É como se diz a hora ("às duas da
-        // tarde"). "duas de manhã" (sem artigo) é a dose/período, não a hora — e "dia 5 de manhã" é o
-        // dia do mês. Sem exigir o artigo, os dois viravam hora.
-        private val BARE_HOUR_PERIOD = Regex(
-            """\b(\d{1,2}|$WORD_HOUR_ALT)\s+(?:a|da|na)\s+(manha|tarde|noite|madrugada)\b""",
-        )
-        /** "dia 5 de manhã"/"dia 5 da manhã": o número depois do "dia" é o dia do mês, não a hora. */
-        private val DIA_DO_MES_BEFORE = Regex("""\bdia\s*$""")
         // "três horas em ponto"/"oito em ponto": o "em ponto" é reforço de exatidão, consumido junto
         // com a hora para não sobrar no título. Grupos nomeados: sem eles o "e meia" (minuto) e o
         // período eram confundidos pela posição, e a hora saía sem os 30 min e sem o "da tarde".
@@ -934,11 +919,6 @@ class LocalTaskParser(
             """\b(?:as\s+)?(?<hora>\d{1,2}|$WORD_HOUR_ALT)(?:\s+h(?:oras?)?(?:\s*(?<minutoDigito>\d{2}))?|\s+e\s+(?<minutoPalavra>meia|quinze|vinte|trinta|quarenta|cinquenta))?\s+em\s+ponto\b""" +
                 """(?:\s*(?:a|da|de|na)\s+(?<periodo>manha|tarde|noite|madrugada))?""",
         )
-        // "antes do jantar às seis": o jantar é ≈20h, então o "antes" é a hora da tarde.
-        private val ANTES_DO_JANTAR = Regex(
-            """\bantes\s+do\s+jantar\s+(?:as\s+)?(\d{1,2}|$WORD_HOUR_ALT)(?:\s+h(?:oras?)?(?:\s*(\d{2}))?|\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta))?\b""",
-        )
-
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
         )
@@ -1161,11 +1141,6 @@ class LocalTaskParser(
         /** Onde a oração fala de uma hora: "às N", "às <palavra>", meio-dia, "daqui a ...". */
         private val TIME_SIGNAL = Regex(
             """\bas\s+(?:\d{1,2}|[a-z])|\bmeio[-\s]?dia\b|\bmeia[-\s]?noite\b|\bdaqui\b""",
-        )
-
-        /** Dose com período numa oração ("duas da tarde"): duas delas são duas doses, não uma. */
-        private val DOSE_PERIOD = Regex(
-            """\b(?:\d{1,2}|uma|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s+(?:a|da|na)\s+(?:manha|tarde|noite|madrugada)\b""",
         )
 
         private val FILLERS = setOf(

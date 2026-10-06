@@ -82,13 +82,16 @@ object SpeechTargetMatcher {
         // da tarefa, e o parser já a consumiu como data/hora. Sem esta poda, "já tomei o
         // remédio de manhã" virava 1 de 2 significativas e devolvia `None` — a dose não era
         // registrada. Com ela, o alvo sobra em "remedio" e casa "Tomar remédio" como sempre.
-        val significativas = alvoWords.filter { it.length >= MIN_WORD && it !in TEMPORAIS }
-
-        // Alvo de UMA palavra: o caso mais comum ("cancela o médico" → a consulta médica) e o
-        // que a fala produz na maioria das vezes. Continua casando como sempre — palavra
-        // inteira ou raiz flexiva — e não pode endurecer.
-        if (significativas.size <= 1) {
-            return significativas.any { a -> tituloWords.any { t -> wordMatches(a, t) } }
+        //
+        // A poda só vale se sobrar conteúdo: quando o alvo é TODO temporal ("cancela a
+        // segunda", "já fiz a manhã"), esvaziá-lo zerava o casamento e a tarefa "Consulta de
+        // segunda" / "Academia de manhã" ficava sem par — a data é o único elo que ela tem.
+        // Aí a poda não se aplica e as palavras contam como sempre.
+        val semTemporais = alvoWords.filter { it.length >= MIN_WORD && it !in TEMPORAIS }
+        val significativas = if (semTemporais.isEmpty()) {
+            alvoWords.filter { it.length >= MIN_WORD }
+        } else {
+            semTemporais
         }
 
         // Alvo de VÁRIAS palavras: exige a MAIORIA ESTRITA das significativas. Uma única
@@ -103,6 +106,12 @@ object SpeechTargetMatcher {
         // "Dentista" respondendo "Feito." — a ação destrutiva que mente. Ele também era
         // redundante: os casos que o justificavam ("consulta medica de amanha") já passam pela
         // maioria, uma vez que o temporal sai da contagem. Removido.
+        //
+        // Havia também um ramo `significativas.size <= 1` que devolvia o casamento simples
+        // ("o caso mais comum"). Ele é matematicamente igual à maioria: com uma significativa,
+        // `1 * 2 > 1` é verdadeiro sempre que ela casa e falso quando não casa. Nenhum teste o
+        // prendia — removê-lo deixava a suíte verde. Removido como redundante: a maioria já
+        // cobre o alvo de uma palavra sem endurecer nada.
         val casadas = significativas.count { a -> tituloWords.any { t -> wordMatches(a, t) } }
         return casadas * 2 > significativas.size
     }

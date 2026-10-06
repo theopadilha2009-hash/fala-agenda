@@ -274,11 +274,33 @@ object SpeechIntentClassifier {
      * A pontuação sai das duas pontas, e a vírgula também do meio: "médico, por favor" é um alvo
      * com a cortesia no rabo, não um nome de tarefa. O `?` fica de fora do corte das pontas
      * apenas por simetria com o resto do app; ele não aparece no meio de um alvo de comando.
+     *
+     * A cortesia SEM vírgula ("cancela o médico por favor") não é cortada por nenhuma dessas
+     * pontuações: ela entrava como palavra significativa do alvo e a maioria estrita devolvia
+     * `None`. [stripTrailingCourtesy] tira esse rabo.
      */
     private fun targetAfter(folded: String, from: Int): String =
-        stripLeadingArticles(
-            folded.substring(from).trim().trim(',', '.', '!', '?', ';', ':', ' ').substringBefore(',').trim(),
+        stripTrailingCourtesy(
+            stripLeadingArticles(
+                folded.substring(from).trim().trim(',', '.', '!', '?', ';', ':', ' ').substringBefore(',').trim(),
+            ),
         )
+
+    /**
+     * O rabo de cortesia que fecha a fala ("... por favor", "... obrigada") e não faz parte do
+     * alvo. Sem a vírgula que [targetAfter] já corta, essas palavras viravam significativas e
+     * derrubavam o casamento por maioria: "cancela o médico por favor" (1 de 3) respondia "Não
+     * achei nenhuma tarefa com esse nome" — a fala mais provável dela falhando calada.
+     *
+     * "sim", "ok", "beleza" e "tá" entram pelo mesmo motivo: confirmam o pedido, não nomeiam a
+     * tarefa. Só o rabo é cortado — a cortesia no meio do alvo não é tocada.
+     */
+    private val TRAILING_COURTESY = Regex(
+        "\\s+(por favor|por gentileza|favor|obrigada|obrigado|sim|ok|beleza|ta)\\s*$",
+    )
+
+    private fun stripTrailingCourtesy(text: String): String =
+        text.replace(TRAILING_COURTESY, "").trim()
 
     private fun stripLeadingArticles(text: String): String =
         text.replaceFirst(Regex("^(o|a|os|as|um|uma|meu|minha|meus|minhas)\\s+"), "").trim()

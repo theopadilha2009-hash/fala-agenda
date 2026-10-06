@@ -290,8 +290,9 @@ class SpeechTargetMatcherTest {
     @Test
     fun remedioDoDentistaNaoConcluiODentista() {
         // Título de uma palavra só ("Dentista") NÃO pode casar por conter a palavra no alvo:
-        // o alvo "remedio do dentista" é de duas significativas e só 1 casa. Ambíguo — nunca
-        // concluir a tarefa errada calado.
+        // o alvo "remedio do dentista" é de duas significativas e só 1 casa. O desfecho é
+        // `None` — não age, nunca conclui a tarefa errada calado. (`Ambiguous` é só para
+        // quando DUAS tarefas casam por inteiro, o que não é o caso aqui.)
         assertThat(resolveBySpeech("já tomei o remédio do dentista", "Dentista", "Tomar remédio"))
             .isEqualTo(SpeechTargetResolution.None)
     }
@@ -333,25 +334,101 @@ class SpeechTargetMatcherTest {
             .isEqualTo(SpeechTargetResolution.One("id0"))
     }
 
-    // --- P2 residual: a palavra a mais NÃO é temporal ------------------------------------
+    // --- F1: a cortesia no RABO da fala não pode derrubar o casamento --------------------
     //
-    // "remédio da pressão" e "conta de luz" têm duas significativas e só uma casa (1 de 2):
-    // "remedio" casa "Tomar remédio", "conta" casa "Pagar conta". É o MESMO formato dos
-    // guardas que precisam continuar barrando — "consulta do dentista" contra "Consulta
-    // médica" (1 de 2, só "consulta") e "remédio do cachorro" contra "Passear com o cachorro"
-    // (1 de 2, só "cachorro"). "pressao" e "luz" são CONTEÚDO, não circunstância: não há sinal
-    // lexical que separe "luz" (qualificador que a tarefa omite) de "dentista" (especialista
-    // que CONTRADIZ a "médica" do título). Afrouxar aqui reabre a ação destrutiva que mente —
-    // cancelar "Conta de luz" quando ela falou "conta de água". O desfecho seguro é `None`.
+    // "por favor"/"obrigada" é como ela fala. Sem vírgula, essas palavras não eram cortadas e
+    // entravam como significativas do alvo: "cancela o médico por favor" virava 3
+    // significativas com só 1 casada, a maioria estrita devolvia `None` e o app respondia
+    // "Não achei nenhuma tarefa com esse nome". Não é destrutivo — é a fala mais provável dela
+    // falhando calada. Todos estes devolviam `One` antes do #54.
 
     @Test
-    fun remedioDaPressaoAindaNaoCasa_limiteConhecido() {
+    fun cortesiaNoRaboNaoDerrubaOCancelamento() {
+        assertThat(resolveBySpeech("cancela o médico por favor", "Consulta médica"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun porFavorNoRaboNaoDerrubaAConclusao() {
+        assertThat(resolveBySpeech("já tomei o remédio por favor", "Tomar remédio"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+        assertThat(resolveBySpeech("já paguei a conta por favor", "Pagar conta"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun obrigadaNoRaboNaoDerrubaAConclusao() {
+        assertThat(resolveBySpeech("já tomei o remédio obrigada", "Tomar remédio"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    // --- F3: quando a data é o ÚNICO elo, o alvo não pode virar vazio --------------------
+    //
+    // A poda [TEMPORAIS] removia o temporal sem exigir que sobrasse conteúdo: "cancela a
+    // segunda" virava um alvo sem nenhuma significativa e a maioria estrita devolvia `None` —
+    // a tarefa "Consulta de segunda" ficava sem casamento. O mesmo com "já fiz a manhã" x
+    // "Academia de manhã". O `alvo.length < 3` não pega esses casos porque a string INTEIRA
+    // ainda tem tamanho; o que esvazia é a poda palavra a palavra.
+    //
+    // O fix: só podar quando sobrar ao menos uma significativa NÃO-temporal. Se o alvo for
+    // todo temporal, a poda não se aplica e o casamento cai no comportamento antigo. Não é o
+    // caso destrutivo do PR (que exige conteúdo a mais para casar errado) — é a data sendo o
+    // único elo, e aí casar é o certo.
+
+    @Test
+    fun alvoSoTemporalComDiaDaSemanaAindaCasa() {
+        assertThat(resolveBySpeech("cancela a segunda", "Consulta de segunda"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun alvoSoTemporalComPeriodoAindaCasa() {
+        assertThat(resolveBySpeech("já fiz a manhã", "Academia de manhã"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    // --- F4: a poda dos DIAS DA SEMANA é código exercitado -------------------------------
+    //
+    // Os testes de poda existentes só usavam "manhã"/"amanhã"/"hoje". Trocar [TEMPORAIS] por um
+    // conjunto SEM os sete dias da semana deixava a suíte verde: os dias eram código não
+    // exercitado — e são justamente os que causam o F3. Este teste prende a poda do dia da
+    // semana: sem ela, "consulta de segunda" tem DUAS significativas e só "consulta" casa
+    // (1 de 2) → `None`; com ela, sobra uma significativa e o casamento fecha.
+
+    @Test
+    fun osSeteDiasDaSemanaSaoPodadosDoAlvo() {
+        // Um teste só por dia não basta: se alguém tirar UM dia do [TEMPORAIS] (ex. "terca"),
+        // os outros seis continuam verdes e o defeito passa. A volta prende os sete.
+        val dias = listOf("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
+        dias.forEach { dia ->
+            assertThat(resolveBySpeech("cancela a consulta de $dia", "Consulta médica"))
+                .isEqualTo(SpeechTargetResolution.One("id0"))
+        }
+    }
+
+    // --- P2 residual: TRADE-OFF CONSCIENTE, não limitação neutra -------------------------
+    //
+    // "remédio da pressão" e "conta de luz" têm duas significativas e só uma casa (1 de 2):
+    // "remedio" casa "Tomar remédio", "conta" casa "Pagar conta". Estes dois casos
+    // FUNCIONAVAM antes do #54 (davam `One`) e agora dão `None`: é regressão real contra o
+    // `main`, e ela foi aceita de olhos abertos. O preço é a usuária perder um caso que
+    // funcionava; o que se compra é não agir errado.
+    //
+    // Por quê: "pressao" e "luz" são CONTEÚDO, não circunstância — não há sinal lexical que
+    // separe "luz" (qualificador que a tarefa omite) de "dentista" (especialista que
+    // CONTRADIZ a "médica" do título). É o MESMO formato dos guardas que precisam continuar
+    // barrando (1 de 2): "consulta do dentista" x "Consulta médica" e "remédio do cachorro" x
+    // "Passear com o cachorro". Afrouxar aqui reabre a ação destrutiva que mente — cancelar
+    // "Conta de luz" quando ela falou "conta de água". O desfecho seguro é `None`.
+
+    @Test
+    fun remedioDaPressaoViraTradeOffConsciente() {
         assertThat(resolveBySpeech("já tomei o remédio da pressão", "Tomar remédio"))
             .isEqualTo(SpeechTargetResolution.None)
     }
 
     @Test
-    fun contaDeLuzAindaNaoCasa_limiteConhecido() {
+    fun contaDeLuzViraTradeOffConsciente() {
         assertThat(resolveBySpeech("cancela a conta de luz", "Pagar conta"))
             .isEqualTo(SpeechTargetResolution.None)
     }

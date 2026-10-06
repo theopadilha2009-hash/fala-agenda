@@ -367,7 +367,14 @@ class HomeViewModel(
      * guardado no `Bundle` não sabe do que aconteceu fora do app.
      */
     fun refreshAlarmHealth() {
-        _canScheduleExact.value = container.scheduler.canScheduleExact()
+        val exato = container.scheduler.canScheduleExact()
+        _canScheduleExact.value = exato
+        // A releitura também desmente o aviso transitório do salvamento. Ele nasce quando o
+        // recado foi salvo sem alarme exato, mas nada mais o baixava desde que o cartão
+        // transitório saiu — e a home o mostra com o booleano como chave, então ele voltava a
+        // aparecer a cada retorno à tela, inclusive depois de ela conceder a permissão: o app
+        // anunciava para sempre um problema que já não existia.
+        if (exato) _inexactWarning.value = false
     }
 
     /**

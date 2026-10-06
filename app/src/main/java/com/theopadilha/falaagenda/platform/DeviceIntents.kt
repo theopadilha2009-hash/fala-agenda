@@ -93,7 +93,6 @@ object DeviceIntents {
         return pm.isIgnoringBatteryOptimizations(context.packageName)
     }
 
-    @SuppressLint("BatteryLife")
     fun batterySettings(context: Context): Intent =
         batterySettingsIntentOrNull(context) ?: Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
 

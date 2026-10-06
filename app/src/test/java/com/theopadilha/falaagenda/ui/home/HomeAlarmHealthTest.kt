@@ -78,4 +78,29 @@ class HomeAlarmHealthTest {
 
         assertThat(viewModel.canScheduleExact.value).isFalse()
     }
+
+    /**
+     * O aviso transitório do salvamento ("o aviso pode atrasar alguns minutos") não pode
+     * sobreviver à correção da permissão.
+     *
+     * Ele nasce quando o recado é salvo sem alarme exato. O único ponto que o baixava era o
+     * toque no cartão transitório, que saiu — e a home o mostra com o booleano como chave,
+     * então ele voltava a aparecer a cada retorno à tela, inclusive depois de ela conceder a
+     * permissão: o app anunciava para sempre um problema que já não existia.
+     */
+    @Test
+    fun avisoDoSalvamentoSomeQuandoAExatidaoVolta() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(false)
+        val viewModel = HomeViewModel(AppContainer(context))
+
+        // O salvamento sem alarme exato deixou o aviso pendente.
+        viewModel.setInexactWarning(true)
+        assertThat(viewModel.inexactWarning.value).isTrue()
+
+        // Ela concedeu a permissão e voltou: o resume relê e o aviso velho cai junto.
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        viewModel.refreshAlarmHealth()
+
+        assertThat(viewModel.inexactWarning.value).isFalse()
+    }
 }

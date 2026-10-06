@@ -516,7 +516,9 @@ class TaskRepository(
         deliver: suspend (title: String, seriesId: String) -> Delivery,
     ) {
         val quiet = scheduler.quietHours()
-        if (occurrence.reminderStep > 0 && ReminderPolicy.isInQuietHours(now, series.zoneId, quiet)) {
+        if (occurrence.reminderStep > 0 && !temAdiamentoPendente(occurrence) &&
+            ReminderPolicy.isInQuietHours(now, series.zoneId, quiet)
+        ) {
             val resume = ReminderPolicy.shiftOutOfQuietHours(now, series.zoneId, quiet)
             val deferred = occurrence.copy(nextReminderAt = resume)
             val scheduled = scheduler.schedule(deferred, series, first = false)
@@ -563,14 +565,36 @@ class TaskRepository(
             interval = interval,
             occurrenceDay = occurrence.localDate,
         )
+        // O adiamento pendente morre aqui: este é o ponto em que o aviso chegou nela (só o
+        // `ARRIVED` chega até esta linha — `FAILED` e `BLOCKED` saem antes). Limpar o marcador
+        // deixa `snoozedUntil` significando exatamente "adiamento pedido e ainda não entregue",
+        // que é o que isenta a entrega do silêncio acima. Preservá-lo isentaria a escada
+        // daquela ocorrência do silêncio para sempre: o degrau das 02:00 acordaria ela.
         val updated = occurrence.copy(
             reminderStep = plan.step,
             lastReminderAt = now,
             nextReminderAt = plan.fireAt,
+            snoozedUntil = null,
         )
         val scheduled = scheduler.schedule(updated, series, first = false)
         occurrenceDao.upsert(updated.copy(inexactAlarm = scheduled.inexact).toEntity())
     }
+
+    /**
+     * Há um adiamento pedido por ela e ainda não entregue nesta ocorrência?
+     *
+     * `snoozedUntil` é gravado só pelo [snooze] (e pelo "Desfazer o concluir" de
+     * [uncomplete], que rearma a mesma linha como se ela tivesse adiado), e [fire] o limpa no
+     * instante em que entrega o aviso. Então o campo não nulo significa exatamente isto:
+     * adiamento pendente. É o que separa o adiamento explícito — que vale no horário pedido,
+     * mesmo depois da meia-noite, como [ReminderPolicy.snooze] já decidiu — da repetição da
+     * escada, que continua pausando no silêncio.
+     *
+     * O `reminderStep > 0` sozinho não serve: o snooze grava `STEP_HOURLY` e uma repetição da
+     * escada grava o mesmo degrau. Era por aí que o adiamento das 00:15 virava 08:00.
+     */
+    private fun temAdiamentoPendente(occurrence: TaskOccurrence): Boolean =
+        occurrence.snoozedUntil != null
 
     /**
      * Rede de segurança do receiver: se o tratamento de um alarme não terminou a tempo

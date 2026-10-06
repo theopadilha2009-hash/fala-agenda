@@ -748,6 +748,7 @@ fun HomeScreen(
                         emphasize = true,
                         missedNote = secao.note,
                         onClick = onEditItem,
+                        onComplete = completeWithUndo,
                     )
                 }
             }
@@ -1171,7 +1172,12 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
                             )
                         }
                     }
-                    if (onComplete != null && item.occurrence.status == OccurrenceStatus.PENDING) {
+                    // A atrasada também conclui de um toque: era a única sem o atalho, e é
+                    // justamente a que mais precisa dele. `TaskRepository.complete` aceita
+                    // PENDING e MISSED; a concluída não volta a ser concluída.
+                    val concluivel = item.occurrence.status == OccurrenceStatus.PENDING ||
+                        item.occurrence.status == OccurrenceStatus.MISSED
+                    if (onComplete != null && concluivel) {
                         TextButton(
                             onClick = { onComplete(item) },
                             modifier = Modifier.heightIn(min = 56.dp),

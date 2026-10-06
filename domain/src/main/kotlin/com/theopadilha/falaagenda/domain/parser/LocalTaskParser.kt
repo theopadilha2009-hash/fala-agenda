@@ -8,9 +8,9 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import com.theopadilha.falaagenda.domain.time.AppClock
 import java.time.DayOfWeek
+import java.time.DateTimeException
 import java.time.LocalDate
 import java.time.LocalTime
-import java.time.YearMonth
 import java.time.temporal.WeekFields
 import java.util.Locale
 
@@ -72,7 +72,7 @@ class LocalTaskParser(
         if (dateHit.ambiguous) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += "A data ficou ambígua."
+            notes += dateHit.note ?: "A data ficou ambígua."
         }
 
         val periodHit = extractPeriodHint(remaining)
@@ -574,7 +574,12 @@ class LocalTaskParser(
         return null
     }
 
-    private data class DateHit(val date: LocalDate?, val remaining: String, val ambiguous: Boolean)
+    private data class DateHit(
+        val date: LocalDate?,
+        val remaining: String,
+        val ambiguous: Boolean,
+        val note: String? = null,
+    )
 
     private fun extractDate(text: String, recurrence: RecurrenceRule): DateHit {
         var remaining = text
@@ -598,42 +603,42 @@ class LocalTaskParser(
             val day = m.groupValues[1].toInt()
             val month = m.groupValues[2].toInt()
             val yearRaw = m.groupValues[3]
-            val year = when {
-                yearRaw.isBlank() -> inferYear(today, month, day)
-                yearRaw.length == 2 -> 2000 + yearRaw.toInt()
-                else -> yearRaw.toInt()
-            }
             remaining = remaining.replace(m.value, " ")
             if (month !in 1..12 || day !in 1..31) {
                 return DateHit(null, remaining, true)
             }
-            val date = RecurrenceEngine.clampToValidDate(year, month, day)
-            return DateHit(date, remaining, false)
+            val year = when {
+                yearRaw.isBlank() -> null
+                yearRaw.length == 2 -> 2000 + yearRaw.toInt()
+                else -> yearRaw.toInt()
+            }
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
+        // O "dia"/"no dia" antes do dia do mês faz parte da data, não do título: "dia 15 de
+        // novembro missa" é a missa, não "Dia missa".
         val extenso = Regex(
-            """\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
+            """\b(?:(?:no\s+)?dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
         )
         extenso.find(remaining)?.let { m ->
             val day = m.groupValues[1].toInt()
             val month = monthFromName(m.groupValues[2])
-            val year = m.groupValues[3].ifBlank { inferYear(today, month, day).toString() }.toInt()
+            val year = m.groupValues[3].ifBlank { null }?.toInt()
             remaining = remaining.replace(m.value, " ")
-            val date = RecurrenceEngine.clampToValidDate(year, month, day)
-            return DateHit(date, remaining, false)
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
         // "dois de maio": o dia por extenso. A regex acima exige dígito, então a frase ficava sem
         // data e o "dois de maio" sobrava no título.
         val extensoPalavra = Regex(
-            """\b($WORD_DAY_ALT)\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
+            """\b(?:(?:no\s+)?dia\s+)?($WORD_DAY_ALT)\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
         )
         extensoPalavra.find(remaining)?.let { m ->
             val day = WORD_DAYS[TextNormalizer.compactSpaces(m.groupValues[1])] ?: return@let
             val month = monthFromName(m.groupValues[2])
-            val year = m.groupValues[3].ifBlank { inferYear(today, month, day).toString() }.toInt()
+            val year = m.groupValues[3].ifBlank { null }?.toInt()
             remaining = remaining.replace(m.value, " ")
-            return DateHit(RecurrenceEngine.clampToValidDate(year, month, day), remaining, false)
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
         // "no dia 25": dia do mês avulso. Sem mês dito, o próximo 25 (este mês se ainda não passou,
@@ -780,13 +785,60 @@ class LocalTaskParser(
         a.get(WeekFields.ISO.weekOfWeekBasedYear()) == b.get(WeekFields.ISO.weekOfWeekBasedYear()) &&
             a.get(WeekFields.ISO.weekBasedYear()) == b.get(WeekFields.ISO.weekBasedYear())
 
-    private fun inferYear(today: LocalDate, month: Int, day: Int): Int {
-        val candidate = try {
-            YearMonth.of(today.year, month).atDay(day.coerceAtMost(YearMonth.of(today.year, month).lengthOfMonth()))
-        } catch (_: Exception) {
-            today
+    /**
+     * A data que o texto aponta, com o ano que ela não disse resolvido aqui.
+     *
+     * O ano ausente é um palpite, e um palpite não pode virar certeza calada: "reunião 05/08"
+     * dita em 20/08/2026 rolava para 05/08/2027 com `ambiguous = false` e a caixa rápida
+     * confirmava quase um ano à frente sem avisar. A data continua a mais próxima no futuro —
+     * rolar para o ano seguinte é a leitura certa, e é o que mantém "25/12" no Natal deste ano —
+     * mas agora ela chega ambígua, para a tela confirmar em vez de a caixa rápida decidir.
+     *
+     * E data que não existe é recusa, não arredondamento: "31/02" virava 28/02 com cara de
+     * certeza. `RecurrenceEngine.clampToValidDate` continua valendo para as regras que repetem
+     * ("todo dia 31"), onde o ajuste é a semântica; aqui, na data avulsa, o dia não existe e o
+     * rascunho fica sem data.
+     */
+    private fun resolveDate(
+        today: LocalDate,
+        year: Int?,
+        month: Int,
+        day: Int,
+        raw: String,
+        remaining: String,
+    ): DateHit {
+        if (year != null) {
+            val date = try {
+                LocalDate.of(year, month, day)
+            } catch (_: DateTimeException) {
+                return DateHit(null, remaining, true, "“$raw” não existe no calendário. Confirme a data.")
+            }
+            return DateHit(date, remaining, false)
         }
-        return if (candidate.isBefore(today)) today.year + 1 else today.year
+        val thisYear = try {
+            LocalDate.of(today.year, month, day)
+        } catch (_: DateTimeException) {
+            null
+        }
+        if (thisYear != null && !thisYear.isBefore(today)) {
+            return DateHit(thisYear, remaining, false)
+        }
+        // O próximo ano em que a data existe — 29/02 não vale em ano comum, e pular para o
+        // bissexto seguinte é a data que ela disse, não o 28/02 que nunca foi dito.
+        val nextYear = (today.year + 1..today.year + 8).firstOrNull { y ->
+            try {
+                LocalDate.of(y, month, day)
+                true
+            } catch (_: DateTimeException) {
+                false
+            }
+        } ?: return DateHit(null, remaining, true, "“$raw” não existe no calendário. Confirme a data.")
+        val note = if (thisYear == null) {
+            "“$raw” não existe este ano; ficou em ${nextYear}. Confirme o ano."
+        } else {
+            "“$raw” já passou este ano; ficou em ${nextYear}. Confirme a data."
+        }
+        return DateHit(LocalDate.of(nextYear, month, day), remaining, true, note)
     }
 
     /**
@@ -1143,7 +1195,7 @@ class LocalTaskParser(
             "lembrete", "agendar", "agenda", "por", "favor", "preciso", "tenho",
             "marcar", "anota", "anotar", "tarefa", "compromisso", "e", "eh",
             "daqui", "hora", "horas", "minuto", "minutos", "meia",
-            "noite", "manha", "tarde", "madrugada", "almoco", "depois",
+            "noite", "manha", "tarde", "madrugada", "depois",
             "cada", "mes", "ano", "nos", "nas",
         )
     }

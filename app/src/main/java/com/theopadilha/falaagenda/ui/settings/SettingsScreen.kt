@@ -123,7 +123,7 @@ fun SettingsScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Horário de silêncio", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Nesse período as repetições pausam. O primeiro lembrete no horário que você escolheu ainda toca. As repetições voltam no fim do silêncio.",
+                        "Nesse período o aplicativo não repete os lembretes que já tocaram. O primeiro aviso de cada tarefa ainda toca no horário que você escolheu. Quando o silêncio termina, o aplicativo volta a repetir.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     QuietCard(

@@ -79,6 +79,12 @@ fun ConfirmDraftScreen(
     onRepeat: (() -> Unit)? = null,
     onEndSeries: (() -> Unit)? = null,
     saveError: String? = null,
+    /**
+     * O título da **série** que o [onEndSeries] encerra. Não é o do campo editável: ela pode
+     * ter mudado o texto na tela sem salvar, e a confirmação precisa nomear o que de fato
+     * perde os avisos — não o que ela está vendo escrito. Nulo na criação, onde não há série.
+     */
+    seriesTitle: String? = null,
 ) {
     // Tudo o que a pessoa mexeu aqui tem que atravessar a recriação da tela: girar o
     // aparelho no meio da conferência não pode devolver o recado do parser.
@@ -104,6 +110,9 @@ fun ConfirmDraftScreen(
         runCatching { titleFocus.requestFocus() }
     }
     var showTime by remember { mutableStateOf(false) }
+    // "Encerrar" cancela todos os avisos futuros da série e não tem volta — não há desfazer
+    // no repositório. O toque abre a confirmação; só o "Sim" de lá chama o `onEndSeries`.
+    var confirmingEndSeries by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     val haptic = LocalHapticFeedback.current
 
@@ -402,7 +411,7 @@ fun ConfirmDraftScreen(
                     SecondaryButton("Excluir", enabled = !saving) { onDelete() }
                 }
                 if (isRecurring && onEndSeries != null) {
-                    SecondaryButton("Encerrar série", enabled = !saving) { onEndSeries() }
+                    SecondaryButton("Encerrar série", enabled = !saving) { confirmingEndSeries = true }
                 }
             }
             Text(
@@ -462,6 +471,40 @@ fun ConfirmDraftScreen(
             },
             title = { Text("Horário") },
             text = { TimePicker(state = state) },
+        )
+    }
+
+    // Encerrar a série é a única ação desta tela que não tem desfazer: o repositório cancela
+    // os avisos pendentes e marca a série como encerrada, sem restaurar. Para o remédio de
+    // todo dia isso é a coisa mais perigosa que ela pode tocar aqui, então o toque pergunta
+    // antes — com a consequência escrita e sem o "Sim" no lugar de destaque.
+    //
+    // O nome é o da série (`seriesTitle`), não o do campo editável: a série que perde os avisos
+    // é a que o root encerra por `item.series.id`, mesmo que ela tenha mudado o texto aqui sem
+    // salvar. Sem o título da série — criação — o texto fica sem nome em vez de citar o errado.
+    if (confirmingEndSeries && onEndSeries != null) {
+        val nomeDaSerie = seriesTitle?.takeIf { it.isNotBlank() }
+        AlertDialog(
+            onDismissRequest = { confirmingEndSeries = false },
+            title = { Text("Encerrar esta série?") },
+            text = {
+                Text(
+                    if (nomeDaSerie != null) {
+                        "Isso cancela todos os avisos futuros de “$nomeDaSerie”. Os dias que já passaram ficam como estão, e não dá para desfazer."
+                    } else {
+                        "Isso cancela todos os avisos futuros desta tarefa. Os dias que já passaram ficam como estão, e não dá para desfazer."
+                    },
+                )
+            },
+            confirmButton = {
+                SecondaryButton("Sim, encerrar", enabled = !saving) {
+                    confirmingEndSeries = false
+                    onEndSeries()
+                }
+            },
+            dismissButton = {
+                PrimaryButton("Manter os avisos", enabled = !saving) { confirmingEndSeries = false }
+            },
         )
     }
 }

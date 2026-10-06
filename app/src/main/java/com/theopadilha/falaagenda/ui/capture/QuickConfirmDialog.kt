@@ -3,11 +3,9 @@ package com.theopadilha.falaagenda.ui.capture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -105,26 +103,33 @@ fun QuickConfirmDialog(
                     "Para mudar o texto, a data, o horário ou o valor, toque em Mudar.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                PrimaryButton(
-                    text = if (saving) "Salvando…" else "Salvar",
-                    enabled = !saving && date != null && time != null,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onSave(draft)
-                    },
-                )
                 SecondaryButton("Mudar", enabled = !saving) { onEdit(draft) }
             }
         },
+        // O primário é o confirmar, não o cancelar: esta caixa existe para ela conferir e
+        // salvar o que falou, e "Cancelar" no lugar de destaque a fazia cancelar por reflexo
+        // — o recado que ela acabou de falar ia embora num toque distraído. O "Cancelar"
+        // desceu para o slot de saída do M3, e o "Salvar" ocupa o de confirmação.
+        //
+        // Sem `testTag` de propósito: a tag viajava no mesmo argumento que define o slot, então
+        // um teste que só a comparasse com o texto passaria com os dois blocos trocados de volta.
+        // O que prende a hierarquia é a **posição** — o slot de confirmação do M3 desenha acima
+        // do de saída (ver `QuickConfirmDialogTest`), e é o que o teste de lá mede.
         confirmButton = {
-            TextButton(
-                onClick = onCancel,
+            PrimaryButton(
+                text = if (saving) "Salvando…" else "Salvar",
+                enabled = !saving && date != null && time != null,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onSave(draft)
+                },
+            )
+        },
+        dismissButton = {
+            SecondaryButton(
+                text = "Cancelar",
                 enabled = !saving,
-                // Altura mínima: com a fonte grande do sistema o "Cancelar" era cortado.
-                modifier = Modifier.heightIn(min = 56.dp),
-            ) {
-                Text("Cancelar")
-            }
+            ) { onCancel() }
         },
     )
 }

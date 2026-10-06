@@ -430,16 +430,17 @@ class HybridParserTest {
     /**
      * A nota do instante vencido fala do **resultado**, não de quem trouxe cada metade.
      *
-     * `marcar reunião hoje às 8h e pagar conta` às 10h: o instante do local (20/08 08:00) já
-     * passou, então escala; a IA devolve só a hora, `23:00`, e o final vira 20/08 23:00 — futuro.
-     * Desmentindo o instante pelas duas metades do remoto, a nota "Essa data e horário já passaram."
-     * ficava em vermelho logo acima de um instante futuro, e a caixa rápida confirmava assim
-     * (`qc=true`). É a mesma contradição visível que o desmentido existe para evitar.
+     * `reunião hoje às 3` às 10h: o instante do local (20/08 03:00) já passou e o "às 3" sem
+     * período deixa o rascunho ambíguo, então escala; a IA devolve só a hora, `23:00`, e o final
+     * vira 20/08 23:00 — futuro. Desmentindo o instante pelas duas metades do remoto, a nota "Essa
+     * data e horário já passaram." ficava em vermelho logo acima de um instante futuro, e a caixa
+     * rápida confirmava assim (`qc=true`). É a mesma contradição visível que o desmentido existe
+     * para evitar.
      */
     @Test
     fun aNotaDoInstanteVencidoSaiQuandoORascunhoFinalEhFuturo() = runBlocking {
-        val localDraft = local.parse("marcar reunião hoje às 8h e pagar conta")
-        assertThat(localDraft.localTime).isEqualTo(LocalTime.of(8, 0))
+        val localDraft = local.parse("reunião hoje às 3")
+        assertThat(localDraft.localTime).isEqualTo(LocalTime.of(3, 0))
         assertThat(localDraft.notes.joinToString()).contains("já passaram")
 
         val remoto = object : RemoteDraftParser {
@@ -467,7 +468,7 @@ class HybridParserTest {
             network = NetworkStatus { true },
             isAiEnabled = { true },
         )
-        val draft = hybrid.parse("marcar reunião hoje às 8h e pagar conta")
+        val draft = hybrid.parse("reunião hoje às 3")
 
         assertThat(draft.localTime).isEqualTo(LocalTime.of(23, 0))
         assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))

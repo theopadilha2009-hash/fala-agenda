@@ -54,6 +54,61 @@ class SpeechIntentTest {
             .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
     }
 
+    // --- "apaga o remédio": apagar pelo NOME, com verbo que também é tarefa --------------
+    //
+    // A fala mais provável dela — "apaga o remédio" — criava a tarefa "Apaga remédio" e ela
+    // acreditava ter apagado. O verbo "apaga" sozinho não resolve: "apagar a luz" e "tirar o
+    // lixo" são tarefas de verdade, e tratá-las como comando engoliria o recado. O que separa
+    // os dois casos é a agenda (o alvo existe?), que o classificador puro não vê — por isso
+    // ele devolve o alvo e NÃO decide o desfecho (ver [SpeechIntent.EraseNamed]): quem decide
+    // é o `HomeViewModel`, com a agenda na mão.
+
+    @Test
+    fun apagaORemedioViraApagarPeloNome() {
+        assertThat(intent("apaga o remédio")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+    }
+
+    @Test
+    fun excluiAConsultaViraApagarPeloNome() {
+        assertThat(intent("exclui a consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))
+    }
+
+    @Test
+    fun deletaAMissaViraApagarPeloNome() {
+        assertThat(intent("deleta a missa")).isEqualTo(SpeechIntent.EraseNamed("missa"))
+    }
+
+    @Test
+    fun tiraORemedioViraApagarPeloNome() {
+        assertThat(intent("tira o remédio")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+    }
+
+    @Test
+    fun removeAConsultaViraApagarPeloNome() {
+        assertThat(intent("remove a consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))
+    }
+
+    /**
+     * "apaga a luz" NOMEIA o alvo — e é justamente por isso que ele não pode cair no ERASE
+     * sem nome ("ainda não sei apagar falando"): a decisão de apagar ou capturar depende da
+     * agenda, e é o `HomeViewModel` quem a toma. Aqui se prende só o que o classificador pode
+     * saber: o alvo é "luz", e não um "apaga isso" disfarçado.
+     */
+    @Test
+    fun apagaALuzTrazOAlvoEPedeAagenda() {
+        assertThat(intent("apaga a luz")).isEqualTo(SpeechIntent.EraseNamed("luz"))
+    }
+
+    /**
+     * O infinitivo continua captura, pela mesma razão do "cancelar a consulta": "me lembra de
+     * apagar a luz" é um recado, não um imperativo dirigido ao app.
+     */
+    @Test
+    fun apagarInfinitivoContinuaTarefa() {
+        assertThat(intent("apagar a luz")).isEqualTo(SpeechIntent.Capture)
+        assertThat(intent("me lembra de apagar a luz")).isEqualTo(SpeechIntent.Capture)
+    }
+
     @Test
     fun oQueTenhoHojeViraPerguntaDeHoje() {
         assertThat(intent("o que tenho hoje?")).isEqualTo(SpeechIntent.Ask(AskWhen.TODAY))

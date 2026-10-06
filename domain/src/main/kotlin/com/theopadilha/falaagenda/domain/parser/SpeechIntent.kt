@@ -29,6 +29,16 @@ sealed interface SpeechIntent {
      */
     data class Cancel(val target: String) : SpeechIntent
 
+    /**
+     * "apaga o remédio": apagar o que casa com [target]. Diferente de [Cancel], o verbo
+     * ("apaga", "exclui", "deleta", "tira", "remove") também nomeia uma TAREFA de verdade —
+     * "apaga a luz", "tira o lixo", "remove a sujeira" —, e quem decide se a fala é comando
+     * ou recado é a agenda: com alvo, apaga; sem alvo, é captura. O classificador é puro e
+     * não tem a agenda, então ele só reconhece o alvo e deixa o desfecho para quem a tem
+     * (ver `HomeViewModel.understandSpeech`).
+     */
+    data class EraseNamed(val target: String) : SpeechIntent
+
     /** Uma intenção que reconhecemos e ainda NÃO sabemos fazer. */
     data class Unknown(val kind: UnsupportedKind) : SpeechIntent
 }
@@ -66,6 +76,7 @@ object SpeechIntentClassifier {
             // alvo nenhum e tem de cair no caminho do ERASE, não num cancelamento sem nome
             // (que procuraria a tarefa "isso" e não acharia).
             ?: unknown(folded)
+            ?: eraseNamed(folded)
             ?: cancel(folded)
             ?: SpeechIntent.Capture
     }
@@ -257,6 +268,28 @@ object SpeechIntentClassifier {
                 SpeechIntent.Unknown(UnsupportedKind.ERASE)
             else -> null
         }
+    }
+
+    // --- apagar pelo nome (o alvo decide) --------------------------------------------
+
+    // "apaga o remédio": imperativo dirigido ao app, ABRINDO a fala, com um alvo NOMEADO. O
+    // verbo aqui é ambíguo de propósito — "apaga a luz" e "tira o lixo" são tarefas de
+    // verdade, e não há nada na FORMA da frase que separe um caso do outro. Quem separa é a
+    // agenda: com um alvo que casa, é comando; sem alvo, é recado. Por isso o classificador
+    // (puro) só devolve o alvo, e a decisão fica com quem tem a agenda (ver
+    // `SpeechIntent.EraseNamed` e `HomeViewModel.understandSpeech`).
+    //
+    // O infinitivo fica de fora, como no [cancela]: "me lembra de apagar a luz" é captura.
+    private val apagaNomeado = Regex("\\b(apaga|apague|exclui|exclua|deleta|delete|tira|tire|remove|remova)\\b")
+
+    // O demonstrativo já foi tratado em [unknown] (ERASE sem nome) — aqui só o que NOMEIA o
+    // alvo. O artigo e o resto da frase são do [targetAfter], que também tira a cortesia.
+    private fun eraseNamed(folded: String): SpeechIntent? {
+        val rest = withoutFiller(folded)
+        val hit = opensWith(apagaNomeado, rest) ?: return null
+        val target = targetAfter(rest, hit.range.last + 1)
+        // Sem alvo ("apaga", "deleta") não há o que casar: é captura, como sempre foi.
+        return if (target.isEmpty()) null else SpeechIntent.EraseNamed(target)
     }
 
     // --- alvo ------------------------------------------------------------------------

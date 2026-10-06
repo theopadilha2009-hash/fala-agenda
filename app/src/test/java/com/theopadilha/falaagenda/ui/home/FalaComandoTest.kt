@@ -253,6 +253,58 @@ class FalaComandoTest {
         assertThat(proximoRecado()).contains("Ainda não sei apagar")
     }
 
+    // --- "apaga o remédio": apagar pelo nome, decidido com a agenda ------------------
+
+    /**
+     * A fala mais provável dela criava a tarefa "Apaga remédio" e ela acreditava ter apagado.
+     * Com a rotina na agenda, o verbo é comando: a tarefa sai e ela vê o desfazer.
+     */
+    @Test
+    fun apagaORemedioApagaATarefaComEsseNome() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().plusDays(1))) }
+
+        viewModel.understandSpeech("apaga o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(salvo.occurrence.id)).isNull()
+    }
+
+    /**
+     * O outro lado, e o que impede a correção de virar defeito: "apaga a luz" NÃO tem alvo na
+     * agenda, então é um recado de verdade. Tratá-lo como comando engoliria a tarefa que ela
+     * queria cadastrar — o mesmo engano silencioso, pelo avesso.
+     */
+    @Test
+    fun apagaALuzSemTarefaViraRecadoNovo() {
+        viewModel.understandSpeech("apaga a luz")
+
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("luz")
+        assertThat(agenda().today + agenda().upcoming).isEmpty()
+    }
+
+    /**
+     * Dois "remédio" nunca são escolhidos no chute, e a regra vale também para o apagar pelo
+     * nome: o app pergunta, e as duas continuam na agenda.
+     */
+    @Test
+    fun apagaONomeAmbiguoNaoApagaNada() {
+        runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().plusDays(1)))
+            container.tasks.saveDraft(recado("Comprar remédio", LocalDate.now().plusDays(2)))
+        }
+
+        viewModel.understandSpeech("apaga o remédio")
+
+        assertThat(proximoRecado()).contains("mais de uma")
+        assertThat(agenda().upcoming).hasSize(2)
+    }
+
     // --- a captura continua captura --------------------------------------------------
 
     @Test

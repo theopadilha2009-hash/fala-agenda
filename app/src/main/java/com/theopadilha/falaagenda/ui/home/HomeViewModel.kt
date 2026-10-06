@@ -13,6 +13,13 @@ import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
+import com.theopadilha.falaagenda.domain.parser.AskWhen
+import com.theopadilha.falaagenda.domain.parser.SpeechCandidate
+import com.theopadilha.falaagenda.domain.parser.SpeechIntent
+import com.theopadilha.falaagenda.domain.parser.SpeechIntentClassifier
+import com.theopadilha.falaagenda.domain.parser.SpeechTargetMatcher
+import com.theopadilha.falaagenda.domain.parser.SpeechTargetResolution
+import com.theopadilha.falaagenda.domain.parser.UnsupportedKind
 import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import com.theopadilha.falaagenda.platform.UpdateCheck
 import com.theopadilha.falaagenda.ui.AgendaFormat
@@ -704,4 +711,116 @@ class HomeViewModel(
 
     suspend fun parse(text: String): ParsedTaskDraft =
         withContext(Dispatchers.IO) { container.hybridParser.parse(text) }
+
+    /**
+     * A fala dela, com a camada de intenção na frente do parser.
+     *
+     * Antes disto, todo texto reconhecido virava rascunho de tarefa: "cancela o médico" criava
+     * a tarefa "Cancela o médico", "já tomei" criava "Já tomei", e ela ficava acreditando que
+     * tinha cancelado ou registrado algo que não aconteceu. A classificação roda ANTES de
+     * tratar o texto como captura — e, quando a intenção não é captura, o parser não é chamado.
+     *
+     * O que o app não sabe fazer ele reconhece e DIZ que não sabe ([UnsupportedKind]), em vez
+     * de criar uma tarefa com cara de sucesso. Nunca fingir que fez.
+     */
+    fun understandSpeech(text: String) {
+        when (val intent = SpeechIntentClassifier.classify(text)) {
+            // Recado novo: o caminho de sempre, inalterado.
+            SpeechIntent.Capture -> speech.understand(text)
+
+            is SpeechIntent.Ask -> viewModelScope.launch {
+                publishStatus(answerFor(intent.whenDay))
+            }
+
+            is SpeechIntent.Complete -> resolveTarget(intent.target) { item ->
+                complete(item)
+            }
+
+            is SpeechIntent.Cancel -> resolveTarget(intent.target) { item ->
+                delete(item)
+            }
+
+            is SpeechIntent.Unknown -> publishStatus(unsupportedMessage(intent.kind))
+        }
+    }
+
+    /**
+     * A resposta da pergunta. Lê a agenda agora ([TaskRepository.snapshotAgenda]) em vez de usar
+     * o `agendaUi` da tela: ele é um `stateIn` que só coleta com assinante vivo, e a resposta
+     * tem que sair com o dado real — não com a lista retida.
+     *
+     * A falha de leitura NÃO diz "não tem nada": ela diz que não deu para ler, a mesma
+     * distinção que a home já faz no cabeçalho. Uma agenda vazia por falha não é uma agenda
+     * vazia.
+     */
+    private suspend fun answerFor(whenDay: AskWhen): String {
+        val sections = try {
+            withContext(Dispatchers.IO) { container.tasks.snapshotAgenda() }
+        } catch (error: Exception) {
+            Log.w(TAG, "Não consegui ler a agenda para responder.", error)
+            return "Não consegui ler a sua agenda agora."
+        }
+        val today = container.clock.today()
+        val (day, items) = when (whenDay) {
+            AskWhen.TODAY -> today to sections.today
+            AskWhen.TOMORROW -> today.plusDays(1) to sections.upcoming.filter { it.occurrence.localDate == today.plusDays(1) }
+        }
+        val label = if (whenDay == AskWhen.TODAY) "hoje" else "amanhã"
+        if (items.isEmpty()) return "Não tem nada marcado para $label."
+        val lines = items.joinToString(" ") { item ->
+            "${item.series.title} às ${AgendaFormat.time(item.series.localTime)}."
+        }
+        return "Para $label: $lines"
+    }
+
+    /**
+     * Casa o alvo falado com a agenda e só age sobre UM candidato. Nome ambíguo (dois
+     * "remédio") vira pergunta — cancelar o errado é pior que não cancelar nada. Sem candidato,
+     * o app diz que não achou, em vez de calar.
+     */
+    private fun resolveTarget(target: String, act: (AgendaItem) -> Unit) {
+        viewModelScope.launch {
+            val sections = try {
+                withContext(Dispatchers.IO) { container.tasks.snapshotAgenda() }
+            } catch (error: Exception) {
+                Log.w(TAG, "Não consegui ler a agenda para achar a tarefa.", error)
+                publishStatus("Não consegui ler a sua agenda agora.")
+                return@launch
+            }
+            // Só o que ainda está de pé é alvo: concluir ou apagar algo já feito não é o que
+            // ela pediu.
+            //
+            // Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)
+            // materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia
+            // "já tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não
+            // funcionava. A ocorrência eleita é a pendente mais próxima (a mais urgente), que é
+            // justamente a data que `complete` e `deleteOccurrence` já tratam.
+            val pendentes = sections.today + sections.upcoming
+            val porSerie = pendentes
+                .groupBy { it.series.id }
+                .mapValues { (_, daSerie) -> daSerie.minBy { it.occurrence.scheduledAt } }
+            val candidates = porSerie.values.map {
+                SpeechCandidate(id = it.occurrence.id, title = it.series.title)
+            }
+            val itemById = porSerie.values.associateBy { it.occurrence.id }
+            when (val resolution = SpeechTargetMatcher.resolve(target, candidates)) {
+                is SpeechTargetResolution.One -> itemById[resolution.id]?.let(act)
+                SpeechTargetResolution.None ->
+                    publishStatus("Não achei nenhuma tarefa com esse nome.")
+                is SpeechTargetResolution.Ambiguous ->
+                    publishStatus("Tem mais de uma tarefa com esse nome. Diga o nome completo, ou use os botões da lista.")
+            }
+        }
+    }
+
+    /**
+     * O que o app reconheceu e ainda não sabe fazer. Diz em português de gente e aponta o
+     * caminho manual — reconhecer e não fazer é melhor que fingir.
+     */
+    private fun unsupportedMessage(kind: UnsupportedKind): String = when (kind) {
+        UnsupportedKind.CHANGE ->
+            "Ainda não sei mudar uma tarefa falando. Toque na tarefa na lista para editar."
+        UnsupportedKind.ERASE ->
+            "Ainda não sei apagar falando. Toque na tarefa na lista e use Excluir."
+    }
 }

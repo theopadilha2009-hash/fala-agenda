@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui.month
 
+import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.data.local.OccurrenceDao
 import com.theopadilha.falaagenda.data.local.OccurrenceEntity
@@ -18,6 +19,7 @@ import com.theopadilha.falaagenda.reminders.AlarmScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -207,22 +209,32 @@ class MonthSummaryFailureTest {
         zone,
     )
 
+    private lateinit var viewModel: MonthSummaryViewModel
+
     @Before
     fun setUp() {
         Dispatchers.setMain(Dispatchers.Unconfined)
+        viewModel = MonthSummaryViewModel(
+            TaskRepository(ExplodingSeriesDao(), CountingOccurrenceDao(), clock, NoopScheduler),
+        )
     }
 
     @After
     fun tearDown() {
+        // O escopo do ViewModel não é filho deste teste e ninguém o desmonta: a espera de 5 s
+        // da releitura (`withTimeoutOrNull` do `agendaUiFrom`) e o `WhileSubscribed(5_000)`
+        // ficam armados num timer de verdade — o Main daqui é o `Dispatchers.Unconfined`.
+        // Depois do `resetMain()` logo abaixo o `Dispatchers.Main` deixa de existir, e o
+        // cancelamento dessas esperas, 5 s mais tarde, tenta despachar para ele: a exceção do
+        // despacho não tem coletor e vaza para o próximo `runTest` da suíte
+        // (`UncaughtExceptionsBeforeTest`) — era assim que ela derrubava o
+        // `AgendaWidgetSyncTest` quando a suíte inteira rodava.
+        viewModel.viewModelScope.cancel()
         Dispatchers.resetMain()
     }
 
     @Test
     fun aLeituraQueFalhaNaoDerrubaNemViraMesVazioCalado() {
-        val viewModel = MonthSummaryViewModel(
-            TaskRepository(ExplodingSeriesDao(), CountingOccurrenceDao(), clock, NoopScheduler),
-        )
-
         val assinatura = CoroutineScope(Dispatchers.Unconfined).launch { viewModel.agenda.collect { } }
         try {
             val estado = runBlocking { withTimeout(5_000) { viewModel.agenda.first { it.loaded } } }

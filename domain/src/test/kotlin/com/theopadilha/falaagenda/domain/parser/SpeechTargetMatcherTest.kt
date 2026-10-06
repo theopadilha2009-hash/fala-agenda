@@ -371,4 +371,42 @@ class SpeechTargetMatcherTest {
         assertThat(resolveBySpeech("cancela a consulta do dentista", "Consulta médica"))
             .isEqualTo(SpeechTargetResolution.None)
     }
+
+    // --- D1 pelo caminho LITERAL do relatório: alvo longo x título parecido ---------------
+    //
+    // Alvo "pagar a conta de luz" e título "conta de água": o alvo tem três significativas
+    // ("pagar", "conta", "luz") e o título duas ("conta", "agua"); só "conta" casa. Concluir
+    // ou cancelar "Conta de água" porque ela falou "conta de luz" é a ação destrutiva que
+    // mente — o desfecho tem de ser não casar.
+    //
+    // NÃO é `Ambiguous`: só existe UM candidato plausível. `Ambiguous` é para quando mais de
+    // uma tarefa casa por inteiro e a resposta certa é perguntar; aqui nenhuma casa por
+    // inteiro, então `None` (não age) é o desfecho seguro.
+    //
+    // NOTA HONESTA: este caso passa ANTES e DEPOIS do fix — o ramo composite do d0ca6df exigia
+    // que TODAS as significativas do TÍTULO estivessem no alvo, e "agua" nunca está em "pagar
+    // a conta de luz". Ele é guarda de regressão, não prova do D1; a prova do D1 são os testes
+    // de título de UMA palavra ("Dentista"), que é onde o ramo composite de fato agia.
+    @Test
+    fun contaDeLuzNaoCasaAContaDeAgua() {
+        assertThat(
+            SpeechTargetMatcher.resolve("pagar a conta de luz", candidates("conta de água")),
+        ).isEqualTo(SpeechTargetResolution.None)
+    }
+
+    // --- a regra de ouro: na dúvida, não agir ---------------------------------------------
+    //
+    // Um alvo que casa PARCIALMENTE com cada candidato (1 de 2 em cada) não escolhe nenhum no
+    // chute. `None` é seguro: não age, então nunca apaga a tarefa errada. `Ambiguous` fica
+    // reservado para quando DUAS tarefas casam por inteiro — aí perguntar é o certo, e é o que
+    // `doisRemediosSaoAmbiguos` prende.
+    @Test
+    fun alvoParcialContraDoisCandidatosNaoEscolheNoChute() {
+        assertThat(
+            SpeechTargetMatcher.resolve(
+                "remedio do cachorro",
+                candidates("Tomar remédio", "Passear com o cachorro"),
+            ),
+        ).isEqualTo(SpeechTargetResolution.None)
+    }
 }

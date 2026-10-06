@@ -79,7 +79,10 @@ class PromessaComTombstoneNaTelaTest {
         compose.onNodeWithText("Vai avisar", substring = true)
             .assertTextContains(AgendaFormat.longDate(viva), substring = true)
         // ...e a data excluída não aparece no resumo: prometer o tombstone é a mentira que este
-        // teste prende. O `doesNotContain` é sobre o resumo renderizado, não sobre a peça.
+        // teste prende. O `substring = true` é o que faz esta asserção prender: o nó do resumo é
+        // a frase inteira ("Vai avisar Quarta-feira, 7 de outubro de 2026 às 09:00. Todos os
+        // dias."), e uma comparação exata não acharia nada nem com a data excluída de volta —
+        // passaria sempre. O alvo é o texto renderizado, não a peça.
         compose.onNodeWithText(AgendaFormat.longDate(comTombstone), substring = true)
             .assertDoesNotExist()
     }

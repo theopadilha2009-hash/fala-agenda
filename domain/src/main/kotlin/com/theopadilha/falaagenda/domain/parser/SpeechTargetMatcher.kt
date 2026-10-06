@@ -47,6 +47,22 @@ object SpeechTargetMatcher {
      */
     private val INFLECTION_TAILS = setOf("", "a", "o", "e", "s", "as", "os", "es")
 
+    /**
+     * Circunstância de TEMPO, não conteúdo da tarefa. O parser já a consome como data/hora
+     * ("amanhã" vira a data, "de manhã" vira o período), então no alvo ela é ruído do
+     * reconhecedor: não pode contar na maioria nem derrubar um casamento que sem ela
+     * aconteceria. Sem esta poda, "já tomei o remédio de manhã" — a fala mais provável de uma
+     * rotina — devolvia `None` e a dose não era registrada, porque "manhã" entrava como uma
+     * segunda palavra significativa e a maioria (1 de 2) não fechava.
+     *
+     * Só o ALVO é podado; o título é o nome da tarefa e continua inteiro ("Tomar remédio de
+     * manhã" casa normalmente).
+     */
+    private val TEMPORAIS = setOf(
+        "hoje", "amanha", "ontem", "manha", "tarde", "noite", "madrugada",
+        "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
+    )
+
     fun resolve(target: String, candidates: List<SpeechCandidate>): SpeechTargetResolution {
         val alvo = TextNormalizer.fold(target)
         if (alvo.length < 3) return SpeechTargetResolution.None
@@ -61,13 +77,52 @@ object SpeechTargetMatcher {
     private fun matches(alvo: String, title: String): Boolean {
         val alvoWords = alvo.split(' ').filter { it.isNotBlank() }
         val tituloWords = TextNormalizer.fold(title).split(' ').filter { it.isNotBlank() }
-        // Palavra INTEIRA igual: é o casamento exato e o que cobre o nome composto
-        // ("consulta medica" no alvo "cancela a consulta medica de amanha"). Comparar palavra
-        // com palavra — e não substrings — é o que impede "luz" de casar "Luzia".
-        if (alvoWords.any { a -> a.length >= MIN_WORD && tituloWords.any { it == a } }) return true
-        // Fora isso, raiz flexiva: a MESMA palavra com terminação diferente ("medico"/"medica").
-        return alvoWords.any { a -> tituloWords.any { t -> shareStem(a, t) } }
+
+        // Circunstância de tempo sai do alvo antes de contar (ver [TEMPORAIS]): não é conteúdo
+        // da tarefa, e o parser já a consumiu como data/hora. Sem esta poda, "já tomei o
+        // remédio de manhã" virava 1 de 2 significativas e devolvia `None` — a dose não era
+        // registrada. Com ela, o alvo sobra em "remedio" e casa "Tomar remédio" como sempre.
+        //
+        // A poda só vale se sobrar conteúdo: quando o alvo é TODO temporal ("cancela a
+        // segunda", "já fiz a manhã"), esvaziá-lo zerava o casamento e a tarefa "Consulta de
+        // segunda" / "Academia de manhã" ficava sem par — a data é o único elo que ela tem.
+        // Aí a poda não se aplica e as palavras contam como sempre.
+        val semTemporais = alvoWords.filter { it.length >= MIN_WORD && it !in TEMPORAIS }
+        val significativas = if (semTemporais.isEmpty()) {
+            alvoWords.filter { it.length >= MIN_WORD }
+        } else {
+            semTemporais
+        }
+
+        // Alvo de VÁRIAS palavras: exige a MAIORIA ESTRITA das significativas. Uma única
+        // palavra genérica em comum não basta — era isso que, com uma tarefa só na agenda,
+        // virava `One` e agia calado: "cancela o remédio do cachorro" apagava "Passear com o
+        // cachorro" (1 de 2) e "já tomei o remédio do cachorro" concluía o passeio.
+        //
+        // Havia aqui um ramo "título inteiro dentro do alvo" que casava sem olhar a proporção.
+        // Com o título de UMA palavra significativa ("Dentista"), ele virava MAIS permissivo
+        // que a maioria: bastava a palavra aparecer em qualquer alvo. "já tomei o remédio do
+        // dentista" com [Dentista, Tomar remédio] virava `One(Dentista)` e o app concluía
+        // "Dentista" respondendo "Feito." — a ação destrutiva que mente. Ele também era
+        // redundante: os casos que o justificavam ("consulta medica de amanha") já passam pela
+        // maioria, uma vez que o temporal sai da contagem. Removido.
+        //
+        // Havia também um ramo `significativas.size <= 1` que devolvia o casamento simples
+        // ("o caso mais comum"). Ele é matematicamente igual à maioria: com uma significativa,
+        // `1 * 2 > 1` é verdadeiro sempre que ela casa e falso quando não casa. Nenhum teste o
+        // prendia — removê-lo deixava a suíte verde. Removido como redundante: a maioria já
+        // cobre o alvo de uma palavra sem endurecer nada.
+        val casadas = significativas.count { a -> tituloWords.any { t -> wordMatches(a, t) } }
+        return casadas * 2 > significativas.size
     }
+
+    /**
+     * Uma palavra do alvo casa uma do título: inteira e igual, ou a MESMA palavra flexionada
+     * ("medico"/"medica"). Comparar palavra com palavra — e não substrings — é o que impede
+     * "luz" de casar "Luzia".
+     */
+    private fun wordMatches(a: String, t: String): Boolean =
+        (a.length >= MIN_WORD && a == t) || shareStem(a, t)
 
     /**
      * A raiz comum tem de começar a palavra (nunca no meio: "dia" e "medio" compartilham "dio"

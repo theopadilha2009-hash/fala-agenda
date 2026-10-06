@@ -727,6 +727,21 @@ Varredura read-only com harness próprio (`/tmp/fala-caca`, cópia fiel do `main
 - **`a cada 3 dias`** → sem data e `ambiguous=false`; o `INTERVAL` só cobre "de X em X".
 - **Comandos que o classificador deixa em `Capture`**: `esquece o médico`, `tira o médico da agenda`, `não era isso`, `não, na verdade é às 9` (→ título "Verdade"), `adiciona leite na lista` — criam tarefa com o próprio texto. É a lacuna de produto já conhecida; o dano é a crença de que agiu.
 
+### Pré-existentes que o review do #60 mediu (06/10, contra `main` `9e34aae`)
+
+Não são regressão do #60 — mediram-se os dois lados, o `main` tem o mesmo defeito. Entram aqui porque o F1/F2 do PR mexeram exatamente nesses ramos, e porque o clamp escondia parte deles.
+
+| # | frase real | o que o app faz | causa | dano |
+|---|---|---|---|---|
+| **N1** | `dia 31 de cada mês remédio às 10h` (relógio 10/02/2026) | **2026-02-28**, série **MONTHLY**, `qc=true` | os três ramos mensais (`monthlyCada` `:204`, `monthlyTodoMes` `:215`, `monthly` `:230`) só checam `day !in 1..31`; `clampToValidDate` faz o 31 virar 28/02 | a série passa a repetir num dia que ela não falou, e a caixa rápida confirma calada. Mesma classe do F2, que fechou os ramos anuais e deixou este aberto |
+| **N2** | `consulta no dia 31 de dezembro às 10h` | `date=null`, `amb=true`, nota **"“no dia 31 de dezembro” não existe no calendário"** | o ramo do dia avulso (`:583-600`) deduz o mês **antes** de tentar a data; a regex do dia avulso consome "no dia 31" e o "de dezembro" sobra, então o mês vira o deduzido (fevereiro) e 31 não cabe | 31 de dezembro existe. A nota afirma algo **falso**. No `main` o clamp escondia isso virando 28/02 em silêncio; o F1 do #60 trocou um erro silencioso por um erro visível com texto incorreto |
+| **N3** | `consulta no dia 1 de janeiro` | resolve `2027-01-01` mas marca `amb=true` com a nota `"no dia 1 de janeiro" já passou este ano` | mesma origem do N2 | janeiro de 2027 não passou. Nota falsa |
+| **N4** | `no dia primeiro de janeiro` | `title='Dia primeiro janeiro missa'`, `date=null`, `amb=false`, `missing=[DATE]` | `WORD_DAY_ALT` não cobre "primeiro" | o dia fica no título **e** o `amb=false` faz escalar pelo motivo errado |
+
+Contraste que localiza o N2/N3: `no dia 31 de março` e `no dia 31 de dezembro` **passam** quando o mês explícito é o corrente ou o seguinte — o defeito só aparece quando o mês explícito diverge do deduzido.
+
+Os três ramos mensais do N1 **não têm teste que os prenda**: se alguém fechar o buraco, nada hoje obriga a manter fechado.
+
 ### O que a medição NÃO cobriu
 
 - **Áudio do Vosk** — mediu-se texto, não áudio. S3 (e qualquer coisa que dependa de "o Vosk derruba o `às`") é **hipótese sobre o motor**, não medição.

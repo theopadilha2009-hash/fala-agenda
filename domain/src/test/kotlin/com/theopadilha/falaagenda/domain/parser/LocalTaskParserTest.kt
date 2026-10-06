@@ -781,4 +781,166 @@ class LocalTaskParserTest {
         assertThat(draft.missingFields).contains(MissingDraftField.TIME)
         assertThat(draft.title).isEqualTo("Tomar remédio")
     }
+
+    // ---- Regressões do review do #52: a hora completa, não-ambígua e errada. Cada teste abaixo
+    //      falha contra o parser do PR e passa depois do fix. Comportamento de main citado no
+    //      comentário de cada um (conferido rodando os dois lado a lado). ----
+
+    @Test
+    fun f1EmPontoLeOPeriodoEOsMinutos() {
+        // A regex do "em ponto" tem 4 grupos: hora, minutos em dígito, minutos por extenso
+        // (o "e meia") e período. O código lia o 3 (o "e meia") como se fosse período e nunca
+        // lia o 4 — o "da tarde" era descartado. Em main, "três em ponto da tarde" era 15:00.
+        val tarde = parser.parse("amanhã às três em ponto da tarde tomar remédio")
+        assertThat(tarde.localTime).isEqualTo(LocalTime.of(15, 0))
+        assertThat(tarde.ambiguous).isFalse()
+
+        val noite = parser.parse("amanhã oito em ponto da noite tomar remédio")
+        assertThat(noite.localTime).isEqualTo(LocalTime.of(20, 0))
+
+        val meia = parser.parse("amanhã oito e meia em ponto tomar remédio")
+        assertThat(meia.localTime).isEqualTo(LocalTime.of(8, 30))
+
+        // Os dois grupos juntos: o "e meia" (minuto) e o período, na mesma frase.
+        val juntos = parser.parse("amanhã oito e meia em ponto da noite tomar remédio")
+        assertThat(juntos.localTime).isEqualTo(LocalTime.of(20, 30))
+
+        // "três e meia em ponto" sem período: 3h da manhã ou da tarde. Em main era 03:30 ambíguo.
+        val tresEMeia = parser.parse("amanhã três e meia em ponto")
+        assertThat(tresEMeia.localTime).isEqualTo(LocalTime.of(3, 30))
+        assertThat(tresEMeia.ambiguous).isTrue()
+    }
+
+    @Test
+    fun f2DoseContadaNaoViraHora() {
+        // "duas de manhã" é a DOSE (duas), não 02:00. A hora da tarde se diz com o artigo
+        // ("duas da tarde", de+a); "de manhã" sem artigo é o período/dose. O PR confirmava
+        // "amanhã às 02:00" na caixa rápida, sem consultar a IA.
+        val duasManha = parser.parse("amanhã tomar duas de manhã")
+        assertThat(duasManha.localTime).isNull()
+        assertThat(duasManha.ambiguous).isTrue()
+        assertThat(duasManha.missingFields).contains(MissingDraftField.TIME)
+        assertThat(duasManha.title).isEqualTo("Tomar duas")
+
+        val uma = parser.parse("tomar uma de manhã")
+        assertThat(uma.localTime).isNull()
+        assertThat(uma.ambiguous).isTrue()
+
+        val tres = parser.parse("tomar três de manhã")
+        assertThat(tres.localTime).isNull()
+        assertThat(tres.ambiguous).isTrue()
+
+        val comprar = parser.parse("comprar duas de tarde")
+        assertThat(comprar.localTime).isNull()
+        assertThat(comprar.ambiguous).isTrue()
+
+        // Duas doses na mesma frase não podem colapsar numa hora só.
+        val duasDoses = parser.parse("tomar duas de manhã e duas de noite")
+        assertThat(duasDoses.localTime).isNull()
+        assertThat(duasDoses.ambiguous).isTrue()
+
+        // O contraste que já funcionava: a palavra intermediária salva ("duas gotas").
+        val gotas = parser.parse("tomar duas gotas de manhã")
+        assertThat(gotas.localTime).isNull()
+        assertThat(gotas.ambiguous).isTrue()
+
+        // O caso que a auditoria quer: "duas da tarde" (com artigo) é 14:00, sem escalar.
+        val daTarde = parser.parse("tomar remédio duas da tarde")
+        assertThat(daTarde.localTime).isEqualTo(LocalTime.of(14, 0))
+        assertThat(daTarde.ambiguous).isFalse()
+        assertThat(daTarde.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun f3DiaDoMesComPeriodoNaoViraHora() {
+        // "dia 5 de manhã": o "5" é o dia do mês, não 05:00. O PR substituía a data por "amanhã"
+        // e transformava o "5" em hora. Em main, "consulta dia 5 de tarde" era 2026-09-05.
+        val amanha = parser.parse("amanhã consulta dia 5 de manhã")
+        assertThat(amanha.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(amanha.localTime).isNull()
+        assertThat(amanha.ambiguous).isTrue()
+
+        val tarde = parser.parse("consulta dia 5 de tarde")
+        assertThat(tarde.localDate).isEqualTo(LocalDate.of(2026, 9, 5))
+        assertThat(tarde.localTime).isNull()
+        assertThat(tarde.ambiguous).isTrue()
+
+        // O "da" não pode reabrir a porta: "dia 5 da manhã" também é o dia do mês.
+        val da = parser.parse("consulta dia 5 da manhã")
+        assertThat(da.localDate).isEqualTo(LocalDate.of(2026, 9, 5))
+        assertThat(da.localTime).isNull()
+        assertThat(da.ambiguous).isTrue()
+    }
+
+    @Test
+    fun f4DepoisDoJantarComHoraDaMadrugadaNaoViraTarde() {
+        // "depois do jantar às duas" saía 14:00 não-ambíguo — 14h é antes do jantar. Em main era
+        // 02:00 com ambíguo (não confirmava); o PR confirmava errado.
+        val duas = parser.parse("amanhã depois do jantar às duas tomar remédio")
+        assertThat(duas.localTime).isEqualTo(LocalTime.of(2, 0))
+        assertThat(duas.ambiguous).isTrue()
+
+        listOf("três", "quatro", "cinco").forEach { palavra ->
+            val draft = parser.parse("amanhã depois do jantar às $palavra tomar remédio")
+            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.localTime!!.hour).isLessThan(13)
+        }
+    }
+
+    @Test
+    fun f5AntesDoJantarNaoEstouraANoite() {
+        // "antes do jantar às dez" saía 22:00 não-ambíguo — 22h é depois do jantar, contradiz o
+        // "antes". Em main era 10:00.
+        val dez = parser.parse("amanhã antes do jantar às dez tomar remédio")
+        assertThat(dez.ambiguous).isTrue()
+        assertThat(dez.localTime!!.hour).isLessThan(20)
+
+        val onze = parser.parse("amanhã antes do jantar às onze tomar remédio")
+        assertThat(onze.ambiguous).isTrue()
+
+        // O "e meia" (grupo 3) não pode ser descartado: em main era 06:30; o "antes" leva a 18:30.
+        val seisEMeia = parser.parse("amanhã antes do jantar às seis e meia tomar remédio")
+        assertThat(seisEMeia.localTime).isEqualTo(LocalTime.of(18, 30))
+        assertThat(seisEMeia.ambiguous).isFalse()
+    }
+
+    @Test
+    fun f6FaixaDoDiaContradizendoAHoraDitaViraAmbigua() {
+        // Quando a hora dita e a faixa do dia se contradizem, o correto é ambíguo — não cravar
+        // nenhum dos dois em silêncio.
+        val vinte = parser.parse("amanhã tomar remédio meio da tarde às vinte")
+        assertThat(vinte.ambiguous).isTrue()
+
+        val noite = parser.parse("meio da noite às duas")
+        assertThat(noite.ambiguous).isTrue()
+
+        val manha = parser.parse("meio da manhã às onze")
+        assertThat(manha.ambiguous).isTrue()
+
+        val oito = parser.parse("amanhã meio da tarde às oito")
+        assertThat(oito.ambiguous).isTrue()
+    }
+
+    @Test
+    fun f7DuasDosesNaMesmaFraseNaoColamNuma() {
+        // "duas da tarde e três da noite": uma dose some da agenda. O looksLikeTwoTasks não via
+        // hora nem verbo na segunda oração de dose.
+        val draft = parser.parse("amanhã tomar duas da tarde e três da noite")
+        assertThat(draft.ambiguous).isTrue()
+    }
+
+    @Test
+    fun f8NotaDoAntesDoJantarNaoFalaDepois() {
+        // O PeriodHit do jantar devolvia o rótulo fixo "depois do jantar": a nota falava para ela
+        // um texto que contradizia o que ela disse.
+        val draft = parser.parse("tomar remédio antes do jantar")
+        assertThat(draft.notes.joinToString()).contains("antes do jantar")
+        assertThat(draft.notes.joinToString()).doesNotContain("depois do jantar")
+    }
+
+    @Test
+    fun f9DoseContadaNaoSomeDoTitulo() {
+        assertThat(parser.parse("tomar duas de manhã").title).isEqualTo("Tomar duas")
+        assertThat(parser.parse("comprar duas de tarde").title).isEqualTo("Comprar duas")
+    }
 }

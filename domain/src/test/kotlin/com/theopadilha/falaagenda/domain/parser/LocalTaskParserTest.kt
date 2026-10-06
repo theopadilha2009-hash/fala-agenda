@@ -907,11 +907,13 @@ class LocalTaskParserTest {
 
     @Test
     fun todaSemanaQueVemComecaNaProximaSemana() {
-        // F8: o "que vem" era engolido e a série começava hoje.
-        val draft = parser.parse("toda semana que vem limpar a casa às 8h")
+        // F8: o "que vem" era engolido e a série começava hoje. A hora é FUTURA (18h) de propósito:
+        // com hora já passada (8h) o guard de horário empurrava a série para a semana seguinte por
+        // acaso e o teste passava com o bug do P0-1 intacto.
+        val draft = parser.parse("toda semana que vem limpar a casa às 18h")
         assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
         assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 27))
-        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(18, 0))
         assertThat(draft.title).isEqualTo("Limpar casa")
     }
 
@@ -973,5 +975,158 @@ class LocalTaskParserTest {
         val asTres = parser.parse("às três em ponto")
         assertThat(asTres.localTime).isEqualTo(LocalTime.of(3, 0))
         assertThat(asTres.title).isEmpty()
+    }
+
+    // ---- Regressões NOVAS da 2ª revisão (P0-1 a P2-8) ----
+
+    @Test
+    fun todaSemanaQueVemSemDiaComHoraFuturaNaoAncoraHoje() {
+        // P0-1: sem dia da semana o early-return montava a série sem propagar o `nextWeek` — com
+        // hora FUTURA (18h) a série ancorava HOJE (20/08), não na semana que vem (27/08). A caixa
+        // rápida confirmava hoje em silêncio. Com 8h o guard de horário escondia o defeito.
+        val limpar = parser.parse("toda semana que vem limpar a casa às 18h")
+        assertThat(limpar.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(limpar.localDate).isEqualTo(LocalDate.of(2026, 8, 27))
+        assertThat(limpar.localTime).isEqualTo(LocalTime.of(18, 0))
+
+        val natacao = parser.parse("toda semana que vem natação às 18h")
+        assertThat(natacao.localDate).isEqualTo(LocalDate.of(2026, 8, 27))
+        assertThat(natacao.localTime).isEqualTo(LocalTime.of(18, 0))
+
+        // Sem hora dita, também vale a semana que vem.
+        val semHora = parser.parse("toda semana que vem natação")
+        assertThat(semHora.localDate).isEqualTo(LocalDate.of(2026, 8, 27))
+    }
+
+    @Test
+    fun sextaFeiraSemHifenNaoComeOTitulo() {
+        // P0-3: em "na sexta feira dentista" o token antes de "feira" é a preposição, então o guard
+        // antigo removia o "Feira" e o título ficava "Feira dentista". O "feira" colado ao dia já
+        // saiu junto com o dia; o que sobra é o substantivo? Não: aqui é o sufixo do dia.
+        val na = parser.parse("na sexta feira dentista às 8h")
+        assertThat(na.title).isEqualTo("Dentista")
+        assertThat(na.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+
+        val de = parser.parse("de sexta feira dentista às 8h")
+        assertThat(de.title).isEqualTo("Dentista")
+
+        val quarta = parser.parse("na quarta feira dentista às 8h")
+        assertThat(quarta.title).isEqualTo("Dentista")
+        assertThat(quarta.localDate).isEqualTo(LocalDate.of(2026, 8, 26))
+
+        // "toda semana na sexta feira": a série no dia dito, sem "Feira"/"Semana" no título.
+        val serie = parser.parse("toda semana na sexta feira natação às 18h")
+        assertThat(serie.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(serie.recurrence.weekDays).containsExactly(DayOfWeek.FRIDAY)
+        assertThat(serie.title).isEqualTo("Natação")
+
+        // O hífen já funcionava e não pode regredir.
+        assertThat(parser.parse("na sexta-feira dentista às 8h").title).isEqualTo("Dentista")
+    }
+
+    @Test
+    fun cinzasNuNoInicioDaFraseNaoViraData() {
+        // P0-4: `before` é "" no início da frase e "" ∈ DATE_DETERMINERS, então "cinzas da
+        // churrasqueira" virava a Quarta-feira de Cinzas (10/02/2027) completa e não-ambígua.
+        listOf("cinzas da churrasqueira", "cinzas do fogão limpar", "cinzas").forEach { frase ->
+            val draft = parser.parse(frase)
+            assertThat(draft.localDate).isNull()
+            assertThat(draft.missingFields).contains(MissingDraftField.DATE)
+        }
+
+        // A forma de data (com o determinante/preposição) continua valendo.
+        assertThat(parser.parse("quarta-feira de cinzas missa às 19h").localDate)
+            .isEqualTo(LocalDate.of(2027, 2, 10))
+
+        // "limpar as cinzas" já estava certo e não pode regredir.
+        assertThat(parser.parse("limpar as cinzas da churrasqueira às 10h").localDate).isNull()
+    }
+
+    @Test
+    fun festaIsoladaNaoZeraOTitulo() {
+        // P0-5: "natal" isolado virava data 25/12 com title=''; o main devolvia title='Natal'.
+        val natal = parser.parse("natal")
+        assertThat(natal.localDate).isEqualTo(LocalDate.of(2026, 12, 25))
+        assertThat(natal.title).isEqualTo("Natal")
+
+        val finados = parser.parse("finados")
+        assertThat(finados.localDate).isEqualTo(LocalDate.of(2026, 11, 2))
+        assertThat(finados.title).isEqualTo("Finados")
+    }
+
+    @Test
+    fun anoDitoNaDataNomeadaVence() {
+        // P0-6: "no Natal de 2027" ignorava o ano e devolvia 2026 (relógio 20/08/2026).
+        val natal2027 = parser.parse("no Natal de 2027 almoço")
+        assertThat(natal2027.localDate).isEqualTo(LocalDate.of(2027, 12, 25))
+
+        val natal2026 = parser.parse("no Natal de 2026 almoço")
+        assertThat(natal2026.localDate).isEqualTo(LocalDate.of(2026, 12, 25))
+
+        // Relógio em 2027: "no Natal de 2026" tem que dar 2026 (já passou), não 2027.
+        val em2027 = parserEm(LocalDateTime.of(2027, 5, 10, 10, 0))
+        assertThat(em2027.parse("no Natal de 2026 almoço").localDate).isEqualTo(LocalDate.of(2026, 12, 25))
+    }
+
+    @Test
+    fun proximoMesNasBordasVaiParaOMesSeguinte() {
+        // P1-7: o PR declara cobrir "próximo mês" mas só MONTH_START/MIDDLE/END + "que vem"
+        // casavam. "fim do próximo mês" ficava sem data e o "Fim próximo" ia para o título.
+        val fim = parser.parse("fim do próximo mês pagar conta")
+        assertThat(fim.localDate).isEqualTo(LocalDate.of(2026, 9, 30))
+        assertThat(fim.title).isEqualTo("Pagar conta")
+
+        val meio = parser.parse("meio do próximo mês pagar conta")
+        assertThat(meio.localDate).isEqualTo(LocalDate.of(2026, 9, 15))
+
+        val comeco = parser.parse("começo do próximo mês pagar conta")
+        assertThat(comeco.localDate).isEqualTo(LocalDate.of(2026, 9, 1))
+
+        val noFinal = parser.parse("no final do próximo mês pagar conta")
+        assertThat(noFinal.localDate).isEqualTo(LocalDate.of(2026, 9, 30))
+
+        val noInicio = parser.parse("no início do próximo mês pagar conta")
+        assertThat(noInicio.localDate).isEqualTo(LocalDate.of(2026, 9, 1))
+
+        // "mês que vem" na mesma forma.
+        assertThat(parser.parse("fim do mês que vem pagar conta").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 30))
+    }
+
+    @Test
+    fun daquiDuasSemanasEMeiaContaOsTresDias() {
+        // P2-8: o "e meia" depois de "semanas" sumia e a data saía 7 dias antes (03/09 em vez de
+        // 06/09). Meia semana é 3 dias.
+        val draft = parser.parse("daqui a duas semanas e meia dentista")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 9, 6))
+        assertThat(draft.title).isEqualTo("Dentista")
+
+        // O espelho que já funcionava não pode regredir.
+        assertThat(parser.parse("daqui a duas semanas dentista").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 3))
+    }
+
+    @Test
+    fun listaNaoPodeRegredirDoReview() {
+        // Lista literal de "não pode regredir" da revisão do PR #55.
+        val serie = parser.parse("toda terça e quinta natação às 18h")
+        assertThat(serie.localTime).isEqualTo(LocalTime.of(18, 0))
+        assertThat(serie.ambiguous).isFalse()
+
+        assertThat(parser.parse("hoje à noite às nove").localTime).isEqualTo(LocalTime.of(21, 0))
+        assertThat(parser.parse("às 8 da noite").localTime).isEqualTo(LocalTime.of(20, 0))
+        assertThat(parser.parse("às 3 e meia da noite").localTime).isEqualTo(LocalTime.of(3, 30))
+        assertThat(parser.parse("meio-dia e meia").localTime).isEqualTo(LocalTime.of(12, 30))
+
+        val intervaloHoras = parser.parse("de 8 em 8 horas")
+        assertThat(intervaloHoras.localTime).isNull()
+        assertThat(intervaloHoras.ambiguous).isTrue()
+
+        assertThat(parser.parse("amanhã de manhã").ambiguous).isTrue()
+        assertThat(parser.parse("depois do almoço").ambiguous).isTrue()
+
+        val intervaloDuasHoras = parser.parse("de duas em duas horas")
+        assertThat(intervaloDuasHoras.localTime).isNull()
+        assertThat(intervaloDuasHoras.ambiguous).isTrue()
     }
 }

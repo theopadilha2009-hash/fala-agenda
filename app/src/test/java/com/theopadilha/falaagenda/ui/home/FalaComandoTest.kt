@@ -1,0 +1,216 @@
+package com.theopadilha.falaagenda.ui.home
+
+import android.app.Application
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
+import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
+import com.theopadilha.falaagenda.domain.model.RecurrenceKind
+import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import java.time.LocalDate
+import java.time.LocalTime
+
+/**
+ * A fala passa pela camada de intenção antes de virar tarefa.
+ *
+ * O defeito que estes testes prendem: todo texto reconhecido ia direto para o parser, então
+ * "cancela o médico" criava a tarefa "Cancela o médico" e ela acreditava que tinha cancelado.
+ * Aqui a metade que importa é a do ViewModel — um comando NÃO cria tarefa, e uma captura
+ * continua criando. A tela (o aviso sair legível, a caixa rápida abrir) é da composição, e
+ * esta suíte não roda Compose.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(
+    sdk = [34],
+    manifest = Config.NONE,
+    packageName = "com.theopadilha.falaagenda",
+    application = Application::class,
+)
+class FalaComandoTest {
+
+    private val context = ApplicationProvider.getApplicationContext<Context>()
+    private lateinit var container: AppContainer
+    private lateinit var viewModel: HomeViewModel
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(Dispatchers.Unconfined)
+        container = AppContainer(context)
+        viewModel = HomeViewModel(container)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
+    }
+
+    // --- o defeito: comando não vira tarefa ------------------------------------------
+
+    @Test
+    fun cancelarSemAlvoAchadoNaoCriaTarefa() {
+        viewModel.understandSpeech("cancela o médico")
+
+        val agenda = agenda()
+        assertThat(agenda.today).isEmpty()
+        assertThat(agenda.upcoming).isEmpty()
+        assertThat(proximoRecado()).contains("Não achei")
+    }
+
+    @Test
+    fun jaTomeiNaoCriaTarefaJaTomei() {
+        viewModel.understandSpeech("já tomei")
+
+        val agenda = agenda()
+        assertThat(agenda.today).isEmpty()
+        assertThat(agenda.upcoming).isEmpty()
+        // Sem nome nenhum, a matcher não escolhe: o app diz que não achou.
+        assertThat(proximoRecado()).contains("Não achei")
+    }
+
+    @Test
+    fun oQueTenhoHojeRespondeEmVezDeCriarTarefa() {
+        viewModel.understandSpeech("o que tenho hoje?")
+
+        val agenda = agenda()
+        assertThat(agenda.today).isEmpty()
+        assertThat(agenda.upcoming).isEmpty()
+        assertThat(proximoRecado()).contains("Não tem nada marcado para hoje")
+    }
+
+    @Test
+    fun oQueTenhoAmanhaListaOTitulo() {
+        runBlocking { container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().plusDays(1))) }
+
+        viewModel.understandSpeech("o que tenho amanhã?")
+
+        val recado = proximoRecado()
+        assertThat(recado).contains("amanhã")
+        assertThat(recado).contains("Tomar remédio")
+    }
+
+    @Test
+    fun oQueTenhoHojeNaoListaAmanha() {
+        runBlocking { container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().plusDays(1))) }
+
+        viewModel.understandSpeech("o que tenho hoje?")
+
+        assertThat(proximoRecado()).contains("Não tem nada marcado para hoje")
+    }
+
+    // --- concluir e cancelar: agem de verdade ----------------------------------------
+
+    @Test
+    fun concluirUmAlvoUnicoMarcaComoFeito() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado("Consulta médica", LocalDate.now().plusDays(1))) }
+
+        viewModel.understandSpeech("conclui a consulta médica")
+
+        assertThat(proximoRecado()).isEqualTo("Feito.")
+        val status = runBlocking { container.tasks.snapshotAgenda() }
+            .find(salvo.occurrence.id)?.occurrence?.status
+        assertThat(status).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    @Test
+    fun cancelarUmAlvoUnicoApaga() {
+        val salvo = runBlocking { container.tasks.saveDraft(recado("Dentista", LocalDate.now().plusDays(1))) }
+
+        viewModel.understandSpeech("cancela o dentista")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        val agenda = agenda()
+        assertThat(agenda.today + agenda.upcoming).isEmpty()
+        assertThat(agenda.find(salvo.occurrence.id)).isNull()
+    }
+
+    /**
+     * Dois "remédio" NUNCA são escolhidos no chute: cancelar o errado é pior que não cancelar
+     * nada. O app pergunta, e as duas continuam na agenda.
+     */
+    @Test
+    fun nomeAmbiguoNaoCancelaNada() {
+        runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().plusDays(1)))
+            container.tasks.saveDraft(recado("Comprar remédio", LocalDate.now().plusDays(2)))
+        }
+
+        viewModel.understandSpeech("cancela o remédio")
+
+        assertThat(proximoRecado()).contains("mais de uma")
+        val agenda = agenda()
+        assertThat(agenda.upcoming).hasSize(2)
+    }
+
+    // --- reconhecer e não fazer ------------------------------------------------------
+
+    @Test
+    fun mudarEhReconhecidoENaoExecutado() {
+        viewModel.understandSpeech("muda pra quinta")
+
+        assertThat(proximoRecado()).contains("Ainda não sei mudar")
+        val agenda = agenda()
+        assertThat(agenda.today + agenda.upcoming).isEmpty()
+    }
+
+    @Test
+    fun apagarSemNomeEhReconhecidoENaoExecutado() {
+        viewModel.understandSpeech("apaga isso")
+
+        assertThat(proximoRecado()).contains("Ainda não sei apagar")
+    }
+
+    // --- a captura continua captura --------------------------------------------------
+
+    @Test
+    fun umaTarefaDeVerdadeContinuaVirandoRascunho() {
+        viewModel.understandSpeech("Tomar remédio às 8")
+
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("remédio")
+    }
+
+    // --- helpers ---------------------------------------------------------------------
+
+    private fun agenda() = runBlocking { container.tasks.snapshotAgenda() }
+
+    private fun proximoRecado(): String =
+        runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.statusMessage.filterNotNull().first().text } }
+
+    private fun recado(titulo: String, data: LocalDate) = ParsedTaskDraft(
+        title = titulo,
+        localDate = data,
+        localTime = LocalTime.of(8, 30),
+        recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        confidence = 1.0,
+        missingFields = emptySet(),
+        ambiguous = false,
+        transcript = titulo,
+    )
+
+    private companion object {
+        const val TEMPO_LIMITE = 15_000L
+    }
+}

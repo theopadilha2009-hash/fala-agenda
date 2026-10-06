@@ -314,7 +314,9 @@ fun HomeScreen(
         voice.consumeFinal()
         // O parse vive no ViewModel, fora do escopo da tela: consumir o texto final zera
         // `finalText` e o LaunchedEffect seria cancelado no meio do parse, calado.
-        viewModel.speech.understand(text)
+        // `understandSpeech` classifica a intenção ANTES de tratar o texto como captura: um
+        // comando ("cancela o médico", "o que tenho hoje?") deixa de virar tarefa.
+        viewModel.understandSpeech(text)
     }
 
     // O recado entendido pode chegar com a home fora da tela (rotação, Ajustes, Mês): fica

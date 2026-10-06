@@ -352,6 +352,29 @@ class HomeViewModel(
      */
     val speech = SpeechSession(scope = viewModelScope, parse = { parse(it) })
 
+    /**
+     * O aparelho ainda deixa o alarme tocar na hora? Não é o "usou alarme inexato ao salvar"
+     * de antes (que morria no toque e no giro): é a leitura fresca da permissão, refeita em
+     * [refreshAlarmHealth] — o resume da home e o próprio construtor. É ela que decide o cartão
+     * de saúde do alarme, e é ela que continua verdadeira depois de a permissão ser revogada.
+     */
+    private val _canScheduleExact = MutableStateFlow(container.scheduler.canScheduleExact())
+    val canScheduleExact: StateFlow<Boolean> = _canScheduleExact
+
+    /**
+     * Relê a permissão de alarme exato do aparelho. Chamado no resume da home: voltar dos
+     * Ajustes com a permissão ligada (ou revogada) tem de mexer no cartão na hora, e o estado
+     * guardado no `Bundle` não sabe do que aconteceu fora do app.
+     */
+    fun refreshAlarmHealth() {
+        _canScheduleExact.value = container.scheduler.canScheduleExact()
+    }
+
+    /**
+     * O aviso transitório do salvamento ("o aviso pode atrasar alguns minutos"), que a home
+     * mostra no snackbar. Não é a verdade persistente — essa é [canScheduleExact] —, mas ele
+     * confirma na hora o que acabou de acontecer com o recado que ela acabou de salvar.
+     */
     private val _inexactWarning = MutableStateFlow(false)
     val inexactWarning: StateFlow<Boolean> = _inexactWarning
 

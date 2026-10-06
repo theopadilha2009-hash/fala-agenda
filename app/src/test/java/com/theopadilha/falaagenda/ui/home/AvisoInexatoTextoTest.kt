@@ -17,7 +17,6 @@ class AvisoInexatoTextoTest {
 
     private val frases = listOf(
         AVISO_INEXATO_SNACKBAR,
-        AVISO_INEXATO_CARTAO,
         AVISO_INEXATO_BOTAO,
         AVISO_INEXATO_FALHA_AO_ABRIR,
     )
@@ -45,14 +44,16 @@ class AvisoInexatoTextoTest {
     }
 
     /**
-     * Não esconde o problema: o cartão diz que a tarefa foi salva E que o aviso pode chegar
-     * depois da hora. Sem a segunda parte o texto prometeria um horário que o sistema pode
-     * não cumprir.
+     * Não esconde o problema: o cartão persistente diz que o aviso pode chegar depois da hora.
+     * Sem essa parte o texto prometeria um horário que o sistema pode não cumprir. (O cartão
+     * antigo só aparecia no salvamento e dizia "a tarefa foi salva"; agora ele lê o aparelho a
+     * cada resume e vale por si, sem a moldura de confirmação.)
      */
     @Test
-    fun oCartaoDizQueSalvouEMesmoAssimOAvisoPodeAtrasar() {
-        assertThat(AVISO_INEXATO_CARTAO).contains("salva")
-        assertThat(AVISO_INEXATO_CARTAO).contains("depois da hora")
+    fun oCartaoDizQueOAvisoPodeAtrasar() {
+        val inexato = alarmHealthCard(batteryUnrestricted = true, canScheduleExact = false)!!
+
+        assertThat(inexato.text).contains("depois da hora")
     }
 
     /** O snackbar também não pode calar o atraso. */

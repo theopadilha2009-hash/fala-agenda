@@ -94,16 +94,27 @@ object DeviceIntents {
     }
 
     @SuppressLint("BatteryLife")
-    fun batterySettings(context: Context): Intent {
-        val pkg = context.packageName
-        return if (!isBatteryUnrestricted(context)) {
-            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$pkg")
-            }
+    fun batterySettings(context: Context): Intent =
+        batterySettingsIntentOrNull(context) ?: Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+
+    /**
+     * A tela de bateria do sistema **quando há o que pedir ali**: com a restrição ligada é o
+     * pedido de exceção para o próprio pacote; com ela já desligada não há tela que resolva, e
+     * a resposta é `null` — quem chama mostra o recado do fabricante em vez de mandá-la a uma
+     * lista onde não há nada para ligar (o mesmo cuidado do `alertFix` para os avisos).
+     *
+     * O `@SuppressLint("BatteryLife")` fica aqui, e não na [batterySettings], porque é este o
+     * Intent que pede a isenção direta — o lint reclama da política da Play, e o app já a usa.
+     */
+    @SuppressLint("BatteryLife")
+    fun batterySettingsIntentOrNull(context: Context): Intent? =
+        if (isBatteryUnrestricted(context)) {
+            null
         } else {
-            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${context.packageName}")
+            }
         }
-    }
 
     fun canInstallPackages(context: Context): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

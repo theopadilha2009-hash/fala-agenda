@@ -1575,4 +1575,43 @@ class LocalTaskParserTest {
         assertThat(draft.notes.joinToString()).contains("intervalo")
         assertThat(draft.notes.joinToString()).doesNotContain("Diga o horário")
     }
+
+    @Test
+    fun feiraDeMercadoNaoSomeDoTitulo() {
+        // A: "feira" (mercado) não é o sufixo de um dia da semana. O `\bfeiras?\b` comia qualquer
+        // "feira", então "ir na feira sábado" virava "Ir" — data e hora certas, sem ambiguidade,
+        // e a caixa rápida confirmava o nome errado sem consultar a IA.
+        val irNaFeira = parser.parse("ir na feira sábado às 8h")
+        assertThat(irNaFeira.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+        assertThat(irNaFeira.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(irNaFeira.title.lowercase()).contains("feira")
+
+        val comprar = parser.parse("comprar na feira sexta às 8h")
+        assertThat(comprar.title.lowercase()).contains("feira")
+
+        // O sufixo do dia da semana continua saindo.
+        assertThat(parser.parse("sexta-feira dentista às 8h").title).isEqualTo("Dentista")
+        assertThat(parser.parse("quarta-feira de cinzas missa às 19h").title).isEqualTo("Missa")
+    }
+
+    @Test
+    fun emPontoEhQualificadorDaHoraNaoDoTitulo() {
+        // B: "em ponto" vazava para o título ("Ponto") e, sem o "às", a hora se perdia.
+        val oitoEMeia = parser.parse("oito e meia em ponto")
+        assertThat(oitoEMeia.localTime).isEqualTo(LocalTime.of(8, 30))
+        assertThat(oitoEMeia.title).isEmpty()
+
+        val meioDia = parser.parse("meio-dia em ponto")
+        assertThat(meioDia.localTime).isEqualTo(LocalTime.of(12, 0))
+        assertThat(meioDia.title).isEmpty()
+
+        val tres = parser.parse("três em ponto")
+        assertThat(tres.localTime).isEqualTo(LocalTime.of(3, 0))
+        assertThat(tres.title).isEmpty()
+
+        // "às três em ponto" continua 03:00 (ambíguo de manhã/tarde), sem "Ponto" no título.
+        val asTres = parser.parse("às três em ponto")
+        assertThat(asTres.localTime).isEqualTo(LocalTime.of(3, 0))
+        assertThat(asTres.title).isEmpty()
+    }
 }

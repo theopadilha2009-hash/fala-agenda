@@ -1124,9 +1124,20 @@ class LocalTaskParser(
             remaining = remaining.replace(regex, " ")
         }
         remaining = remaining.replace(Regex("""\b(e|,)\b"""), " ")
-        remaining = remaining.replace(Regex("""\bfeiras?\b"""), " ")
-        return TextNormalizer.compactSpaces(remaining)
+        return TextNormalizer.compactSpaces(stripFeiraSuffix(remaining))
     }
+
+    /**
+     * Tira o "feira" que sobra do dia da semana ("sexta feira", depois de o dia já ter saído).
+     * O substantivo (o mercado) fica: quando "feira" vem depois de artigo ou preposição — "na
+     * feira", "da feira" — não é o sufixo do dia. Sem o guard, "ir na feira sábado" virava "Ir",
+     * o nome da tarefa apagado e sem ambiguidade, que a caixa rápida confirmava sozinha.
+     */
+    private fun stripFeiraSuffix(text: String): String =
+        FEIRA_SUFIXO.replace(text) { m ->
+            val before = text.substring(0, m.range.first).trimEnd().substringAfterLast(' ')
+            if (before in FEIRA_PREPOSICOES) m.value else " "
+        }
 
     private fun monthFromName(name: String): Int = when (name) {
         "janeiro" -> 1
@@ -1161,15 +1172,6 @@ class LocalTaskParser(
         private val CLOCK_BARE = Regex(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
-        /**
-         * "em ponto" como sufixo de uma hora que os relógios normais já reconheceram.
-         *
-         * É só o qualificador: não captura hora, minuto nem período — quem faz isso é `CLOCK_*`. O
-         * ramo que capturava a hora por conta própria consumia o dia do mês ("dia 12 em ponto"), o
-         * primeiro número de uma data `NN/MM` ("05/12 em ponto" → 05:12 de setembro) e a segunda hora
-         * em dígito da frase ("oito em ponto e 9"), todos com `ambiguous = false`. Ver
-         * `consumirEmPonto`.
-         */
         private val EM_PONTO_TAIL = Regex("""\bem\s+ponto\b""")
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
@@ -1438,6 +1440,12 @@ class LocalTaskParser(
 
         /** Dia da semana solto — para distinguir "terça e quinta" (lista) de "terça e remédio". */
         private val WEEKDAY_ANY = Regex("""\b(?:$WEEKDAY_ALT)(?:-?feira)?\b""")
+
+        /** O "-feira" que sobra do dia da semana; o substantivo (mercado) fica (ver `stripFeiraSuffix`). */
+        private val FEIRA_SUFIXO = Regex("""\bfeiras?\b""")
+
+        /** Preposições/artigos que fazem "feira" ser o mercado, não o sufixo do dia. */
+        private val FEIRA_PREPOSICOES = setOf("na", "a", "da", "de", "pra", "para")
 
         /** "vinte e cinco"/"oito e meia": o "e" pertence ao número — não separa orações. */
         private val NUMBER_E = Regex(

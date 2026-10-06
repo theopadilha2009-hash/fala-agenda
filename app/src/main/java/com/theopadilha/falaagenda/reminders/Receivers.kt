@@ -299,10 +299,12 @@ class DailySweepReceiver : BroadcastReceiver() {
 private fun BroadcastReceiver.rescheduleAsync(context: Context) {
     // Mesma guarda do receiver do alarme: sem o `as?`, um processo que subisse com outro
     // `Application` derrubava boot, troca de hora e virada do dia no ato do cast — em vez de
-    // deixar a varredura de fora e registrar por quê.
+    // deixar a varredura de fora e registrar por quê. O escopo morto entra na mesma checagem:
+    // com ele cancelado o `launch` devolve um job que nunca começa, e o `pending` pedido
+    // abaixo ficaria vivo até o sistema matar o processo.
     val app = context.applicationContext as? FalaAgendaApplication
-    if (app == null) {
-        Log.w(TAG, "Sem aplicativo para regravar os alarmes")
+    if (app == null || !app.appScope.isActive) {
+        Log.w(TAG, "Sem escopo para regravar os alarmes")
         return
     }
     val pending = goAsync()

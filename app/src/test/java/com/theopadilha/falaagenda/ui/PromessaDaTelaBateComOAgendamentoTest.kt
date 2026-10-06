@@ -5,8 +5,10 @@ import com.theopadilha.falaagenda.data.local.OccurrenceDao
 import com.theopadilha.falaagenda.data.local.OccurrenceEntity
 import com.theopadilha.falaagenda.data.local.SeriesDao
 import com.theopadilha.falaagenda.data.local.SeriesEntity
+import com.theopadilha.falaagenda.data.local.toEntity
 import com.theopadilha.falaagenda.data.repo.SchedulerOutcome
 import com.theopadilha.falaagenda.data.repo.TaskRepository
+import com.theopadilha.falaagenda.domain.model.OccurrenceIds
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.QuietHours
@@ -14,6 +16,7 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
+import com.theopadilha.falaagenda.domain.recurrence.OccurrenceLifecycle
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import com.theopadilha.falaagenda.reminders.AlarmScheduler
 import com.theopadilha.falaagenda.ui.capture.recurrenceFor
@@ -331,6 +334,128 @@ class PromessaDaTelaBateComOAgendamentoTest {
 
         assertThat(promessa.recap).contains(AgendaFormat.longDate(terca))
         assertThat(promessa.droppedChoice).isNull()
+    }
+
+    /**
+     * O defeito do tombstone, com os números dele: série "Remédio" todo dia às 08:00, ela
+     * exclui a ocorrência de amanhã (30/09) e edita o cartão de hoje para as 18:00 com o
+     * relógio já em 20:00.
+     *
+     * A escolha venceu, então quem é armada é a próxima data da regra — mas 30/09 tem
+     * tombstone, e a próxima **viva** é 01/10. O repositório (que é a fonte da verdade) tem de
+     * gravar e armar 01/10, e a tela tem de prometer a mesma data. Prometer 30/09 é anunciar um
+     * alarme que não vai tocar: é o defeito de origem deste aplicativo, pelo caminho do #49.
+     */
+    @Test
+    fun editarComTombstoneNaProximaDataPrometeEArmaAProximaViva() = runBlocking {
+        val noite = terca.atTime(20, 0).atZone(zone).toInstant()
+        val amanha = LocalDate.of(2026, 9, 30)
+        val depoisDeAmanha = LocalDate.of(2026, 10, 1)
+        val rule = recurrenceFor(RecurrenceKind.DAILY, terca, emptySet())
+        val seriesDao = FakeSeriesDao()
+        val occDao = FakeOccurrenceDao()
+        val repoDaNoite = TaskRepository(seriesDao, occDao, FixedAppClock(noite, zone), scheduler)
+        val series = TaskSeries(
+            id = "s-rem",
+            title = "Remédio",
+            zoneId = zone,
+            localTime = LocalTime.of(8, 0),
+            startLocalDate = terca,
+            recurrence = rule,
+            skippedDates = setOf(amanha),
+            createdAt = noite,
+            updatedAt = noite,
+        )
+        seriesDao.upsert(series.toEntity())
+        val deHoje = OccurrenceIds.of(series.id, terca)
+        occDao.upsert(
+            TaskOccurrence(
+                id = deHoje,
+                seriesId = series.id,
+                localDate = terca,
+                scheduledAt = terca.atTime(8, 0).atZone(zone).toInstant(),
+                status = OccurrenceStatus.PENDING,
+            ).toEntity(),
+        )
+
+        repoDaNoite.editOccurrence(deHoje, "Remédio", terca, LocalTime.of(18, 0), rule)
+
+        // O repositório é a fonte da verdade: a data com tombstone não nasce, e a próxima viva
+        // é que fica pendente com alarme.
+        assertThat(occDao.get(OccurrenceIds.of(series.id, amanha))).isNull()
+        val viva = occDao.get(OccurrenceIds.of(series.id, depoisDeAmanha))
+        assertThat(viva).isNotNull()
+        assertThat(viva!!.status).isEqualTo(OccurrenceStatus.PENDING.name)
+
+        // E a tela promete exatamente a data que o repositório armou.
+        val promessa = AgendaFormat.promiseOfChoice(
+            chosenDate = terca,
+            chosenTime = LocalTime.of(18, 0),
+            recurrence = rule,
+            today = terca,
+            now = noite,
+            zone = zone,
+            editing = true,
+            skippedDates = setOf(amanha),
+        )
+        assertThat(promessa.recap).contains(AgendaFormat.longDate(depoisDeAmanha))
+        assertThat(promessa.recap).doesNotContain(AgendaFormat.longDate(amanha))
+    }
+
+    /**
+     * Vários tombstones seguidos: com 30/09 e 01/10 excluídos, a próxima viva é 02/10. Um passo
+     * só da regra não basta — avançar uma data pararia numa que também está excluída.
+     */
+    @Test
+    fun variosTombstonesSeguidosAvancamAteAProximaViva() = runBlocking {
+        val noite = terca.atTime(20, 0).atZone(zone).toInstant()
+        val amanha = LocalDate.of(2026, 9, 30)
+        val depoisDeAmanha = LocalDate.of(2026, 10, 1)
+        val depoisDeDepois = LocalDate.of(2026, 10, 2)
+        val rule = recurrenceFor(RecurrenceKind.DAILY, terca, emptySet())
+        val seriesDao = FakeSeriesDao()
+        val occDao = FakeOccurrenceDao()
+        val repoDaNoite = TaskRepository(seriesDao, occDao, FixedAppClock(noite, zone), scheduler)
+        val series = TaskSeries(
+            id = "s-rem",
+            title = "Remédio",
+            zoneId = zone,
+            localTime = LocalTime.of(8, 0),
+            startLocalDate = terca,
+            recurrence = rule,
+            skippedDates = setOf(amanha, depoisDeAmanha),
+            createdAt = noite,
+            updatedAt = noite,
+        )
+        seriesDao.upsert(series.toEntity())
+        val deHoje = OccurrenceIds.of(series.id, terca)
+        occDao.upsert(
+            TaskOccurrence(
+                id = deHoje,
+                seriesId = series.id,
+                localDate = terca,
+                scheduledAt = terca.atTime(8, 0).atZone(zone).toInstant(),
+                status = OccurrenceStatus.PENDING,
+            ).toEntity(),
+        )
+
+        repoDaNoite.editOccurrence(deHoje, "Remédio", terca, LocalTime.of(18, 0), rule)
+
+        assertThat(occDao.get(OccurrenceIds.of(series.id, amanha))).isNull()
+        assertThat(occDao.get(OccurrenceIds.of(series.id, depoisDeAmanha))).isNull()
+        assertThat(occDao.get(OccurrenceIds.of(series.id, depoisDeDepois))).isNotNull()
+
+        val promessa = AgendaFormat.promiseOfChoice(
+            chosenDate = terca,
+            chosenTime = LocalTime.of(18, 0),
+            recurrence = rule,
+            today = terca,
+            now = noite,
+            zone = zone,
+            editing = true,
+            skippedDates = setOf(amanha, depoisDeAmanha),
+        )
+        assertThat(promessa.recap).contains(AgendaFormat.longDate(depoisDeDepois))
     }
 
     /** O que a tela monta: os mesmos argumentos que a `ConfirmDraftScreen` tem em mãos. */

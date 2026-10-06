@@ -589,10 +589,15 @@ class HomeViewModel(
      * de salvar uma edição em que nenhum alarme toca hoje. Escrever a conta aqui de novo seria
      * mais uma cópia da regra.
      */
-    private fun announceOfEdit(date: LocalDate, time: LocalTime, recurrence: RecurrenceRule): String {
+    private fun announceOfEdit(
+        date: LocalDate,
+        time: LocalTime,
+        recurrence: RecurrenceRule,
+        skippedDates: Set<LocalDate>,
+    ): String {
         val now = Instant.now()
         val zone = ZoneId.systemDefault()
-        val plan = ChoiceSchedule.plan(recurrence, date, time, zone, now)
+        val plan = ChoiceSchedule.plan(recurrence, date, time, zone, now, skippedDates)
         // A escolha vencida que não repete não vira alarme nenhum: o repositório a arquiva como
         // não realizada (ver `TaskRepository.occurrencesForChoice`), e o anúncio diz o mesmo.
         val promisedAt = plan.date.atTime(time).atZone(zone).toInstant()
@@ -691,6 +696,12 @@ class HomeViewModel(
         recurrence: RecurrenceRule,
         amountCents: Long? = null,
         observation: String = "",
+        /**
+         * As datas que ela excluiu desta série. O anúncio precisa delas pela mesma razão que a
+         * tela: a escolha vencida arma a próxima data **viva** da regra, e a próxima da regra
+         * pode ter tombstone. Sem isto o recado pós-salvar repetia a data que nenhum alarme toca.
+         */
+        skippedDates: Set<LocalDate> = emptySet(),
     ): Long {
         val requestId = newDraftSaveRequest()
         write(
@@ -702,7 +713,7 @@ class HomeViewModel(
                     publishSaved(
                         requestId,
                         DraftSaveOrigin.CONFIRM,
-                        announceOfEdit(date, time, recurrence),
+                        announceOfEdit(date, time, recurrence, skippedDates),
                     )
                 } else {
                     // A ocorrência saiu do banco (o "Excluir" de outra tela, a varredura do

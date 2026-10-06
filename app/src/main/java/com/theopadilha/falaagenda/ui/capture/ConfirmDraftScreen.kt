@@ -85,6 +85,13 @@ fun ConfirmDraftScreen(
      * perde os avisos — não o que ela está vendo escrito. Nulo na criação, onde não há série.
      */
     seriesTitle: String? = null,
+    /**
+     * As datas que ela excluiu desta série, quando se está editando uma tarefa que já existe.
+     * A promessa do resumo precisa delas: a escolha vencida arma a próxima data **viva** da
+     * regra, e a próxima da regra pode ser justamente uma data excluída — nesse caso o alarme
+     * não toca nela e a tela não pode dizer que toca. Vazio na criação, onde não há série.
+     */
+    skippedDates: Set<LocalDate> = emptySet(),
 ) {
     // Tudo o que a pessoa mexeu aqui tem que atravessar a recriação da tela: girar o
     // aparelho no meio da conferência não pode devolver o recado do parser.
@@ -297,6 +304,7 @@ fun ConfirmDraftScreen(
                     now = Instant.now(),
                     zone = ZoneId.systemDefault(),
                     editing = editing,
+                    skippedDates = skippedDates,
                 )
             } else {
                 null

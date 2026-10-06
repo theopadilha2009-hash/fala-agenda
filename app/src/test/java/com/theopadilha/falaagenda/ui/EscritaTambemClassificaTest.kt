@@ -1,0 +1,165 @@
+package com.theopadilha.falaagenda.ui
+
+import android.app.Application
+import android.content.Context
+import androidx.navigation.NavHostController
+import androidx.test.core.app.ApplicationProvider
+import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.ui.capture.WriteStep
+import com.theopadilha.falaagenda.ui.capture.writeStepFor
+import com.theopadilha.falaagenda.ui.home.HomeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/**
+ * A tela "Escrever tarefa" passa pela MESMA classificação de intenção que a fala da home.
+ *
+ * O #48 criou a camada de intenção e a ligou em `HomeViewModel.understandSpeech`, mas deixou
+ * uma segunda porta de texto aberta: a rota `"write"` chamava `speech.understand` direto, o
+ * caminho cru da captura. Escrever "cancela o médico" — o caminho que o próprio app oferece
+ * quando o microfone não está disponível, e a rota do ditado pelo teclado — criava a tarefa
+ * "Cancela o médico", e ela acreditava ter cancelado: a consulta continuava marcada. É o
+ * mesmo defeito do #48, pela outra porta.
+ *
+ * O que se prova aqui é o gesto que a rota chama ([confirmWrite]) contra um [HomeViewModel]
+ * de verdade: um comando escrito não cria tarefa, a resposta fica publicada para a home, e a
+ * tela de escrita não fica esperando um rascunho que não vem. A tela de escrita (o texto
+ * sair legível) é da composição, e esta suíte não roda Compose — o `FalaAgendaRoot` precisa
+ * do `NavHost` e do Room para renderizar.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(
+    sdk = [34],
+    manifest = Config.NONE,
+    packageName = "com.theopadilha.falaagenda",
+    application = Application::class,
+)
+class EscritaTambemClassificaTest {
+
+    private val context = ApplicationProvider.getApplicationContext<Context>()
+    private lateinit var container: AppContainer
+    private lateinit var viewModel: HomeViewModel
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(Dispatchers.Unconfined)
+        container = AppContainer(context)
+        viewModel = HomeViewModel(container)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
+    }
+
+    // --- o defeito: comando escrito não vira tarefa ---------------------------------
+
+    @Test
+    fun comandoEscritoSaiDaTelaENaoCriaTarefa() {
+        confirmWrite(nav(), viewModel, "cancela o médico")
+
+        val agenda = agenda()
+        assertThat(agenda.today).isEmpty()
+        assertThat(agenda.upcoming).isEmpty()
+        assertThat(proximoRecado()).contains("Não achei")
+        // A tela de escrita não fica esperando um rascunho que não vem: sem isto a rota
+        // "write" seguiria na frente da resposta publicada na home, e ela não veria nada.
+        assertThat(writeStepFor(viewModel.speech.state.value)).isEqualTo(WriteStep.Waiting)
+    }
+
+    @Test
+    fun perguntaEscritaRespondeEmVezDeCriarTarefa() {
+        confirmWrite(nav(), viewModel, "o que tenho hoje?")
+
+        val agenda = agenda()
+        assertThat(agenda.today).isEmpty()
+        assertThat(agenda.upcoming).isEmpty()
+        assertThat(proximoRecado()).contains("Não tem nada marcado para hoje")
+    }
+
+    @Test
+    fun apagarEscritoDizQueNaoSabeEmVezDeCriarTarefa() {
+        confirmWrite(nav(), viewModel, "apaga isso")
+
+        val agenda = agenda()
+        assertThat(agenda.today + agenda.upcoming).isEmpty()
+        assertThat(proximoRecado()).contains("Ainda não sei apagar")
+    }
+
+    // --- o recado escrito continua indo para a confirmação --------------------------
+
+    @Test
+    fun recadoEscritoSegueParaAConfirmacao() {
+        confirmWrite(nav(), viewModel, "tomar remédio amanhã às 9h")
+
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("remédio")
+        assertThat(writeStepFor(viewModel.speech.state.value)).isInstanceOf(WriteStep.Ready::class.java)
+    }
+
+    // --- o rascunho que sobrou não sequestra a próxima abertura ---------------------
+
+    /**
+     * Sair da escrita por um comando precisa do mesmo descarte do "Cancelar" (ver
+     * `cancelWrite`): o rascunho que ficou na sessão manda a próxima abertura da tela para a
+     * confirmação de um recado que ela não escreveu.
+     */
+    @Test
+    fun oComandoEscritoDescartaORascunhoQueSobrou() {
+        runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.understand("tomar remédio amanhã às 9h")
+                viewModel.speech.state.filter { it.draft != null }.first()
+            }
+        }
+        assertThat(writeStepFor(viewModel.speech.state.value)).isInstanceOf(WriteStep.Ready::class.java)
+
+        confirmWrite(nav(), viewModel, "cancela o médico")
+
+        assertThat(writeStepFor(viewModel.speech.state.value)).isEqualTo(WriteStep.Waiting)
+    }
+
+    // --- a porta única ---------------------------------------------------------------
+
+    /** A classificação é uma só: o retorno diz se o texto seguiu o caminho de captura. */
+    @Test
+    fun entenderFalaDizSeFoiCaptura() {
+        assertThat(viewModel.understandSpeech("cancela o médico")).isFalse()
+        assertThat(viewModel.understandSpeech("o que tenho hoje?")).isFalse()
+        assertThat(viewModel.understandSpeech("apaga isso")).isFalse()
+        assertThat(viewModel.understandSpeech("tomar remédio amanhã às 9h")).isTrue()
+    }
+
+    // --- helpers ---------------------------------------------------------------------
+
+    private fun nav() = NavHostController(context)
+
+    private fun agenda() = runBlocking { container.tasks.snapshotAgenda() }
+
+    private fun proximoRecado(): String =
+        runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.statusMessage.filterNotNull().first().text } }
+
+    private companion object {
+        const val TEMPO_LIMITE = 15_000L
+    }
+}

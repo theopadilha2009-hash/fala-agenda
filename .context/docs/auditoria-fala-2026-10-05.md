@@ -667,6 +667,51 @@ O item da gaveta dizia "Fazer os avisos tocarem sempre" e o diálogo que ele **a
 - **#57** (promessa × tombstone) — aprovado com ressalvas: `announceOfEdit` sem teste que o prenda; asserção exata onde devia ser `substring`.
 - **#52** — revert do D3 pushed, em revisão independente.
 
+## Caça de fala nova (06/10, varredura medida contra o `main` `a56012e`)
+
+Varredura read-only com harness próprio (`/tmp/fala-caca`, cópia fiel do `main`, sha do parser `870b5cb8…`), relógio congelado quinta **2026-08-20 15:00** America/Sao_Paulo. `qc` = `canQuickConfirm` do próprio modelo — `qc=true` é o caso perigoso: a caixa rápida confirma calado.
+
+### PERIGOSO — data errada, completa, `ambiguous=false`, `qc=true`
+
+| # | frase real | o que o app faz | o que ela esperava | responsável |
+|---|---|---|---|---|
+| P1 | `reunião 05/08 às 10h` | **2027-08-05** (o `05/08` de 2026 era 5 dias atrás) | 05/08/2026, ou um aviso | `LocalTaskParser.kt:514-530` (`numeric`) → `inferYear` (`:663-670`), que devolve `today.year + 1` sempre que o candidato já passou |
+| P2 | `quinta-feira santa missa às 19h` | **hoje, 20/08, 19:00** | a Sexta-feira Santa (feriado móvel) | `WEEKDAY_PATTERNS` (`:832-840`) casando dentro do nome do feriado + ramo de dia da semana (`:591-610`) |
+| P3 | `dia 25 do mês que vem remédio às 8h` | **2026-08-25** + vira série **MONTHLY** | 25/09, data única | regex `monthly` (`:215-224`) casa `dia 25 do mês` antes de o "mês que vem" ser lido; `dayOfMonth` avulso (`:559-573`) escolhe este mês |
+| P4 | `semana que vem quinta reunião às 20h` | **2026-08-20** (hoje) | 27/08 | `WEEK_PHRASE` (`:584-589`) consome `semana que vem` sozinho e o dia da semana seguinte resolve a **semana corrente** |
+| P5 | `reunião 31/02 às 10h` | **2027-02-28**, sem nota | data inválida é erro, não 28/02 | guard de `:525` só checa `1..12`/`1..31`; `clampToValidDate` (`RecurrenceEngine.kt:15-19`) faz `coerceIn` calado |
+
+**P2 é a família mais perigosa e a mais nova:** o catálogo já trata `quarta-feira de cinzas` e `sexta-feira santa` como silenciosos, mas `quinta-feira santa`, `sábado de aleluia`, `segunda/terça-feira de carnaval` e `sexta-feira da paixão` **não estão catalogados** e caem no dia da semana comum — missa no dia errado, `qc=true`. São formas reais de fala católica.
+
+**P3 e P4 são o mesmo modo de falha:** a ordem natural da fala ("semana que vem quinta", "dia 25 do mês que vem") é consumida na ordem errada, e o `main` crava a data desta semana/mês. Ninguém tinha catalogado.
+
+### SILENCIOSO — campo descartado / título que ela não reconhece
+
+| # | frase real | resultado | causa |
+|---|---|---|---|
+| S1 | `almoço de domingo às 12h` | título **vazio**, `missing=TITLE`, `qc=false` | `almoco` está em `FILLERS` (`:1015`) e `domingo` é consumido pela data |
+| S1b | `almoço com as meninas sábado às 12h` | **"Com meninas"** | sobra só a preposição + núcleo |
+| S1c | `almoço na casa da filha domingo às 12h` | **"Casa filha"** | idem |
+| S2 | `dia 15 de novembro missa às 10h` | data certa, título **"Dia missa"** | `extractTitle` (`:712-732`) reconstrói do original e `dia` não está em `FILLERS` |
+| S3 | `ãh remédio amanhã às oito` | título **"Ãh remédio"** | hesitação do Vosk — **hipótese sobre o reconhecedor**, não medição do parser |
+| S4 | `domingo me liga às 9h` | **2026-08-23** (domingo), título "Liga" | "domingo" como nome próprio não é distinguido |
+
+`jantar`/`lanche`/`café` sobrevivem porque **não** estão em `FILLERS` — é o `almoco` sozinho que produz o título vazio. `almoço às 12h de domingo` dá o mesmo vazio.
+
+### DISCUTÍVEL
+
+- **`vinte pras três` / `dez pras três` / `quarto pras duas`** — hora nula e a frase inteira no título. Os `CLOCK_*` só entendem "e \<min\>"; o "menos X" não existe. Fala coloquial comum, mas o desfecho é beco (não agenda errado).
+- **`mês que vem dentista às 9h`** → data nula, título **"Vem dentista"** (o `mês` some, sobra o "vem").
+- **`a cada 3 dias`** → sem data e `ambiguous=false`; o `INTERVAL` só cobre "de X em X".
+- **Comandos que o classificador deixa em `Capture`**: `esquece o médico`, `tira o médico da agenda`, `não era isso`, `não, na verdade é às 9` (→ título "Verdade"), `adiciona leite na lista` — criam tarefa com o próprio texto. É a lacuna de produto já conhecida; o dano é a crença de que agiu.
+
+### O que a medição NÃO cobriu
+
+- **Áudio do Vosk** — mediu-se texto, não áudio. S3 (e qualquer coisa que dependa de "o Vosk derruba o `às`") é **hipótese sobre o motor**, não medição.
+- **A caixa rápida como toque real** — `qc` é o predicado do modelo, não um toque na tela.
+- **A escalada para a IA** — sem `SUPABASE_URL`/`ANON_KEY` o `HybridParser` nunca chama o remoto; mediu-se só o rascunho local.
+- **Calendário real dos feriados móveis** — P2 afirma "dia errado" pelo dia da semana ser o da semana corrente, o que independe da data exata do feriado.
+
 ## O que só o aparelho prova
 
 1. **Entrega real sob Doze/OEM:** que o `setAlarmClock` (`ReminderScheduler.kt:46`)

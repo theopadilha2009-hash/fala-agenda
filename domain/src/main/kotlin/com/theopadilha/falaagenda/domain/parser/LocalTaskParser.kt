@@ -588,7 +588,7 @@ class LocalTaskParser(
             return DateHit(hit.date, stripDayWords(hit.remaining), false)
         }
         monthEdge(remaining, today, recurrence)?.let { hit ->
-            return DateHit(hit.date, stripDayWords(hit.remaining), false)
+            return DateHit(hit.date, stripDayWords(hit.remaining), hit.ambiguous)
         }
 
         // "dia 25 do mês que vem": data única no mês seguinte. Vem antes do "amanhã" e do dia
@@ -833,9 +833,10 @@ class LocalTaskParser(
         sentenceStartIsNoun: Boolean = false,
     ): Boolean {
         val before = text.substring(0, match.range.first).trimEnd().substringAfterLast(' ')
-        // Só o nome NU ("cinzas") no início é substantivo; "quarta-feira de cinzas" é a data mesmo
-        // no começo da frase.
-        if (before.isEmpty() && sentenceStartIsNoun && !match.value.contains("feira")) return true
+        // O nome NU ("cinzas") é o substantivo em qualquer posição: a data é "quarta-feira de
+        // cinzas". Um determinante antes não a transforma em data — "no cinzas"/"na cinzas" é a
+        // mesma brecha do início da frase, deslocada (P2-4).
+        if (sentenceStartIsNoun && !match.value.contains("feira")) return true
         return before !in DATE_DETERMINERS
     }
 
@@ -905,27 +906,89 @@ class LocalTaskParser(
         )
         edges.forEach { (regex, dateOf) ->
             regex.find(text)?.let { m ->
-                // O "que vem"/"próximo" pode estar dentro do próprio match ("fim do mês que vem")
-                // ou logo depois ("fim do mês que vem" com a regex antiga) — os dois contam.
+                // O "que vem"/"próximo" só desloca o mês quando está COLADO à borda ("fim do mês
+                // que vem", que já vem dentro do match). Um "que vem" a distância pertence a outra
+                // oração — "fim do mês às 10h, me diz o que vem antes" não é o mês que vem — e
+                // deslocava a data em silêncio (P1-2). O mesmo para o "passado", que puxa o mês
+                // para trás em vez de entregar uma borda futura ignorando o que ela disse.
                 val tail = NEXT_MONTH_TAIL.find(text, m.range.last + 1)
+                    ?.takeIf { glued(text, m, it) }
+                val past = MONTH_PAST.find(text, m.range.last + 1)
+                    ?.takeIf { glued(text, m, it) }
                 val nextMonth = NEXT_MONTH_TAIL.containsMatchIn(m.value) ||
                     PROXIMO_MONTH.containsMatchIn(m.value) || tail != null
-                val base = if (nextMonth) today.plusMonths(1) else today
+                val base = when {
+                    past != null -> today.minusMonths(1)
+                    nextMonth -> today.plusMonths(1)
+                    else -> today
+                }
                 val candidate = dateOf(YearMonth.from(base))
-                val date = if (nextMonth || candidate.isAfter(today)) {
+                val edge = if (past != null || nextMonth || candidate.isAfter(today)) {
                     candidate
                 } else {
                     dateOf(YearMonth.from(today.plusMonths(1)))
                 }
+
+                // A frase pode nomear o dia E a borda ("no fim do mês na sexta"): os dois valem, e
+                // o dia dito escolhe qual dentro do mês da borda. Ignorá-lo entregava 31/08 (uma
+                // segunda) completo e não-ambíguo, que a caixa rápida confirmava em silêncio (P0-1).
+                val days = extractWeekDays(text)
+                val date = edgeWeekday(edge, days, today)
+
                 var remaining = text.replace(m.value, " ")
                 if (tail != null) remaining = remaining.replace(tail.value, " ")
-                return MonthEdgeHit(date, TextNormalizer.compactSpaces(remaining))
+                if (past != null) remaining = remaining.replace(past.value, " ")
+                // O dia dito já cumpriu o papel de escolher a data; deixá-lo no resto faria o
+                // título repetir o dia ("Sexta pagar conta") ao lado da data já resolvida.
+                if (days.size == 1) remaining = stripWeekDays(remaining)
+                return MonthEdgeHit(
+                    date = date,
+                    remaining = TextNormalizer.compactSpaces(remaining),
+                    // Dois dias ditos com uma borda só não têm um dia que os satisfaça: escalar é
+                    // o desfecho honesto, como no bloco de dia da semana abaixo.
+                    ambiguous = days.size > 1,
+                )
             }
         }
         return null
     }
 
-    private data class MonthEdgeHit(val date: LocalDate, val remaining: String)
+    /**
+     * O dia da semana dito sobre a borda do mês: "no fim do mês na sexta" é a sexta daquele mês,
+     * não a primeira sexta depois da borda. As duas coisas que ela disse têm de valer — o mês da
+     * borda E o dia nomeado —, então a ocorrência do dia fica DENTRO do mês da borda (a última
+     * até a borda). Só quando não há uma no mês (a borda é o dia 1 e o dia dito cai antes) ou a
+     * última já passou é que vale a próxima, que pode ser do mês seguinte.
+     *
+     * Sem isto o dia dito era descartado e a caixa rápida confirmava 31/08 (uma segunda) como
+     * "sexta" em silêncio (P0-1).
+     */
+    private fun edgeWeekday(edge: LocalDate, days: Set<DayOfWeek>, today: LocalDate): LocalDate {
+        if (days.size != 1) return edge
+        val day = days.first()
+        val lastOnOrBefore = edge.minusDays(((edge.dayOfWeek.value - day.value + 7) % 7).toLong())
+        if (YearMonth.from(lastOnOrBefore) == YearMonth.from(edge) && !lastOnOrBefore.isBefore(today)) {
+            return lastOnOrBefore
+        }
+        return RecurrenceEngine.firstOnOrAfter(
+            RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = days),
+            today,
+            edge,
+        ) ?: edge
+    }
+
+    /**
+     * O qualificador de mês ("que vem", "passado") só desloca a borda quando está COLADO a ela,
+     * sem palavra no meio. Um "que vem" a distância pertence a outra oração e não é o mês que vem.
+     */
+    private fun glued(text: String, edge: MatchResult, qualifier: MatchResult): Boolean =
+        text.substring(edge.range.last + 1, qualifier.range.first).isBlank()
+
+    private data class MonthEdgeHit(
+        val date: LocalDate,
+        val remaining: String,
+        val ambiguous: Boolean = false,
+    )
 
     /**
      * "amanhã no fim do mês", "hoje no Natal": a expressão relativa e a nomeada não podem valer
@@ -1080,11 +1143,18 @@ class LocalTaskParser(
      * O substantivo (o mercado) fica: quando "feira" vem depois de artigo ou preposição — "na
      * feira", "da feira" — não é o sufixo do dia. Sem o guard, "ir na feira sábado" virava "Ir",
      * o nome da tarefa apagado e sem ambiguidade, que a caixa rápida confirmava sozinha.
+     *
+     * O mesmo vale quando o "feira" encabeça um sintagma nominal ("feira de ciências", "feira do
+     * livro"): ali ele é o substantivo em qualquer posição, mesmo no início da frase, onde não há
+     * preposição antes para denunciá-lo (P2-3).
      */
     private fun stripFeiraSuffix(text: String): String =
         FEIRA_SUFIXO.replace(text) { m ->
             val before = text.substring(0, m.range.first).trimEnd().substringAfterLast(' ')
-            if (before in FEIRA_PREPOSICOES) m.value else " "
+            val headsNoun = FEIRA_NOUN_TAIL.containsMatchIn(text.substring(m.range.last + 1))
+            // Sem nada antes o "feira" já não é o sufixo de um dia: o dia (segunda a sexta) teria
+            // saído junto com ele. Sobrou porque é o substantivo ("sábado feira" → "Feira").
+            if (before in FEIRA_PREPOSICOES || headsNoun || before.isEmpty()) m.value else " "
         }
 
     private fun monthFromName(name: String): Int = when (name) {
@@ -1190,6 +1260,9 @@ class LocalTaskParser(
         /** "fim do PRÓXIMO mês": o mesmo deslocamento do "que vem", na forma com adjetivo. */
         private val PROXIMO_MONTH = Regex("""\bproximo\s+mes\b""")
 
+        /** "fim do mês PASSADO": a borda cai no mês anterior, não numa futura que ignora o dito. */
+        private val MONTH_PAST = Regex("""\bpassad[ao]\b""")
+
         /** "no Natal DE 2027": o ano dito na data nomeada vence o palpite do relógio (P0-6). */
         private val NAMED_YEAR_TAIL = Regex("""\s+de\s+(\d{4})\b""")
 
@@ -1246,8 +1319,8 @@ class LocalTaskParser(
 
         /** "quinta que vem", "próxima sexta", "quinta da semana que vem". */
         private val WEEKDAY_NEXT_WEEK = Regex(
-            """\b(?:$WEEKDAY_ALT)(?:-?feira)?\s+(?:(?:da\s+)?semana\s+)?(?:que\s+vem|proxim[ao]s?)\b""" +
-                """|\bproxim[ao]s?\s+(?:$WEEKDAY_ALT)\b""",
+            """\b(?:$WEEKDAY_ALT)(?:-?feira|\s+feira)?\s+(?:(?:da\s+)?semana\s+)?(?:que\s+vem|proxim[ao]s?)\b""" +
+                """|\bproxim[ao]s?\s+(?:$WEEKDAY_ALT)(?:-?feira|\s+feira)?\b""",
         )
 
         /**
@@ -1256,15 +1329,24 @@ class LocalTaskParser(
          * colado à preposição — que `stripFeiraSuffix` então poupava por achar que era o mercado, e
          * o título virava "Feira dentista" (P0-3). Consumindo o " feira" junto com o dia, não sobra
          * nada para o guard ver.
+         *
+         * A forma com ESPAÇO não come o "feira" quando ele encabeça um sintagma nominal ("feira
+         * DE ciências", "feira DO livro"): ali o "feira" é o substantivo, não o sufixo do dia. A
+         * forma com hífen continua inteira — o hífen é sinal forte do dia (P2-3).
          */
+        private const val FEIRA_NOUN_TAIL_SRC = """(?:de|do|da|dos|das)\b"""
+        private const val FEIRA_NOUN = """\s+feira(?!\s+$FEIRA_NOUN_TAIL_SRC)"""
+        private val FEIRA_NOUN_TAIL = Regex("""^\s+$FEIRA_NOUN_TAIL_SRC""")
         private val WEEKDAY_PATTERNS = listOf(
-            Regex("""\bdomingos?(?:[-\s]?feira)?\b""") to DayOfWeek.SUNDAY,
-            Regex("""\bsegundas?(?:[-\s]?feira)?\b""") to DayOfWeek.MONDAY,
-            Regex("""\btercas?(?:[-\s]?feira)?\b""") to DayOfWeek.TUESDAY,
-            Regex("""\bquartas?(?:[-\s]?feira)?\b""") to DayOfWeek.WEDNESDAY,
-            Regex("""\bquintas?(?:[-\s]?feira)?\b""") to DayOfWeek.THURSDAY,
-            Regex("""\bsextas?(?:[-\s]?feira)?\b""") to DayOfWeek.FRIDAY,
-            Regex("""\bsabados?(?:[-\s]?feira)?\b""") to DayOfWeek.SATURDAY,
+            // "sábado"/"domingo" NÃO levam o sufixo "-feira" (só segunda a sexta): o "feira" depois
+            // deles é o mercado, e consumi-lo apagava o nome da tarefa (P2-3).
+            Regex("""\bdomingos?(?:-?feira)?\b""") to DayOfWeek.SUNDAY,
+            Regex("""\bsegundas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.MONDAY,
+            Regex("""\btercas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.TUESDAY,
+            Regex("""\bquartas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.WEDNESDAY,
+            Regex("""\bquintas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.THURSDAY,
+            Regex("""\bsextas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.FRIDAY,
+            Regex("""\bsabados?(?:-?feira)?\b""") to DayOfWeek.SATURDAY,
         )
 
         private val WORD_HOURS = mapOf(

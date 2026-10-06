@@ -1129,4 +1129,117 @@ class LocalTaskParserTest {
         assertThat(intervaloDuasHoras.localTime).isNull()
         assertThat(intervaloDuasHoras.ambiguous).isTrue()
     }
+
+    // ---- Regressões da 3ª revisão (P0-1 a P2-5): a borda de mês engolia o dia nomeado ----
+
+    @Test
+    fun bordaDeMesComDiaNomeadoCaiNoDiaDito() {
+        // P0-1: o ramo `monthEdge` rodava ANTES do bloco de dia da semana e devolvia a borda crua.
+        // "no fim do mês na sexta" virava 31/08 — uma SEGUNDA —, completo e não-ambíguo: a caixa
+        // rápida mostrava 31/08, ela tocava Salvar, e o título ainda dizia "Sexta pagar conta".
+        val fimComSexta = parser.parse("no fim do mês na sexta pagar conta às 10h")
+        assertThat(fimComSexta.localDate).isEqualTo(LocalDate.of(2026, 8, 28))
+        assertThat(fimComSexta.localDate!!.dayOfWeek).isEqualTo(DayOfWeek.FRIDAY)
+        assertThat(fimComSexta.localTime).isEqualTo(LocalTime.of(10, 0))
+        assertThat(fimComSexta.title).isEqualTo("Pagar conta")
+
+        // A borda e o dia vêm em qualquer ordem, e o dia escolhe dentro do mês da borda.
+        val domingoPrimeiro = parser.parse("domingo no fim do mês aniversário às 15h")
+        assertThat(domingoPrimeiro.localDate).isEqualTo(LocalDate.of(2026, 8, 30))
+        assertThat(domingoPrimeiro.localDate!!.dayOfWeek).isEqualTo(DayOfWeek.SUNDAY)
+
+        // "meio do mês" (dia 15) já passou: a borda vai para setembro e a sexta é a de setembro.
+        val meioComSexta = parser.parse("sexta no meio do mês almoço às 12h")
+        assertThat(meioComSexta.localDate).isEqualTo(LocalDate.of(2026, 9, 11))
+        assertThat(meioComSexta.localDate!!.dayOfWeek).isEqualTo(DayOfWeek.FRIDAY)
+
+        val queVemComQuinta = parser.parse("quinta no fim do mês que vem jantar às 20h")
+        assertThat(queVemComQuinta.localDate).isEqualTo(LocalDate.of(2026, 9, 24))
+        assertThat(queVemComQuinta.localDate!!.dayOfWeek).isEqualTo(DayOfWeek.THURSDAY)
+    }
+
+    @Test
+    fun bordaDeMesSemDiaNomeadoNaoMuda() {
+        // O caminho que já funcionava não pode regredir com o consumo do dia nomeado.
+        assertThat(parser.parse("no fim do mês pagar conta").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 31))
+        assertThat(parser.parse("fim do mês que vem pagar conta").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 30))
+        assertThat(parser.parse("meio do mês que vem pagar conta").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 15))
+        assertThat(parser.parse("fim do próximo mês pagar conta").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 30))
+    }
+
+    @Test
+    fun queVemADistanciaNaoDeslocaABorda() {
+        // P1-2: `NEXT_MONTH_TAIL` casava o primeiro "que vem" em QUALQUER ponto depois da borda,
+        // sem âncora. O "que vem" de outra oração deslocava a data em silêncio para o mês seguinte.
+        val comOracao = parser.parse("no fim do mês pagar conta às 10h e o que vem depois a gente vê")
+        assertThat(comOracao.localDate).isEqualTo(LocalDate.of(2026, 8, 31))
+
+        val antes = parser.parse("fim do mês às 10h, me diz o que vem antes")
+        assertThat(antes.localDate).isEqualTo(LocalDate.of(2026, 8, 31))
+
+        // Colado à borda, o "que vem" continua deslocando.
+        assertThat(parser.parse("fim do mês que vem pagar conta").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 30))
+    }
+
+    @Test
+    fun mesPassadoVaiParaOmesAnterior() {
+        // P1-2 (2ª face): "passado" era ignorado e a borda caía no mês FUTURO — o oposto do dito.
+        val passado = parser.parse("no fim do mês passado pagar conta às 10h")
+        assertThat(passado.localDate).isEqualTo(LocalDate.of(2026, 7, 31))
+        assertThat(passado.title).isEqualTo("Pagar conta")
+    }
+
+    @Test
+    fun feiraComoSubstantivoNaoSomeDoTitulo() {
+        // P2-3: o `[-\s]?feira` das WEEKDAY_PATTERNS engolia o substantivo colado ao dia — o guard
+        // `stripFeiraSuffix` nunca via o token que ele existe para proteger. "sexta feira de
+        // ciências" perdia o "feira"; "sábado feira às 8h" ficava com título vazio.
+        val ciencias = parser.parse("sexta feira de ciências às 8h")
+        assertThat(ciencias.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(ciencias.title.lowercase()).contains("feira")
+        assertThat(ciencias.title.lowercase()).contains("ciências".lowercase().take(5))
+
+        val sabadoFeira = parser.parse("sábado feira às 8h")
+        assertThat(sabadoFeira.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+        assertThat(sabadoFeira.title).isEqualTo("Feira")
+
+        // O sufixo do dia (segunda a sexta) continua saindo.
+        assertThat(parser.parse("na sexta feira dentista às 8h").title).isEqualTo("Dentista")
+        assertThat(parser.parse("sexta-feira dentista às 8h").title).isEqualTo("Dentista")
+        assertThat(parser.parse("toda semana na sexta feira natação às 18h").title).isEqualTo("Natação")
+    }
+
+    @Test
+    fun cinzasComDeterminanteTambemEhSubstantivo() {
+        // P2-4: o guard novo só mordia quando `before` era vazio; com um determinante antes, o
+        // substantivo comum passava. "no cinzas" virava 10/02/2027 completo e não-ambíguo.
+        listOf("no cinzas", "na cinzas", "no cinzas missa às 19h").forEach { frase ->
+            assertThat(parser.parse(frase).localDate).isNull()
+        }
+
+        // A forma de data continua valendo.
+        assertThat(parser.parse("quarta-feira de cinzas missa às 19h").localDate)
+            .isEqualTo(LocalDate.of(2027, 2, 10))
+    }
+
+    @Test
+    fun meiaSemanaSomaAMeiaEDistingueDeUmNumeroFixo() {
+        // P2-5: o teste antigo prendia só o VALOR (06/09); um `MEIA_SEMANA_TAIL` que somasse 3 dias
+        // sempre continuaria verde. Aqui o par COM e SEM o "e meia" prende o mecanismo: a meia
+        // semana só vale quando dita, e o mesmo deslocamento aparece em outra unidade (1 semana).
+        assertThat(parser.parse("daqui a duas semanas dentista").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 3))
+        assertThat(parser.parse("daqui a duas semanas e meia dentista").localDate)
+            .isEqualTo(LocalDate.of(2026, 9, 6))
+
+        assertThat(parser.parse("daqui a uma semana dentista").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 27))
+        assertThat(parser.parse("daqui a uma semana e meia dentista").localDate)
+            .isEqualTo(LocalDate.of(2026, 8, 30))
+    }
 }

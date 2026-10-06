@@ -83,6 +83,11 @@ object SpeechIntentClassifier {
         "^(por favor|por gentileza|por obsequio|gentileza|favor|" +
             "pode|poderia|podias|consegue|consegues|" +
             "ve pra mim|ve pra|ve|veja|olha|olhe|escuta|escute|" +
+            // "eu" e "hoje" abrem a fala mais natural de uma rotina — "eu já tomei o remédio",
+            // "hoje já tomei o remédio" — e sem eles a âncora de "já <verbo>" não via o gatilho:
+            // a frase virava a tarefa "Eu já tomei o remédio" e a dose seguia pendente. São
+            // sujeito e circunstância, não conteúdo: o que a tarefa faria com eles seria ruído.
+            "eu|hoje|" +
             "ah|bom|bem|entao|ei|oi|ola|opa|e|eh)\\b[\\s,!.]+",
     )
 
@@ -256,9 +261,24 @@ object SpeechIntentClassifier {
 
     // --- alvo ------------------------------------------------------------------------
 
-    /** O resto da frase depois do gatilho, sem o artigo que abre o alvo ("o médico" → "médico"). */
+    /**
+     * O resto da frase depois do gatilho, sem o artigo que abre o alvo ("o médico" → "médico") e
+     * sem a pontuação que o reconhecedor costuma grudar na palavra.
+     *
+     * "já tomei o remédio." devolvia o alvo `remedio.` e a matcher — que compara palavra com
+     * palavra — não achava nada: a rotina do remédio seguia pendente e ela achava que tinha
+     * registrado. "cancela o médico, por favor" era pior: a vírgula colava na palavra e o alvo
+     * virava `medico, por favor`. O `LocalTaskParser` já tira essa pontuação do título, então o
+     * app já assume que a fala chega pontuada — a camada nova é que não estava tirando.
+     *
+     * A pontuação sai das duas pontas, e a vírgula também do meio: "médico, por favor" é um alvo
+     * com a cortesia no rabo, não um nome de tarefa. O `?` fica de fora do corte das pontas
+     * apenas por simetria com o resto do app; ele não aparece no meio de um alvo de comando.
+     */
     private fun targetAfter(folded: String, from: Int): String =
-        stripLeadingArticles(folded.substring(from).trim())
+        stripLeadingArticles(
+            folded.substring(from).trim().trim(',', '.', '!', '?', ';', ':', ' ').substringBefore(',').trim(),
+        )
 
     private fun stripLeadingArticles(text: String): String =
         text.replaceFirst(Regex("^(o|a|os|as|um|uma|meu|minha|meus|minhas)\\s+"), "").trim()

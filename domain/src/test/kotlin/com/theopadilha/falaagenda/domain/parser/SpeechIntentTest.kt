@@ -317,4 +317,34 @@ class SpeechIntentTest {
         // A forma que abre a fala continua pergunta — a âncora não pode matar o caso legítimo.
         assertThat(intent("quais os compromissos de hoje?")).isEqualTo(SpeechIntent.Ask(AskWhen.TODAY))
     }
+
+    /**
+     * O reconhecedor devolve a hipótese pontuada com frequência, e a pontuação grudava no alvo:
+     * "já tomei o remédio." dava o alvo `remedio.`, que a matcher — comparando palavra com
+     * palavra — não achava. A rotina do remédio seguia pendente e ela achava que tinha
+     * registrado. O `LocalTaskParser` já tirava essa pontuação do título; a camada nova não.
+     */
+    @Test
+    fun pontoFinalNaoFicaNoAlvo() {
+        assertThat(intent("já tomei o remédio.")).isEqualTo(SpeechIntent.Complete("remedio"))
+        assertThat(intent("cancela o dentista.")).isEqualTo(SpeechIntent.Cancel("dentista"))
+    }
+
+    @Test
+    fun cortesiaDepoisDaVirgulaNaoEntraNoAlvo() {
+        // "cancela o médico, por favor": a vírgula colava na palavra e o alvo virava
+        // "medico, por favor" — nada casava.
+        assertThat(intent("cancela o médico, por favor")).isEqualTo(SpeechIntent.Cancel("medico"))
+    }
+
+    /**
+     * "eu" e "hoje" abrem a fala mais natural de uma rotina. Sem eles no preâmbulo, a âncora de
+     * "já <verbo>" não via o gatilho e a frase virava a tarefa "Eu já tomei o remédio".
+     */
+    @Test
+    fun sujeitoEHojeNaoEscondemOJa() {
+        assertThat(intent("eu já tomei o remédio")).isEqualTo(SpeechIntent.Complete("remedio"))
+        assertThat(intent("hoje já tomei o remédio")).isEqualTo(SpeechIntent.Complete("remedio"))
+        assertThat(intent("eu já paguei o aluguel")).isEqualTo(SpeechIntent.Complete("aluguel"))
+    }
 }

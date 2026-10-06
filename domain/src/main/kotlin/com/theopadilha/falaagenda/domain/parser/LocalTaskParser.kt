@@ -324,14 +324,24 @@ class LocalTaskParser(
      * intervalo entra por cima do resultado do relógio.
      */
     private fun extractTime(text: String): TimeHit {
-        val intervalDay = INTERVAL_DAY.find(text) ?: return extractClockTime(text)
+        val intervalDay = INTERVAL_DAY.find(text)
+            ?: return stripEmPonto(extractClockTime(text))
         val remaining = TextNormalizer.compactSpaces(text.replace(intervalDay.value, " "))
-        val hit = extractClockTime(remaining)
+        val hit = stripEmPonto(extractClockTime(remaining))
         val note = "“${intervalDay.value}” é um intervalo, não uma data. Confirme o dia e o horário da primeira vez."
         return hit.copy(
             ambiguous = true,
             note = listOfNotNull(hit.note, note).joinToString(" "),
         )
+    }
+
+    /**
+     * "em ponto" qualifica a hora e não é tarefa: sozinho no resto da frase virava o título
+     * ("oito e meia em ponto" → "Ponto"). Só sai quando uma hora foi de fato reconhecida.
+     */
+    private fun stripEmPonto(hit: TimeHit): TimeHit {
+        if (hit.time == null || !EM_PONTO.containsMatchIn(hit.remaining)) return hit
+        return hit.copy(remaining = TextNormalizer.compactSpaces(hit.remaining.replace(EM_PONTO, " ")))
     }
 
     private fun extractClockTime(text: String): TimeHit {
@@ -436,6 +446,13 @@ class LocalTaskParser(
                 base + (MINUTE_UNITS[unit] ?: return@forEach)
             }
             found += ClockMatch(m, hourRaw, minute, m.groupValues[4])
+        }
+        // "três em ponto": hora por extenso sem o "às". Antes o "em ponto" vazava para o título
+        // ("Ponto") e a hora se perdia. Não casa dentro de "às três" — o CLOCK_WORD já pegou.
+        CLOCK_BARE_PONTO.findAll(remaining).forEach { m ->
+            if (found.any { it.match.range.first <= m.range.first && m.range.first <= it.match.range.last }) return@forEach
+            val hourRaw = WORD_HOURS[m.groupValues[1]] ?: return@forEach
+            found += ClockMatch(m, hourRaw, 0, "")
         }
         if (found.size > 1) {
             return TimeHit(null, remaining, true)
@@ -1004,9 +1021,20 @@ class LocalTaskParser(
             remaining = remaining.replace(regex, " ")
         }
         remaining = remaining.replace(Regex("""\b(e|,)\b"""), " ")
-        remaining = remaining.replace(Regex("""\bfeiras?\b"""), " ")
-        return TextNormalizer.compactSpaces(remaining)
+        return TextNormalizer.compactSpaces(stripFeiraSuffix(remaining))
     }
+
+    /**
+     * Tira o "feira" que sobra do dia da semana ("sexta feira", depois de o dia já ter saído).
+     * O substantivo (o mercado) fica: quando "feira" vem depois de artigo ou preposição — "na
+     * feira", "da feira" — não é o sufixo do dia. Sem o guard, "ir na feira sábado" virava "Ir",
+     * o nome da tarefa apagado e sem ambiguidade, que a caixa rápida confirmava sozinha.
+     */
+    private fun stripFeiraSuffix(text: String): String =
+        FEIRA_SUFIXO.replace(text) { m ->
+            val before = text.substring(0, m.range.first).trimEnd().substringAfterLast(' ')
+            if (before in FEIRA_PREPOSICOES) m.value else " "
+        }
 
     private fun monthFromName(name: String): Int = when (name) {
         "janeiro" -> 1
@@ -1041,6 +1069,11 @@ class LocalTaskParser(
         private val CLOCK_BARE = Regex(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
+        /** "três em ponto"/"3 em ponto": hora por extenso ou em dígito sem o "às". */
+        private val CLOCK_BARE_PONTO = Regex("""\b(\d{1,2}|$WORD_HOUR_ALT)\s+em\s+ponto\b""")
+
+        /** "em ponto" qualifica a hora dita; não é o nome da tarefa. */
+        private val EM_PONTO = Regex("""\bem\s+ponto\b""")
 
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
@@ -1307,6 +1340,12 @@ class LocalTaskParser(
 
         /** Dia da semana solto — para distinguir "terça e quinta" (lista) de "terça e remédio". */
         private val WEEKDAY_ANY = Regex("""\b(?:$WEEKDAY_ALT)(?:-?feira)?\b""")
+
+        /** O "-feira" que sobra do dia da semana; o substantivo (mercado) fica (ver `stripFeiraSuffix`). */
+        private val FEIRA_SUFIXO = Regex("""\bfeiras?\b""")
+
+        /** Preposições/artigos que fazem "feira" ser o mercado, não o sufixo do dia. */
+        private val FEIRA_PREPOSICOES = setOf("na", "a", "da", "de", "pra", "para")
 
         /** "vinte e cinco"/"oito e meia": o "e" pertence ao número — não separa orações. */
         private val NUMBER_E = Regex(

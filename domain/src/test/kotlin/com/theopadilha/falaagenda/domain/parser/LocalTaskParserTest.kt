@@ -1123,10 +1123,66 @@ class LocalTaskParserTest {
         assertThat(draft.ambiguous).isFalse()
     }
 
+    // ---- Quarta rodada do review do #52 (o ramo EM_PONTO_CLOCK). Cada teste abaixo falha contra o
+    //      parser do PR e passa depois do fix. ----
+
+    @Test
+    fun p1DiaDoMesEmPontoNaoViraHora() {
+        // "amanhã reunião dia 12 em ponto": o número do "dia 12" é o DIA do mês. O ramo do "em ponto"
+        // roda em extractTime, que vem ANTES de extractDate, e consumia o número — a data sumia e a
+        // hora saía inventada (12:00) com ambiguous=false, então a caixa rápida confirmava calado.
+        val doze = parser.parse("amanhã reunião dia 12 em ponto")
+        assertThat(doze.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(doze.localTime).isNull()
+
+        val quinze = parser.parse("quinta prova dia 15 em ponto")
+        assertThat(quinze.localDate).isEqualTo(LocalDate.of(2026, 9, 15))
+        assertThat(quinze.localTime).isNull()
+
+        val vinte = parser.parse("consulta dia 20 em ponto")
+        assertThat(vinte.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(vinte.localTime).isNull()
+
+        // A hora com o "h" continua valendo: o "9h" não é dia do mês nenhum.
+        val comH = parser.parse("amanhã reunião às 9h em ponto")
+        assertThat(comH.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(comH.ambiguous).isFalse()
+    }
+
+    @Test
+    fun p1bEmPontoComSegundaHoraPorExtensoNaoEscolheAPrimeira() {
+        // "amanhã oito em ponto e nove tomar remédio": duas horas na mesma frase ("oito" e "nove").
+        // O guard de múltiplos relógios só via as formas com o "às" (CLOCK_NUMERIC e CLOCK_BARE
+        // exigem o "às"), então a hora por extenso solta passava batido e o ramo cravava 08:00 com
+        // ambiguous=false — o mesmo modo de falha do R4 que este PR foi consertar.
+        listOf(
+            "amanhã oito em ponto e nove tomar remédio",
+            "amanhã tomar remédio oito em ponto e dez",
+            "amanhã oito em ponto e dez tomar remédio",
+        ).forEach { frase ->
+            val draft = parser.parse(frase)
+            assertThat(draft.localTime).isNull()
+            assertThat(draft.ambiguous).isTrue()
+        }
+    }
+
+    @Test
+    fun p2AntesDoJantarAs20hNaoConfirma() {
+        // O guard do "antes do jantar" tem dois disjuntos: hora em 7..11 e hora == 20. O teste do
+        // R7 só exercitava "às oito" (que cai em 7..11), então remover `|| localTime.hour == 20`
+        // passava a suíte inteira. O "às 20h" prende o outro disjunto: 20:00 É o jantar, não
+        // "antes" dele.
+        val vinte = parser.parse("amanhã antes do jantar às 20h")
+        assertThat(vinte.ambiguous).isTrue()
+        assertThat(vinte.localTime).isEqualTo(LocalTime.of(20, 0))
+    }
+
     @Test
     fun listaNaoPodeRegredirDaAuditoria() {
         // Seções "O que já está correto — não mexer" e "Falsos positivos que qualquer conserto
-        // precisa respeitar" de .context/docs/auditoria-fala-2026-10-05.md.
+        // precisa respeitar" do documento de auditoria da fala em .context/docs (a rodada de
+        // 05/10/2026). O caminho exato ficou fora daqui de propósito: quem revisa o PR não
+        // consegue abrir um arquivo que não está na árvore.
         val serie = parser.parse("toda terça e quinta natação às 18h")
         assertThat(serie.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
         assertThat(serie.localTime).isEqualTo(LocalTime.of(18, 0))

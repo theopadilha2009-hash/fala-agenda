@@ -421,8 +421,11 @@ class LocalTaskParser(
             val stripped = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
             // "às 8 em ponto e às 20h": este ramo retornava antes do guard de múltiplos relógios,
             // então a segunda hora nunca era vista — 08:00 com cara de certeza. Duas horas na mesma
-            // frase são ambíguas, como no main.
-            if (CLOCK_NUMERIC.containsMatchIn(stripped) || CLOCK_BARE.containsMatchIn(stripped)) {
+            // frase são ambíguas, como no main. O guard cobre também a segunda hora por extenso
+            // solta ("oito em ponto e nove"): as formas com o "às" não a veem.
+            if (CLOCK_NUMERIC.containsMatchIn(stripped) || CLOCK_BARE.containsMatchIn(stripped) ||
+                SEGUNDA_HORA_EXTENSO.containsMatchIn(stripped)
+            ) {
                 return TimeHit(null, stripped, true, "Há mais de um horário na frase. Confirme o horário.")
             }
             remaining = stripped
@@ -915,9 +918,23 @@ class LocalTaskParser(
         // "três horas em ponto"/"oito em ponto": o "em ponto" é reforço de exatidão, consumido junto
         // com a hora para não sobrar no título. Grupos nomeados: sem eles o "e meia" (minuto) e o
         // período eram confundidos pela posição, e a hora saía sem os 30 min e sem o "da tarde".
+        // O `(?<!dia\s)` é o que separa a HORA do DIA do mês: este ramo roda em extractTime, que vem
+        // antes de extractDate, e sem ele o "12" de "dia 12 em ponto" era consumido como 12:00 — a
+        // data sumia e a hora era inventada com ambiguous=false.
         private val EM_PONTO_CLOCK = Regex(
-            """\b(?:as\s+)?(?<hora>\d{1,2}|$WORD_HOUR_ALT)(?:\s+h(?:oras?)?(?:\s*(?<minutoDigito>\d{2}))?|\s+e\s+(?<minutoPalavra>meia|quinze|vinte|trinta|quarenta|cinquenta))?\s+em\s+ponto\b""" +
+            """\b(?:as\s+)?(?<!dia\s)(?<hora>\d{1,2}|$WORD_HOUR_ALT)(?:\s+h(?:oras?)?(?:\s*(?<minutoDigito>\d{2}))?|\s+e\s+(?<minutoPalavra>meia|quinze|vinte|trinta|quarenta|cinquenta))?\s+em\s+ponto\b""" +
                 """(?:\s*(?:a|da|de|na)\s+(?<periodo>manha|tarde|noite|madrugada))?""",
+        )
+
+        /**
+         * Segunda hora por extenso SOLTA depois do "e" ("oito em ponto e nove"): sem o "às", nenhum
+         * dos relógios acima a vê. O ramo do "em ponto" roda antes do guard de múltiplos relógios, e
+         * o guard só olhava as formas com o "às" — o caso adjacente ao R4 que este PR foi consertar
+         * ficava aberto. O "e" aqui é o coordenador; o lookbehind evita o "e" interno do número
+         * ("vinte e cinco").
+         */
+        private val SEGUNDA_HORA_EXTENSO = Regex(
+            """(?<!vinte\s)(?<!trinta\s)(?<!quarenta\s)(?<!cinquenta\s)\be\s+(?:$WORD_HOUR_ALT)\b""",
         )
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",

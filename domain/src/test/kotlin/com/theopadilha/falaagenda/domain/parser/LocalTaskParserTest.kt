@@ -750,20 +750,22 @@ class LocalTaskParserTest {
     }
 
     @Test
-    fun emPontoNaoViraHoraNemSobraNoTitulo() {
-        // "amanhã três horas em ponto" ficava sem hora e com título "Três ponto"; com o "às" a hora
-        // saía certa mas o título virava "Ponto tomar remédio".
-        val tresHoras = parser.parse("amanhã três horas em ponto")
-        assertThat(tresHoras.localTime).isEqualTo(LocalTime.of(3, 0))
-        assertThat(tresHoras.title).doesNotContain("Ponto")
-
-        val oito = parser.parse("tomar remédio oito em ponto")
-        assertThat(oito.localTime).isEqualTo(LocalTime.of(8, 0))
-        assertThat(oito.title).isEqualTo("Tomar remédio")
-
+    fun emPontoNaoInventaHoraNemSobraNoTitulo() {
+        // "em ponto" é QUALIFICADOR de uma hora que os relógios normais já reconheceram, nunca fonte
+        // dela. Com o "às" a hora vem do relógio normal e o "em ponto" é só consumido (título limpo);
+        // sem o "às" não há hora reconhecida, e o "em ponto" não cria uma — "três horas em ponto" fica
+        // sem hora, como em main, em vez de virar 03:00 por conta própria.
         val comAs = parser.parse("às três em ponto tomar remédio")
         assertThat(comAs.localTime).isEqualTo(LocalTime.of(3, 0))
         assertThat(comAs.title).isEqualTo("Tomar remédio")
+
+        val comH = parser.parse("amanhã reunião às 9h em ponto")
+        assertThat(comH.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(comH.ambiguous).isFalse()
+        assertThat(comH.title).isEqualTo("Reunião")
+
+        val semAs = parser.parse("amanhã três horas em ponto")
+        assertThat(semAs.localTime).isNull()
     }
 
     @Test
@@ -804,25 +806,27 @@ class LocalTaskParserTest {
     //      comentário de cada um (conferido rodando os dois lado a lado). ----
 
     @Test
-    fun f1EmPontoLeOPeriodoEOsMinutos() {
-        // A regex do "em ponto" tem 4 grupos: hora, minutos em dígito, minutos por extenso
-        // (o "e meia") e período. O código lia o 3 (o "e meia") como se fosse período e nunca
-        // lia o 4 — o "da tarde" era descartado. Em main, "três em ponto da tarde" era 15:00.
+    fun f1EmPontoConservaOPeriodoEOsMinutosDaHoraReconhecida() {
+        // O "em ponto" qualifica a hora que os relógios normais acharam, e não interfere nela: o
+        // período dito ("da tarde") e o minuto ("e meia") continuam vindo do ramo normal, que já os
+        // lia certo. Antes o ramo próprio do "em ponto" relia a frase com a própria regex e perdia
+        // os dois — o "da tarde" era descartado e a hora saía sem os 30 min.
         val tarde = parser.parse("amanhã às três em ponto da tarde tomar remédio")
         assertThat(tarde.localTime).isEqualTo(LocalTime.of(15, 0))
         assertThat(tarde.ambiguous).isFalse()
+        assertThat(tarde.title).isEqualTo("Tomar remédio")
 
-        val noite = parser.parse("amanhã oito em ponto da noite tomar remédio")
+        val noite = parser.parse("amanhã às oito em ponto da noite tomar remédio")
         assertThat(noite.localTime).isEqualTo(LocalTime.of(20, 0))
 
         val meia = parser.parse("amanhã oito e meia em ponto tomar remédio")
         assertThat(meia.localTime).isEqualTo(LocalTime.of(8, 30))
 
-        // Os dois grupos juntos: o "e meia" (minuto) e o período, na mesma frase.
+        // Os dois juntos: o "e meia" (minuto) e o período, na mesma frase.
         val juntos = parser.parse("amanhã oito e meia em ponto da noite tomar remédio")
         assertThat(juntos.localTime).isEqualTo(LocalTime.of(20, 30))
 
-        // "três e meia em ponto" sem período: 3h da manhã ou da tarde. Em main era 03:30 ambíguo.
+        // "três e meia em ponto" sem período: 3h da manhã ou da tarde, como "às três e meia".
         val tresEMeia = parser.parse("amanhã três e meia em ponto")
         assertThat(tresEMeia.localTime).isEqualTo(LocalTime.of(3, 30))
         assertThat(tresEMeia.ambiguous).isTrue()
@@ -1150,20 +1154,90 @@ class LocalTaskParserTest {
     }
 
     @Test
-    fun p1bEmPontoComSegundaHoraPorExtensoNaoEscolheAPrimeira() {
+    fun p1bEmPontoComSegundaHoraNaoConfirma() {
         // "amanhã oito em ponto e nove tomar remédio": duas horas na mesma frase ("oito" e "nove").
-        // O guard de múltiplos relógios só via as formas com o "às" (CLOCK_NUMERIC e CLOCK_BARE
-        // exigem o "às"), então a hora por extenso solta passava batido e o ramo cravava 08:00 com
-        // ambiguous=false — o mesmo modo de falha do R4 que este PR foi consertar.
+        // O ramo antigo do "em ponto" cravava 08:00 com ambiguous=false — o mesmo modo de falha do
+        // R4, e a caixa rápida confirmava calado. Agora ele não é fonte de hora nenhuma, então "oito
+        // em ponto" sozinho não vira hora e a segunda hora (por extenso OU em dígito) não é engolida.
+        //
+        // O dígito é o caso que escapava: o guard da rodada anterior só listava as formas por extenso
+        // (`SEGUNDA_HORA_EXTENSO` = `WORD_HOUR_ALT`), então "e 9", "e 10", "e 12", "e 09", "e 7" e
+        // "e 30" passavam por ele e o ramo confirmava 08:00. Por isso a lista tem os dois formatos.
         listOf(
             "amanhã oito em ponto e nove tomar remédio",
             "amanhã tomar remédio oito em ponto e dez",
             "amanhã oito em ponto e dez tomar remédio",
+            "amanhã oito em ponto e 9 tomar remédio",
+            "amanhã oito em ponto e 10 tomar remédio",
+            "amanhã oito em ponto e 12 tomar remédio",
+            "amanhã oito em ponto e 09 tomar remédio",
+            "amanhã oito em ponto e 7 tomar remédio",
+            "amanhã oito em ponto e 30 tomar remédio",
         ).forEach { frase ->
             val draft = parser.parse(frase)
             assertThat(draft.localTime).isNull()
-            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.ambiguous).isFalse()
+            assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
         }
+    }
+
+    @Test
+    fun p1cDataNumericaEmPontoNaoDeslocaAData() {
+        // Com `NN/MM` o ramo antigo consumia o PRIMEIRO número como hora e a data se perdia ou
+        // deslocava: "pagamento dia 05/12 em ponto" virava 2026-09-05 12:00 (setembro em vez de
+        // dezembro, com hora inventada) e "prova dia 10/10 em ponto" virava 2026-09-10 10:00. Data
+        // errada e hora inventada, as duas com ambiguous=false — o pior modo de falha do app.
+        val setembro = parser.parse("consulta dia 5/9 em ponto")
+        assertThat(setembro.localDate).isEqualTo(LocalDate.of(2026, 9, 5))
+        assertThat(setembro.localTime).isNull()
+
+        val dezembro = parser.parse("pagamento dia 05/12 em ponto")
+        assertThat(dezembro.localDate).isEqualTo(LocalDate.of(2026, 12, 5))
+        assertThat(dezembro.localTime).isNull()
+
+        val outubro = parser.parse("prova dia 10/10 em ponto")
+        assertThat(outubro.localDate).isEqualTo(LocalDate.of(2026, 10, 10))
+        assertThat(outubro.localTime).isNull()
+
+        // Com "amanhã" a data já vinha certa; o que se perdia era a hora inventada (12:00).
+        val amanha = parser.parse("amanhã consulta 25/12 em ponto")
+        assertThat(amanha.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(amanha.localTime).isNull()
+    }
+
+    @Test
+    fun p2EmPontoComQuantidadeNaoViraHora() {
+        // "amanhã oito em ponto e três comprimidos": o "e <quantidade>" é dose, não segunda hora. O
+        // ramo antigo lia o "três" como segunda hora e marcava `ambiguous = true` — o lado seguro,
+        // mas uma afirmação falsa sobre a frase ("Há mais de um horário"). Sem ramo próprio, não há
+        // segunda hora a ver: o rascunho fica com a data, sem horário e sem ambiguidade, e escala
+        // porque falta a hora. Por isso o teste prende `ambiguous`, e não só o horário nulo.
+        listOf(
+            "amanhã oito em ponto e três comprimidos",
+            "amanhã oito em ponto e duas gotas",
+            "amanhã oito em ponto e uma colher",
+            "amanhã oito em ponto e vinte minutos",
+        ).forEach { frase ->
+            val draft = parser.parse(frase)
+            assertThat(draft.localTime).isNull()
+            assertThat(draft.missingFields).contains(MissingDraftField.TIME)
+            assertThat(draft.ambiguous).isFalse()
+            assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+        }
+    }
+
+    @Test
+    fun p5EmPontoNaoSobraNoTituloDaHoraComH() {
+        // O comentário do ramo antigo dizia que ele consumia o "em ponto" para não sobrar no título,
+        // mas a regex exigia espaço antes do "h" (`\s+h`) e nunca casava "9h em ponto"/"20h em ponto":
+        // o título saía "Reunião ponto". O qualificador não casa a hora, então não erra o "h".
+        val comH = parser.parse("amanhã reunião às 9h em ponto")
+        assertThat(comH.localTime).isEqualTo(LocalTime.of(9, 0))
+        assertThat(comH.title).isEqualTo("Reunião")
+
+        val vinte = parser.parse("amanhã reunião às 20h em ponto")
+        assertThat(vinte.localTime).isEqualTo(LocalTime.of(20, 0))
+        assertThat(vinte.title).isEqualTo("Reunião")
     }
 
     @Test

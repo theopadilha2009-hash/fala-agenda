@@ -406,38 +406,6 @@ class LocalTaskParser(
             return TimeHit(null, remaining, true, "“${m.value}” não é um horário válido. Confirme a hora.")
         }
 
-        // "três horas em ponto", "oito em ponto", "às três em ponto": o "em ponto" é reforço de
-        // exatidão, não conteúdo. Sem o "às" a hora ficava nula e o "ponto" ia para o título ("Três
-        // ponto"); com o "às" a hora saía certa mas o título virava "Ponto tomar remédio". Consome a
-        // expressão inteira e preserva a hora.
-        EM_PONTO_CLOCK.find(remaining)?.let { m ->
-            val raw = m.groups["hora"]?.value ?: return@let
-            val hourRaw = raw.toIntOrNull() ?: WORD_HOURS[raw] ?: return@let
-            val minutes = m.groups["minutoDigito"]?.value ?: m.groups["minutoPalavra"]?.value.orEmpty()
-            val minute = minutes.ifBlank { "0" }.toIntOrNull()
-                ?: MINUTE_TAIL_WORDS[minutes] ?: 0
-            if (hourRaw !in 0..23 || minute !in 0..59) return@let
-            val period = m.groups["periodo"]?.value.orEmpty()
-            val stripped = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
-            // "às 8 em ponto e às 20h": este ramo retornava antes do guard de múltiplos relógios,
-            // então a segunda hora nunca era vista — 08:00 com cara de certeza. Duas horas na mesma
-            // frase são ambíguas, como no main. O guard cobre também a segunda hora por extenso
-            // solta ("oito em ponto e nove"): as formas com o "às" não a veem.
-            if (CLOCK_NUMERIC.containsMatchIn(stripped) || CLOCK_BARE.containsMatchIn(stripped) ||
-                SEGUNDA_HORA_EXTENSO.containsMatchIn(stripped)
-            ) {
-                return TimeHit(null, stripped, true, "Há mais de um horário na frase. Confirme o horário.")
-            }
-            remaining = stripped
-            return TimeHit(
-                LocalTime.of(applyPeriodHour(hourRaw, if (period.isBlank()) "" else "da $period") % 24, minute),
-                remaining,
-                // "três em ponto" sem período é 3h da manhã ou da tarde — mesma regra do "às três".
-                ambiguous = period.isBlank() && hourRaw in 1..6,
-                note = "“${m.value}” pode ser de manhã ou de tarde. Confirme o horário.",
-            )
-        }
-
         val found = mutableListOf<ClockMatch>()
         CLOCK_NUMERIC.findAll(remaining).forEach { m ->
             val hourRaw = m.groupValues[1].toInt()
@@ -518,11 +486,31 @@ class LocalTaskParser(
         remaining = remaining.replace(consumed, " ")
         return TimeHit(
             LocalTime.of(hour % 24, minute),
-            remaining,
+            consumirEmPonto(remaining),
             ambiguous = noPeriod && hit.hourRaw in 1..6,
             note = "“$consumed” pode ser de manhã ou de tarde. Confirme o horário.",
             hadPeriod = period.isNotBlank(),
         )
+    }
+
+    /**
+     * O "em ponto" é QUALIFICADOR da hora, nunca fonte dela.
+     *
+     * O ramo antigo (`EM_PONTO_CLOCK`) procurava a hora por conta própria: casava um número antes do
+     * "em ponto" e o transformava em hora, antes de `extractDate` rodar. Como `extractTime` vem
+     * primeiro, ele engolia números que pertenciam a outra coisa — o dia do mês ("dia 12 em ponto"),
+     * o primeiro número de uma data `NN/MM` ("05/12 em ponto" virava 05:12 de setembro) e a segunda
+     * hora de uma frase ("oito em ponto e 9"). Cada rodada de review fechou uma dessas formas e
+     * deixou a vizinha aberta, porque o defeito não era a lista de guardas: era o ramo ter opinião
+     * própria sobre qual número é hora.
+     *
+     * Aqui ele não tem. Só age sobre uma hora que os ramos normais JÁ reconheceram, e o trabalho dele
+     * é um só: tirar o "em ponto" do texto que sobra para o título. Sem hora reconhecida, não faz
+     * nada — o "em ponto" fica onde está e não inventa horário nenhum.
+     */
+    private fun consumirEmPonto(remaining: String): String {
+        val m = EM_PONTO_TAIL.find(remaining) ?: return remaining
+        return TextNormalizer.compactSpaces(remaining.replaceRange(m.range.first, m.range.last + 1, " "))
     }
 
     /**
@@ -915,27 +903,16 @@ class LocalTaskParser(
         private val CLOCK_BARE = Regex(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
-        // "três horas em ponto"/"oito em ponto": o "em ponto" é reforço de exatidão, consumido junto
-        // com a hora para não sobrar no título. Grupos nomeados: sem eles o "e meia" (minuto) e o
-        // período eram confundidos pela posição, e a hora saía sem os 30 min e sem o "da tarde".
-        // O `(?<!dia\s)` é o que separa a HORA do DIA do mês: este ramo roda em extractTime, que vem
-        // antes de extractDate, e sem ele o "12" de "dia 12 em ponto" era consumido como 12:00 — a
-        // data sumia e a hora era inventada com ambiguous=false.
-        private val EM_PONTO_CLOCK = Regex(
-            """\b(?:as\s+)?(?<!dia\s)(?<hora>\d{1,2}|$WORD_HOUR_ALT)(?:\s+h(?:oras?)?(?:\s*(?<minutoDigito>\d{2}))?|\s+e\s+(?<minutoPalavra>meia|quinze|vinte|trinta|quarenta|cinquenta))?\s+em\s+ponto\b""" +
-                """(?:\s*(?:a|da|de|na)\s+(?<periodo>manha|tarde|noite|madrugada))?""",
-        )
-
         /**
-         * Segunda hora por extenso SOLTA depois do "e" ("oito em ponto e nove"): sem o "às", nenhum
-         * dos relógios acima a vê. O ramo do "em ponto" roda antes do guard de múltiplos relógios, e
-         * o guard só olhava as formas com o "às" — o caso adjacente ao R4 que este PR foi consertar
-         * ficava aberto. O "e" aqui é o coordenador; o lookbehind evita o "e" interno do número
-         * ("vinte e cinco").
+         * "em ponto" como sufixo de uma hora que os relógios normais já reconheceram.
+         *
+         * É só o qualificador: não captura hora, minuto nem período — quem faz isso é `CLOCK_*`. O
+         * ramo que capturava a hora por conta própria consumia o dia do mês ("dia 12 em ponto"), o
+         * primeiro número de uma data `NN/MM` ("05/12 em ponto" → 05:12 de setembro) e a segunda hora
+         * em dígito da frase ("oito em ponto e 9"), todos com `ambiguous = false`. Ver
+         * `consumirEmPonto`.
          */
-        private val SEGUNDA_HORA_EXTENSO = Regex(
-            """(?<!vinte\s)(?<!trinta\s)(?<!quarenta\s)(?<!cinquenta\s)\be\s+(?:$WORD_HOUR_ALT)\b""",
-        )
+        private val EM_PONTO_TAIL = Regex("""\bem\s+ponto\b""")
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
         )

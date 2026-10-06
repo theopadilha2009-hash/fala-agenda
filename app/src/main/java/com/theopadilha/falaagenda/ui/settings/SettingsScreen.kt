@@ -123,7 +123,13 @@ fun SettingsScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Horário de silêncio", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Nesse período o aplicativo não repete os lembretes que já tocaram. O primeiro aviso de cada tarefa ainda toca no horário que você escolheu. Quando o silêncio termina, o aplicativo volta a repetir.",
+                        // "no horário marcado" não é redundância: `ReminderPolicy.firstReminder`
+                        // devolve `fireAt = occurrenceScheduledAt` sem passar pelo
+                        // `shiftOutOfQuietHours`, então o primeiro aviso realmente toca na hora
+                        // dela, e não no fim do silêncio. A frase que dizia isso saiu na
+                        // primeira versão deste texto, e a dúvida que ela matava ("isso vai me
+                        // acordar às 8h em vez das 23h?") voltou com ela.
+                        "Neste período, os avisos já dados não repetem. O primeiro aviso de cada tarefa ainda toca no horário marcado.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     QuietCard(

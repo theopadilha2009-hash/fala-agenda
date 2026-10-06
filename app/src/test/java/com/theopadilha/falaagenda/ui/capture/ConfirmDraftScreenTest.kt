@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.domain.model.MissingDraftField
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -250,6 +251,54 @@ class ConfirmDraftScreenTest {
                 "Isso cancela todos os avisos futuros de “Tomar remédio”. " +
                     "Os dias que já passaram ficam como estão, e não dá para desfazer.",
             )
+    }
+
+    /**
+     * O rodapé de jargão saiu. "Os campos ausentes não foram preenchidos automaticamente."
+     * aparecia sempre na edição, não era acionável e chamava de "campos" o que ela conhece
+     * como "o que precisa ser feito", "a data" e "o horário".
+     */
+    @Test
+    fun aTelaNaoTemORodapeDeJargao() {
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                ConfirmDraftScreen(
+                    initial = rascunho("Tomar remédio", hoje, hora, RecurrenceRule()),
+                    onCancel = {},
+                    onSave = {},
+                    editing = true,
+                )
+            }
+        }
+
+        compose.onNodeWithText("campos ausentes", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("preenchidos automaticamente", substring = true).assertDoesNotExist()
+    }
+
+    /**
+     * A informação que o rodapé carregava — "falta algo" — não foi embora com ele: quem diz
+     * é a linha "Falta preencher: …", que já estava na tela. Sem este caso, tirar a linha
+     * vermelha junto com o rodapé deixaria a suíte verde e ela sem saber o que falta.
+     */
+    @Test
+    fun quandoFaltaAlgoQuemDizEALinhaDeFaltar() {
+        val semHora = ParsedTaskDraft(
+            title = "Cabelo",
+            localDate = hoje,
+            localTime = null,
+            recurrence = RecurrenceRule(),
+            confidence = 1.0,
+            missingFields = setOf(MissingDraftField.TIME),
+            ambiguous = false,
+            transcript = "",
+        )
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                ConfirmDraftScreen(initial = semHora, onCancel = {}, onSave = {})
+            }
+        }
+
+        compose.onNodeWithText("Falta preencher: o horário.", substring = true).assertExists()
     }
 
     private fun tela(draft: ParsedTaskDraft) {

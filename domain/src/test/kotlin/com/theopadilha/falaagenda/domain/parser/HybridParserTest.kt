@@ -6,6 +6,7 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
@@ -257,5 +258,125 @@ class HybridParserTest {
 
         assertThat(draft.notes.joinToString()).doesNotContain("Falta o horário")
         assertThat(draft.notes.joinToString()).contains("A ajuda extra completou o horário.")
+    }
+
+    /**
+     * A nota que o próprio `LocalTaskParser` escreve para o ano que ele não cravou não pode
+     * sobreviver à IA ter resolvido a data: a tela a renderiza em vermelho logo acima da data
+     * preenchida, a mesma contradição que `notasDomescladas` existe para evitar.
+     */
+    @Test
+    fun aNotaDoAnoQueRolouSaiQuandoIaResolveAData() = runBlocking {
+        val localDraft = local.parse("reunião 05/08 às 10h")
+        assertThat(localDraft.ambiguous).isTrue()
+        assertThat(localDraft.notes.joinToString()).contains("já passou")
+
+        val remoto = object : RemoteDraftParser {
+            override suspend fun parse(
+                transcript: String,
+                nowIso: String,
+                timezone: String,
+                locale: String,
+            ): ParsedTaskDraft = ParsedTaskDraft(
+                title = "Reunião",
+                localDate = LocalDate.of(2027, 8, 5),
+                localTime = LocalTime.of(10, 0),
+                confidence = 0.9,
+                missingFields = emptySet(),
+                ambiguous = false,
+                transcript = transcript,
+                notes = listOf("A ajuda extra resolveu a data."),
+                source = DraftSource.AI,
+            )
+        }
+        val hybrid = HybridParser(
+            local = local,
+            clock = clock,
+            remote = remoto,
+            network = NetworkStatus { true },
+            isAiEnabled = { true },
+        )
+        val draft = hybrid.parse("reunião 05/08 às 10h")
+
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 8, 5))
+        assertThat(draft.notes.joinToString()).doesNotContain("já passou")
+        assertThat(draft.notes.joinToString()).contains("A ajuda extra resolveu a data.")
+    }
+
+    /** A mesma contradição para a data que não existe no calendário. */
+    @Test
+    fun aNotaDaDataQueNaoExisteSaiQuandoIaResolveAData() = runBlocking {
+        val localDraft = local.parse("consulta 31/02/2027 às 10h")
+        assertThat(localDraft.localDate).isNull()
+        assertThat(localDraft.notes.joinToString()).contains("não existe no calendário")
+
+        val remoto = object : RemoteDraftParser {
+            override suspend fun parse(
+                transcript: String,
+                nowIso: String,
+                timezone: String,
+                locale: String,
+            ): ParsedTaskDraft = ParsedTaskDraft(
+                title = "Consulta",
+                localDate = LocalDate.of(2027, 2, 28),
+                localTime = LocalTime.of(10, 0),
+                confidence = 0.9,
+                missingFields = emptySet(),
+                ambiguous = false,
+                transcript = transcript,
+                notes = emptyList(),
+                source = DraftSource.AI,
+            )
+        }
+        val hybrid = HybridParser(
+            local = local,
+            clock = clock,
+            remote = remoto,
+            network = NetworkStatus { true },
+            isAiEnabled = { true },
+        )
+        val draft = hybrid.parse("consulta 31/02/2027 às 10h")
+
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 2, 28))
+        assertThat(draft.notes.joinToString()).doesNotContain("não existe no calendário")
+    }
+
+    /**
+     * O mecanismo não pode depender de a lista de notas desmentidas ser mantida à mão: uma nota
+     * nova do parser sobre a data sai sozinha quando o rascunho final tem data e hora.
+     */
+    @Test
+    fun notaDeDataDoParserSaiSozinhaQuandoORascunhoFicaCompleto() = runBlocking {
+        val localDraft = local.parse("reunião 05/08 às 10h")
+        val notaDaData = localDraft.notes.first { it.contains("já passou") }
+
+        val remoto = object : RemoteDraftParser {
+            override suspend fun parse(
+                transcript: String,
+                nowIso: String,
+                timezone: String,
+                locale: String,
+            ): ParsedTaskDraft = ParsedTaskDraft(
+                title = "Reunião",
+                localDate = LocalDate.of(2027, 8, 5),
+                localTime = LocalTime.of(10, 0),
+                confidence = 0.9,
+                missingFields = emptySet(),
+                ambiguous = false,
+                transcript = transcript,
+                notes = emptyList(),
+                source = DraftSource.AI,
+            )
+        }
+        val hybrid = HybridParser(
+            local = local,
+            clock = clock,
+            remote = remoto,
+            network = NetworkStatus { true },
+            isAiEnabled = { true },
+        )
+        val draft = hybrid.parse("reunião 05/08 às 10h")
+
+        assertThat(draft.notes).doesNotContain(notaDaData)
     }
 }

@@ -11,11 +11,19 @@ import java.time.DayOfWeek
 import java.time.DateTimeException
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.Month
+import java.time.format.TextStyle
 import java.time.temporal.WeekFields
 import java.util.Locale
 
 /**
  * Parser determinístico pt-BR. Nunca inventa data/hora ausente.
+ *
+ * A `note` de cada `DateHit` nasce marcada com o prefixo de [NotasDoRascunho] — o casamento entre
+ * o que este parser escreve e o que o `HybridParser` tem de desmentir é pelo prefixo, e não pela
+ * frase inteira: antes a lista era de frases completas, e cada nota nova (a data que rolou o ano,
+ * a que não existe) ficava de fora dela sem que nada avisasse, sobrevivendo à IA ter resolvido a
+ * data e aparecendo em vermelho acima da data preenchida.
  */
 class LocalTaskParser(
     private val clock: AppClock,
@@ -72,7 +80,7 @@ class LocalTaskParser(
         if (dateHit.ambiguous) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += dateHit.note ?: "A data ficou ambígua."
+            notes += dateHit.note ?: NotasDoRascunho.DATA_AMBIGUA
         }
 
         val periodHit = extractPeriodHint(remaining)
@@ -176,14 +184,14 @@ class LocalTaskParser(
         if (localDate != null && localTime != null) {
             val scheduled = localDate.atTime(localTime).atZone(clock.zoneId()).toInstant()
             if (scheduled.isBefore(clock.instant()) && !recurrence.isRecurring) {
-                notes += "Essa data e horário já passaram."
+                notes += NotasDoRascunho.INSTANTE_PASSADO
             }
         }
         if (missing.contains(MissingDraftField.DATE)) {
-            notes += "Falta a data. Não inventamos um dia."
+            notes += NotasDoRascunho.FALTA_DATA
         }
         if (missing.contains(MissingDraftField.TIME)) {
-            notes += "Falta o horário. Não inventamos uma hora."
+            notes += NotasDoRascunho.FALTA_HORA
         }
 
         return ParsedTaskDraft(
@@ -222,7 +230,7 @@ class LocalTaskParser(
             return RecurrenceHit(
                 RecurrenceRule(RecurrenceKind.YEARLY, dayOfMonth = day, monthOfYear = month),
                 remaining,
-                day !in 1..31,
+                !RecurrenceEngine.dayExistsInMonth(day, month),
             )
         }
 
@@ -236,7 +244,7 @@ class LocalTaskParser(
             return RecurrenceHit(
                 RecurrenceRule(RecurrenceKind.YEARLY, dayOfMonth = day, monthOfYear = month),
                 remaining,
-                false,
+                !RecurrenceEngine.dayExistsInMonth(day, month),
             )
         }
 
@@ -656,7 +664,22 @@ class LocalTaskParser(
             if (day !in 1..31) return DateHit(null, remaining, true)
             val month = if (day >= today.dayOfMonth) today.monthValue else today.monthValue % 12 + 1
             val year = if (month >= today.monthValue) today.year else today.year + 1
-            return DateHit(RecurrenceEngine.clampToValidDate(year, month, day), remaining, false)
+            // O mês aqui é deduzido, e o mês deduzido pode não ter o dia dito: "no dia 31" ouvido
+            // em fevereiro não é 28/02. O `clampToValidDate` arredondava para o último dia do mês
+            // com `ambiguous = false` e a caixa rápida confirmava a data que ela não falou. É a
+            // mesma recusa do `resolveDate`, no terceiro caminho de data avulsa deste método.
+            val date = try {
+                LocalDate.of(year, month, day)
+            } catch (_: DateTimeException) {
+                val mes = Month.of(month).getDisplayName(TextStyle.FULL, locale)
+                return DateHit(
+                    null,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_IMPOSSIVEL}: o dia $day não existe em $mes. Confirme a data.",
+                )
+            }
+            return DateHit(date, remaining, false)
         }
 
         MONTH_START.find(remaining)?.let { m ->
@@ -811,7 +834,12 @@ class LocalTaskParser(
             val date = try {
                 LocalDate.of(year, month, day)
             } catch (_: DateTimeException) {
-                return DateHit(null, remaining, true, "“$raw” não existe no calendário. Confirme a data.")
+                return DateHit(
+                    null,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_IMPOSSIVEL}: “$raw” não existe no calendário.",
+                )
             }
             return DateHit(date, remaining, false)
         }
@@ -832,11 +860,16 @@ class LocalTaskParser(
             } catch (_: DateTimeException) {
                 false
             }
-        } ?: return DateHit(null, remaining, true, "“$raw” não existe no calendário. Confirme a data.")
+        } ?: return DateHit(
+            null,
+            remaining,
+            true,
+            "${NotasDoRascunho.DATA_IMPOSSIVEL}: “$raw” não existe no calendário.",
+        )
         val note = if (thisYear == null) {
-            "“$raw” não existe este ano; ficou em ${nextYear}. Confirme o ano."
+            "${NotasDoRascunho.DATA_A_CONFIRMAR}: “$raw” não existe este ano; ficou em $nextYear."
         } else {
-            "“$raw” já passou este ano; ficou em ${nextYear}. Confirme a data."
+            "${NotasDoRascunho.DATA_A_CONFIRMAR}: “$raw” já passou este ano; ficou em $nextYear."
         }
         return DateHit(LocalDate.of(nextYear, month, day), remaining, true, note)
     }

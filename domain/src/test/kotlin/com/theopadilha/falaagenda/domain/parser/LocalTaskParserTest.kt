@@ -1426,4 +1426,89 @@ class LocalTaskParserTest {
         assertThat(comNo.localDate).isEqualTo(LocalDate.of(2026, 11, 15))
         assertThat(comNo.title).isEqualTo("Missa")
     }
+
+    /**
+     * A outra metade do A4: o "dia"/"no dia" antes do dia **por extenso**. Só o caminho de dígito
+     * tinha teste, então tirar o `(?:no\s+)?dia\s+` do `extensoPalavra` deixava a suíte verde
+     * enquanto "no dia quinze de novembro missa" voltava a virar "Dia missa".
+     */
+    @Test
+    fun diaPorExtensoComOPrefixoNaoDeixaODiaNoTitulo() {
+        val comNo = parser.parse("no dia quinze de novembro missa às 10h")
+        assertThat(comNo.localDate).isEqualTo(LocalDate.of(2026, 11, 15))
+        assertThat(comNo.localTime).isEqualTo(LocalTime.of(10, 0))
+        assertThat(comNo.title).isEqualTo("Missa")
+
+        val semNo = parser.parse("dia quinze de novembro missa às 10h")
+        assertThat(semNo.localDate).isEqualTo(LocalDate.of(2026, 11, 15))
+        assertThat(semNo.title).isEqualTo("Missa")
+    }
+
+    // ---- F1: o dia do mês avulso ("no dia 31") também recusa a data que não existe ----
+
+    @Test
+    fun diaDoMesAvulsoQueNaoExisteERecusado() {
+        // Hoje é 10/02/2026. O caminho do dia avulso não passa pelo `resolveDate` e continuava
+        // clampando: "no dia 31" virava 28/02 com `ambiguous = false` e a caixa rápida confirmava.
+        val fevereiro = parserEm(LocalDateTime.of(2026, 2, 10, 15, 0))
+        val agora = LocalDateTime.of(2026, 2, 10, 15, 0).atZone(zone).toInstant()
+        listOf(
+            "consulta no dia 31 às 10h",
+            "consulta dia 31 às 10h",
+            "consulta no dia 30 às 10h",
+        ).forEach { frase ->
+            val draft = fevereiro.parse(frase)
+            assertThat(draft.localDate).isNull()
+            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.missingFields).contains(MissingDraftField.DATE)
+            assertThat(draft.canQuickConfirm(agora, zone)).isFalse()
+        }
+
+        // O dia que existe no mês continua resolvido e sem ambiguidade.
+        val valido = fevereiro.parse("consulta no dia 25 às 10h")
+        assertThat(valido.localDate).isEqualTo(LocalDate.of(2026, 2, 25))
+        assertThat(valido.ambiguous).isFalse()
+
+        // O 29 em fevereiro de um ano comum não existe — e não pode virar 28/02 nem estourar.
+        val vinteENove = fevereiro.parse("consulta no dia 29 às 10h")
+        assertThat(vinteENove.localDate).isNull()
+        assertThat(vinteENove.ambiguous).isTrue()
+
+        // E o dia 31 de um mês que tem 31 continua valendo.
+        val trintaEUm = fevereiro.parse("consulta no dia 31 de março às 10h")
+        assertThat(trintaEUm.localDate).isEqualTo(LocalDate.of(2026, 3, 31))
+        assertThat(trintaEUm.ambiguous).isFalse()
+    }
+
+    // ---- F2: a série anual com dia impossível no mês dito também é recusa ----
+
+    @Test
+    fun serieComDiaImpossivelNoMesFicaAmbigua() {
+        // O ramo `yearlyExtenso` ("todo dia N de <mês>", a forma como ela fala) devolvia
+        // `ambiguous = false` literal, sem o guard que os outros ramos do mesmo `extractRecurrence`
+        // têm: a caixa rápida confirmava calada uma série cujo dia não existe.
+        val fevereiro = parserEm(LocalDateTime.of(2026, 2, 10, 15, 0))
+        val agora = LocalDateTime.of(2026, 2, 10, 15, 0).atZone(zone).toInstant()
+        listOf(
+            "todo dia 32 de fevereiro remédio às 10h",
+            "todo dia 99 de fevereiro remédio às 10h",
+            "todo dia 31 de abril remédio às 10h",
+        ).forEach { frase ->
+            val draft = fevereiro.parse(frase)
+            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.canQuickConfirm(agora, zone)).isFalse()
+        }
+
+        // A mesma data dita com "todo ano" já era recusada por aquele ramo — o guard que faltava
+        // aqui era o do `yearlyExtenso`, que é a forma como ela fala ("todo dia N de <mês>").
+        assertThat(fevereiro.parse("todo ano dia 32 de fevereiro remédio às 10h").ambiguous).isTrue()
+        assertThat(fevereiro.parse("todo ano dia 31 de abril remédio às 10h").ambiguous).isTrue()
+
+        // O dia 31 existe em meses de 31 dias: a série anual continua certa e sem ambiguidade.
+        assertThat(fevereiro.parse("todo dia 31 de maio remédio às 10h").ambiguous).isFalse()
+
+        // A série possível continua certa, inclusive o 29 de fevereiro (a série cai no bissexto).
+        assertThat(fevereiro.parse("todo dia 15 de maio remédio às 10h").ambiguous).isFalse()
+        assertThat(fevereiro.parse("todo dia 29 de fevereiro remédio às 10h").ambiguous).isFalse()
+    }
 }

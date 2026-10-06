@@ -103,10 +103,16 @@ class HybridParser(
      * As notas do local que a IA acabou de tornar falsas saem do rascunho.
      *
      * Elas são geradas em `LocalTaskParser` para o que **faltou** ("Falta a data", "Falta o
-     * horário") e para o instante vencido, e a tela as mostra em vermelho
-     * (`ConfirmDraftScreen`). Mantidas depois de a IA preencher o campo, a tela exibiria "Falta o
-     * horário" logo acima do horário preenchido — a contradição visível que o app inteiro evita.
-     * O casamento é por prefixo porque a nota nasce como texto pronto lá, e não como código.
+     * horário") e para o que o parser não cravou (a data que não existe, o ano que rolou, o
+     * instante vencido), e a tela as mostra em vermelho (`ConfirmDraftScreen`). Mantidas depois de
+     * a IA preencher o campo, a tela exibiria "Falta o horário" logo acima do horário preenchido —
+     * a contradição visível que o app inteiro evita.
+     *
+     * O casamento é por prefixo, e o prefixo mora em [NotasDoRascunho], na origem da nota. Antes
+     * esta classe tinha a lista própria de frases completas, e uma nota nova do parser — como as
+     * de data que este lote criou — ficava de fora dela sem que nada avisasse: a tela mostrava em
+     * vermelho "“05/08” já passou este ano" logo acima da data que a IA tinha acabado de resolver.
+     * Com o assunto marcado na origem, a nota nova nasce desmentível.
      */
     private fun notasDomescladas(
         locais: List<String>,
@@ -115,9 +121,9 @@ class HybridParser(
         localTime: LocalTime?,
     ): List<String> {
         val desmentidas = buildSet {
-            if (localDate != null) add(NOTA_FALTA_DATA)
-            if (localTime != null) add(NOTA_FALTA_HORA)
-            if (localDate != null && localTime != null) add(NOTA_INSTANTE_PASSADO)
+            if (localDate != null) addAll(NotasDoRascunho.SOBRE_A_DATA)
+            if (localTime != null) addAll(NotasDoRascunho.SOBRE_A_HORA)
+            if (localDate != null && localTime != null) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
         }
         return (locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } } + remotas)
             .distinct()
@@ -153,13 +159,4 @@ class HybridParser(
         return localDraft.localDate == null || localDraft.localTime == null
     }
 
-    private companion object {
-        // Prefixos das notas que o `LocalTaskParser` escreve para o que faltou e para o instante
-        // vencido. Casadas por prefixo porque lá a nota nasce como frase pronta para a tela, e o
-        // que estas constantes precisam é só reconhecê-la depois — a redação pode ganhar um
-        // complemento sem quebrar o casamento.
-        const val NOTA_FALTA_DATA = "Falta a data"
-        const val NOTA_FALTA_HORA = "Falta o horário"
-        const val NOTA_INSTANTE_PASSADO = "Essa data e horário já passaram"
-    }
 }

@@ -127,17 +127,40 @@ class ContrasteDaBordaDoCartaoTest {
      * Quem usa cada token: o contêiner do botão desabilitado e o disco do microfone precisam
      * apontar para o `outlineVariant`. O teste lê o código-fonte porque a cor não aparece na
      * árvore de semântica — mesmo caminho do `WidgetThemeTest`, que lê o `colors.xml`.
+     *
+     * A comparação é sobre o fonte com os espaços normalizados (`fonteNormalizada`). A versão
+     * anterior casava a string com o `\n` no fim, e por isso só pegava o texto quebrado naquele
+     * ponto exato: `disabledContainerColor =\n MaterialTheme.colorScheme.outline,` — uma quebra
+     * de linha no meio — passava verde usando o token errado. O `=` vira `= ` e os espaços
+     * múltiplos viram um só, então a quebra de linha deixa de importar.
      */
     @Test
     fun oCodigoUsaOTokenDecorativoNosUsosQuePrecisamDoClaro() {
-        val uiBits = fonteDe("app/src/main/java/com/theopadilha/falaagenda/ui/components/UiBits.kt")
-        val micMark = fonteDe("app/src/main/java/com/theopadilha/falaagenda/ui/components/MicMark.kt")
+        val uiBits = fonteNormalizada("app/src/main/java/com/theopadilha/falaagenda/ui/components/UiBits.kt")
+        val micMark = fonteNormalizada("app/src/main/java/com/theopadilha/falaagenda/ui/components/MicMark.kt")
 
         assertThat(uiBits).contains("disabledContainerColor = MaterialTheme.colorScheme.outlineVariant")
-        assertThat(uiBits).doesNotContain("disabledContainerColor = MaterialTheme.colorScheme.outline\n")
+        assertThat(uiBits).doesNotContain("disabledContainerColor = MaterialTheme.colorScheme.outline,")
+        assertThat(uiBits).doesNotContain("disabledContainerColor = MaterialTheme.colorScheme.outline)")
 
         assertThat(micMark).contains("else MaterialTheme.colorScheme.outlineVariant")
-        assertThat(micMark).doesNotContain("else MaterialTheme.colorScheme.outline\n")
+        assertThat(micMark).doesNotContain("else MaterialTheme.colorScheme.outline,")
+    }
+
+    /**
+     * O divisor de seção da gaveta (`HomeDrawer.kt`) lê o `outlineVariant` por padrão
+     * (`DividerDefaults` do M3), que no tema é a linha clara: sobre o creme da gaveta dá
+     * 1,18:1 — o divisor some. O `outline` é a linha que o tema escureceu para se enxergar
+     * sobre o fundo (3,26:1 no claro), e é o token que o divisor tem de usar. Sem o `color`
+     * explícito ele volta para o default e some de novo — este caso é o que prende isso.
+     */
+    @Test
+    fun oDivisorDaGavetaUsaALinhaQueSeEnxergaSobreOFundo() {
+        val homeDrawer = fonteNormalizada("app/src/main/java/com/theopadilha/falaagenda/ui/home/HomeDrawer.kt")
+
+        assertThat(homeDrawer).contains("HorizontalDivider(")
+        assertThat(homeDrawer).contains("color = MaterialTheme.colorScheme.outline,")
+        assertThat(homeDrawer).doesNotContain("color = MaterialTheme.colorScheme.outlineVariant,")
     }
 
     /**
@@ -163,4 +186,13 @@ class ContrasteDaBordaDoCartaoTest {
     private fun fonteDe(caminho: String): String =
         (listOf(File(caminho), File("../$caminho")).firstOrNull { it.isFile }
             ?: error("não achei $caminho a partir de ${File(".").absolutePath}")).readText()
+
+    /**
+     * O fonte com os espaços normalizados, para o casamento não depender de formatação: o `=`
+     * ganha um espaço depois (como o Kotlin escreveria) e toda sequência de espaços — incluindo
+     * quebra de linha — vira um espaço só. Sem isso, uma quebra de linha no meio da atribuição
+     * escondia o uso do token errado do `doesNotContain`.
+     */
+    private fun fonteNormalizada(caminho: String): String =
+        fonteDe(caminho).replace("=", "= ").replace(Regex("\\s+"), " ")
 }

@@ -1,18 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 2x3, e não 2x2: a parte fixa do layout (padding 12+12, kicker 12sp, "quando" 13sp, 6 de
-     margem e o botão "Falar" de 56dp) já pede ~117dp antes do título da próxima tarefa.
-     Em 2 células o widget recebe 110dp: o título, que é quem cede, encolhia até zero e a
-     base do botão era cortada — e toque fora dos limites do root não chega no widget, ou
-     seja, o alvo de 56dp voltava a ser menor. 180dp = 3 células na tabela oficial dá as
-     duas linhas do título e os 56dp inteiros do botão.
+<!-- 3x2, com as células declaradas e o mínimo declarado contando a mesma história.
 
-     A largura mínima subiu de 110dp para 150dp junto com a fonte (12/13/16sp -> 16/16/18sp):
-     com os tamanhos novos a 110dp a parte fixa (kicker 16sp, "quando" 16sp em até 3 linhas e
-     o botão de 56dp) come o height inteiro e o título colapsa para 12px, menos que a linha de
-     21px dele — o texto da próxima tarefa sumia, pior do que antes. A 130dp o título volta a
-     aparecer, mas "Tomar remédio de pressão" ainda sai com 8 caracteres em reticências. A
-     150dp nada trunca: o título de duas linhas e o "quando" de duas linhas cabem nos 180dp.
-     Medido inflando e medindo o layout em cada largura (WidgetFonteTest). -->
+     O defeito: `targetCellWidth="2"` convivia com `minWidth="150dp"`. No Android 12+ os
+     atributos `targetCell*` são usados NO LUGAR de `minWidth`/`minHeight` (doc oficial), então
+     o aparelho dela (13+) entregava 2 células = 130dp — não os 150dp que o teste media. Medido
+     inflando o layout em `GraphicsMode.NATIVE`: a 130dp o título "Tomar remédio de pressão" sai
+     com 8 caracteres em reticências, exatamente o defeito que o PR dizia fechar. A 203dp
+     (3 células) nada trunca, em nenhum dos três estados reais (vazio, próxima, atrasada).
+
+     No Android ≤11 não existem células declaradas: o launcher sobe o `minWidth`/`minHeight`
+     para a célula da tabela oficial (largura 73n-16, altura 118m-16, medida num Pixel 4).
+     `minWidth="150dp"` cai na faixa da 3ª célula (130 < 150 <= 203) e `minHeight="180dp"` na da
+     2ª (102 < 180 <= 220) — ou seja, o ≤11 já entregava 203x220dp, o mesmo 3x2 que
+     `targetCellWidth="3"`/`targetCellHeight="2"` passa a entregar no 12+. Era só o 12+ que
+     recebia 2 células de largura; agora os dois regimes recebem o mesmo tamanho.
+
+     A 203dp de largura a parte fixa pede ~170dp de altura (padding 12+12, kicker 22, "quando"
+     de 2 linhas 41, margem 6 e o botão "Falar" de 56), então 180dp de piso cobre o conteúdo —
+     o que o aparelho entrega é 220dp.
+
+     Medido inflando e medindo o layout nos dois regimes (WidgetFonteTest). -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_description"
     android:initialLayout="@layout/widget_agenda"
@@ -20,7 +27,7 @@
     android:minHeight="180dp"
     android:previewLayout="@layout/widget_agenda"
     android:resizeMode="horizontal|vertical"
-    android:targetCellWidth="2"
-    android:targetCellHeight="3"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen" />

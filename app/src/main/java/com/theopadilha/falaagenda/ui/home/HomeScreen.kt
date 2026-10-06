@@ -763,7 +763,10 @@ fun HomeScreen(
 
         AlertDialog(
             onDismissRequest = { batteryHelp = false },
-            title = { Text(if (batteryOk) "Avisos liberados" else "Não matar alarmes") },
+            // O título segue o rótulo da gaveta que abre este diálogo: o menu diz "Fazer os
+            // avisos tocarem sempre" e o diálogo dizia "Não matar alarmes" — a mesma
+            // superfície com dois vocabulários, e o de dentro pedindo que ela "matasse".
+            title = { Text(if (batteryOk) "Avisos liberados" else "Fazer os avisos tocarem sempre") },
             text = {
                 // Fonte grande é o ajuste que ela mais usa: sem rolagem, o fim do guia
                 // ficaria cortado fora da caixa.

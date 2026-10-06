@@ -21,7 +21,11 @@ import org.robolectric.annotation.Config
  * termina, o aplicativo volta a repetir" é a outra face de "não repete os lembretes que já
  * tocaram". O nome do ajuste ("silêncio") também soa como se nada tocasse, então a
  * informação que precisa sobreviver é justamente essa: o primeiro aviso de cada tarefa toca.
- * Este caso prende o texto curto e, com ele, a informação.
+ *
+ * E toca **no horário marcado**, não no fim do silêncio: `ReminderPolicy.firstReminder`
+ * devolve `fireAt = occurrenceScheduledAt` sem passar pelo `shiftOutOfQuietHours`. A revisão
+ * pegou que a primeira versão deste texto tinha perdido essa garantia — numa mãe que configura
+ * 22h–8h e tem um remédio às 23h, "isso vai me acordar às 8h em vez das 23h?" é dúvida real.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(
@@ -47,12 +51,23 @@ class SettingsQuietHoursTextTest {
     }
 
     @Test
-    fun oTextoDizQueOPrimeiroAvisoAindaToca() {
+    fun oTextoDizQueOPrimeiroAvisoAindaTocaNoHorarioMarcado() {
         tela()
 
         compose.onNodeWithText(
-            "Neste período, os avisos já dados não repetem. O primeiro aviso de cada tarefa ainda toca.",
+            "Neste período, os avisos já dados não repetem. O primeiro aviso de cada tarefa ainda toca no horário marcado.",
         ).assertIsDisplayed()
+    }
+
+    /**
+     * A garantia de que o primeiro aviso toca na hora dela, e não no fim do silêncio: sem
+     * esta metade, o texto responde *se* toca e deixa em aberto *quando*.
+     */
+    @Test
+    fun oTextoDizQueOPrimeiroAvisoTocaNaHoraMarcada() {
+        tela()
+
+        compose.onNodeWithText("no horário marcado", substring = true).assertExists()
     }
 
     /**

@@ -112,6 +112,59 @@ class MonthRecapTextTest {
         assertThat(linha).doesNotContain("não realizadas")
     }
 
+    /**
+     * As linhas de "faltas" do resumo do mês, montadas fora do composable: é o que dá ao teste
+     * algo a que se agarrar. Inline, um revert de `naoRealizadas` para `missed` passaria com a
+     * suíte verde e o defeito voltaria em silêncio.
+     */
+    @Test
+    fun aLinhaDoMesSeparaAFalhaDoAppDaFaltaDela() {
+        val sections = AgendaSections(
+            today = emptyList(),
+            upcoming = emptyList(),
+            completed = emptyList(),
+            missed = listOf(
+                missed("Tomar remédio", LocalDate.of(2026, 8, 1), lastReminderAt = null),
+                missed("Caminhada", LocalDate.of(2026, 8, 2), lastReminderAt = aviso),
+            ),
+        )
+
+        val linhas = monthMissedLines(MonthInsights.of(sections.insightRows(), agosto))
+
+        assertThat(linhas).containsExactly("1 não realizadas", "Não consegui avisar 1 tarefa").inOrder()
+    }
+
+    /** Só a falha do app: nada sobra como falta dela, e nenhuma linha é "0 não realizadas". */
+    @Test
+    fun oMesComSoFalhaDoAppNaoDizQueElaDeixouDeFazer() {
+        val sections = AgendaSections(
+            today = emptyList(),
+            upcoming = emptyList(),
+            completed = emptyList(),
+            missed = listOf(missed("Tomar remédio", LocalDate.of(2026, 8, 1), lastReminderAt = null)),
+        )
+
+        val linhas = monthMissedLines(MonthInsights.of(sections.insightRows(), agosto))
+
+        assertThat(linhas).containsExactly("Não consegui avisar 1 tarefa")
+        assertThat(linhas).doesNotContain("0 não realizadas")
+    }
+
+    /** Só falta dela: nenhuma linha de falha do app aparece. */
+    @Test
+    fun oMesSemFalhaDoAppNaoInventaORotulo() {
+        val sections = AgendaSections(
+            today = emptyList(),
+            upcoming = emptyList(),
+            completed = emptyList(),
+            missed = listOf(missed("Caminhada", LocalDate.of(2026, 8, 2), lastReminderAt = aviso)),
+        )
+
+        val linhas = monthMissedLines(MonthInsights.of(sections.insightRows(), agosto))
+
+        assertThat(linhas).containsExactly("1 não realizadas")
+    }
+
     private fun missed(title: String, date: LocalDate, lastReminderAt: Instant?) = item(
         title = title,
         date = date,

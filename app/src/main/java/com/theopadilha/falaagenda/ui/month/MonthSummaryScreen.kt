@@ -140,13 +140,12 @@ fun MonthSummaryScreen(
                 QuietCard {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("${insight.completed} feitas", style = MaterialTheme.typography.titleMedium)
-                        // Só o que ela deixou de fazer é "não realizadas". A tarefa que o
-                        // aplicativo não avisou sai separada, no mesmo vocabulário da home —
-                        // ela não pode ler "não realizadas" sobre um remédio que o app nunca
-                        // lembrou. Sem falha do app a linha é a de sempre, e o rótulo some.
-                        Text("${insight.naoRealizadas} não realizadas", style = MaterialTheme.typography.bodyMedium)
-                        if (insight.naoAvisadas > 0) {
-                            Text(insight.naoAvisadasLabel(), style = MaterialTheme.typography.bodyMedium)
+                        // As faltas saem montadas fora do composable (ver [monthMissedLines])
+                        // para o teste poder perguntar por elas: inline, um revert de
+                        // `naoRealizadas` para `missed` passaria com a suíte verde, e o defeito
+                        // que este conserto fecha voltaria sem nada acusar.
+                        monthMissedLines(insight).forEach { linha ->
+                            Text(linha, style = MaterialTheme.typography.bodyMedium)
                         }
                         if (insight.spentCents > 0) {
                             Text(
@@ -224,6 +223,20 @@ fun AgendaSections.insightRows(): List<InsightRow> =
                 missedReason(it) == MissedReason.NOT_WARNED,
         )
     }
+
+/**
+ * As linhas de "faltas" do resumo do mês, montadas fora do composable para o teste poder
+ * perguntar por elas — o mesmo motivo que tirou a manchete de dentro da home.
+ *
+ * Só o que ela deixou de fazer é "não realizadas" (`naoRealizadas`, com o aviso entregue). A
+ * falha do aplicativo (`naoAvisadas`, sem nenhum aviso ter saído) sai separada, com o app como
+ * sujeito e o mesmo texto da home ("Não consegui avisar"). Nenhuma das duas aparece quando é
+ * zero: "0 não realizadas" ao lado de uma falha do app não diz nada.
+ */
+fun monthMissedLines(insight: MonthInsight): List<String> = buildList {
+    if (insight.naoRealizadas > 0) add("${insight.naoRealizadas} não realizadas")
+    if (insight.naoAvisadas > 0) add(insight.naoAvisadasLabel())
+}
 
 /**
  * A linha curta do cartão de recap da home. "não realizadas" continua nomeando só o que ela

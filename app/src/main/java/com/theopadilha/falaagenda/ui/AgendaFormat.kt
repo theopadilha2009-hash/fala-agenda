@@ -180,11 +180,12 @@ object AgendaFormat {
      * a seção logo abaixo já diz "Não consegui avisar", assumindo a culpa. O que ela não fez
      * continua contado, mas sem verbo que a acuse.
      *
-     * Este não é o único lugar do app que funde os dois motivos: o cartão de recap da home
-     * (`HomeScreen`) e o resumo do mês (`MonthSummaryScreen`) contam "não realizadas" a partir
-     * de `MonthInsights.of`, que olha só o `status` e não o `lastReminderAt` — uma tarefa que
-     * nasce vencida é `MISSED` sem nunca ter sido avisada, e entra nesses dois rótulos. Fica
-     * registrado aqui porque a manchete foi a primeira a ser corrigida, não a única.
+     * A separação não é exclusiva da manchete: o cartão de recap da home (`HomeScreen`) e o
+     * resumo do mês (`MonthSummaryScreen`) também atribuem ao aplicativo o aviso que ele não
+     * deu — pela mesma decisão (`missedReason`/`NOT_WARNED`, propagada até `MonthInsights.of`
+     * pelo `naoAvisada` do `InsightRow`). São a mesma conta de propósito: uma segunda, escrita
+     * aqui, divergiria da de baixo na primeira mudança de critério e o topo voltaria a
+     * contradizer o fechamento do mês.
      *
      * O contador é do que **ela** deixou de fazer (`missedCount - naoAvisados`): somar os
      * dois contaria duas vezes a mesma ocorrência, e a frase sairia "2 recados ficaram para

@@ -1096,6 +1096,150 @@ class TaskRepositoryTest {
         }
     }
 
+    /**
+     * O adiamento explícito atravessa a meia-noite e TOCA no horário que ela pediu.
+     *
+     * Às 23:45 ela toca "Adiar 30 min" no aviso do remédio: o app arma 00:15 corretamente. Mas
+     * quando o alarme disparava às 00:15, o portão de silêncio via `reminderStep > 0` e concluía
+     * "repetição da escada" — empurrava o aviso para as 08:00. O adiamento que ela pediu nunca
+     * tocava, e nada na tela dizia que tinha sido adiado. O que distingue os dois é o adiamento
+     * PENDENTE (`snoozedUntil` gravado), e `ReminderPolicy.snooze` já decidiu que ele não é
+     * podado pelo silêncio.
+     */
+    @Test
+    fun adiamentoExplicitoTocaNoHorarioPedidoMesmoNoSilencio() {
+        runBlocking {
+            val vinte3e45 = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 23, 45).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaNoite = TaskRepository(seriesDao, occDao, vinte3e45, sched)
+            val series = serieDaNoite(vinte3e45.instant())
+            seriesDao.upsert(series.toEntity())
+            val id = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(ocorrenciaDeHoje(series.id, LocalDate.of(2026, 8, 20)).toEntity())
+
+            assertThat(repoDaNoite.snooze(id, 30)).isEqualTo(ActionOutcome.APPLIED)
+            val zeroE15 = LocalDateTime.of(2026, 8, 21, 0, 15).atZone(zone).toInstant()
+            assertThat(sched.armed).contains(id to zeroE15)
+
+            // O alarme dispara às 00:15 e o aviso TEM de chegar nela.
+            val repoDaMadrugada = TaskRepository(seriesDao, occDao, vinte3e45.at(LocalDateTime.of(2026, 8, 21, 0, 15)), sched)
+            val entregues = mutableListOf<String>()
+            repoDaMadrugada.onAlarmFired(id) { titulo, _ ->
+                entregues += titulo
+                Delivery.ARRIVED
+            }
+
+            assertThat(entregues).containsExactly("Remédio")
+            // O adiamento foi entregue: o marcador que o distingue da escada sai da linha.
+            assertThat(occDao.get(id)!!.toDomain().snoozedUntil).isNull()
+        }
+    }
+
+    /**
+     * A outra metade da decisão: a escada de repetições continua pausando no silêncio. O degrau
+     * que cai de madrugada não acorda ela — espera as 08:00, como sempre fez. O fix do adiamento
+     * não pode isentar a escada.
+     */
+    @Test
+    fun repeticaoDaEscadaNoSilencioContinuaEmpurradaParaAsOito() {
+        runBlocking {
+            val zeroE15 = FixedAppClock(
+                LocalDateTime.of(2026, 8, 21, 0, 15).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaMadrugada = TaskRepository(seriesDao, occDao, zeroE15, sched)
+            val series = serieDaNoite(zeroE15.instant())
+            seriesDao.upsert(series.toEntity())
+            val ontem = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            // Degrau da escada marcado para 00:15, sem adiamento pedido (`snoozedUntil` nulo).
+            occDao.upsert(
+                ocorrenciaAdiada(
+                    seriesId = series.id,
+                    dia = LocalDate.of(2026, 8, 20),
+                    lastReminderAt = LocalDateTime.of(2026, 8, 20, 23, 15).atZone(zone).toInstant(),
+                    nextReminderAt = LocalDateTime.of(2026, 8, 21, 0, 15).atZone(zone).toInstant(),
+                ).toEntity(),
+            )
+
+            val entregues = mutableListOf<String>()
+            repoDaMadrugada.onAlarmFired(ontem) { titulo, _ ->
+                entregues += titulo
+                Delivery.ARRIVED
+            }
+
+            assertThat(entregues).isEmpty()
+            val oitoDaManha = LocalDateTime.of(2026, 8, 21, 8, 0).atZone(zone).toInstant()
+            assertThat(sched.armed).contains(ontem to oitoDaManha)
+            assertThat(occDao.get(ontem)!!.toDomain().nextReminderAt).isEqualTo(oitoDaManha)
+        }
+    }
+
+    /**
+     * Entregue o adiamento, a escada daquela ocorrência volta a valer o silêncio.
+     *
+     * A armadilha do sinal cru: `snoozedUntil` continuava gravado na linha depois de o adiamento
+     * tocar, e usá-lo como "é adiamento" isentaria a escada daquela ocorrência do silêncio para
+     * sempre — o degrau das 02:00 que devia esperar as 08:00 acordaria ela. Como o `fire` limpa o
+     * marcador ao entregar, o que sobra no banco é uma repetição comum, e o silêncio a alcança.
+     */
+    @Test
+    fun adiamentoEntregueNaoIsentaAEscadaDaqueleDia() {
+        runBlocking {
+            val vinte3e45 = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 23, 45).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaNoite = TaskRepository(seriesDao, occDao, vinte3e45, sched)
+            val series = serieDaNoite(vinte3e45.instant())
+            seriesDao.upsert(series.toEntity())
+            val id = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(ocorrenciaDeHoje(series.id, LocalDate.of(2026, 8, 20)).toEntity())
+            repoDaNoite.snooze(id, 30)
+
+            // O adiamento toca às 00:15 e o marcador sai da linha.
+            val repoDaMadrugada = TaskRepository(
+                seriesDao,
+                occDao,
+                vinte3e45.at(LocalDateTime.of(2026, 8, 21, 0, 15)),
+                sched,
+            )
+            repoDaMadrugada.onAlarmFired(id) { _, _ -> Delivery.ARRIVED }
+            assertThat(occDao.get(id)!!.toDomain().snoozedUntil).isNull()
+
+            // Uma repetição da escada marcada para dentro do silêncio — como o rearme do start
+            // pode entregar depois de a janela de silêncio mudar — continua sendo empurrada.
+            val escada = occDao.get(id)!!.toDomain().copy(
+                reminderStep = ReminderPolicy.STEP_HOURLY,
+                lastReminderAt = LocalDateTime.of(2026, 8, 21, 1, 0).atZone(zone).toInstant(),
+                nextReminderAt = LocalDateTime.of(2026, 8, 21, 2, 0).atZone(zone).toInstant(),
+            )
+            occDao.upsert(escada.toEntity())
+            val repoDaEscada = TaskRepository(
+                seriesDao,
+                occDao,
+                vinte3e45.at(LocalDateTime.of(2026, 8, 21, 2, 0)),
+                sched,
+            )
+            val entregues = mutableListOf<String>()
+            repoDaEscada.onAlarmFired(id) { _, _ ->
+                entregues += "acordou"
+                Delivery.ARRIVED
+            }
+
+            assertThat(entregues).isEmpty()
+            assertThat(occDao.get(id)!!.toDomain().nextReminderAt)
+                .isEqualTo(LocalDateTime.of(2026, 8, 21, 8, 0).atZone(zone).toInstant())
+        }
+    }
+
     /** O caminho feliz: o aviso chegou nela, então o degrau é gasto e a repetição é armada. */
     @Test
     fun avisoEntregueGastaODegrau() {

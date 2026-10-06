@@ -23,8 +23,17 @@ private const val WORK_TIMEOUT_MS = 8_000L
 class ReminderAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val occurrenceId = intent.getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID) ?: return
+        // O contexto e o escopo são resolvidos antes do `goAsync`, como no [ReminderActionReceiver]:
+        // um `pending` já pedido depende do `finally` para ser encerrado, e nem um contexto que não
+        // é o do aplicativo (`as?` devolve `null`) nem um escopo já cancelado chegam a rodá-lo. Com
+        // o cast cru, um processo que subisse com outro `Application` derrubava o receiver do alarme
+        // em vez de falhar calado — o lembrete não tocava e ninguém dizia por quê.
+        val app = context.applicationContext as? FalaAgendaApplication
+        if (app == null || !app.appScope.isActive) {
+            Log.w(TAG, "Sem escopo para tratar o lembrete $occurrenceId")
+            return
+        }
         val pending = goAsync()
-        val app = context.applicationContext as FalaAgendaApplication
         app.appScope.launch {
             try {
                 withTimeout(WORK_TIMEOUT_MS) {
@@ -288,8 +297,17 @@ class DailySweepReceiver : BroadcastReceiver() {
 }
 
 private fun BroadcastReceiver.rescheduleAsync(context: Context) {
+    // Mesma guarda do receiver do alarme: sem o `as?`, um processo que subisse com outro
+    // `Application` derrubava boot, troca de hora e virada do dia no ato do cast — em vez de
+    // deixar a varredura de fora e registrar por quê. O escopo morto entra na mesma checagem:
+    // com ele cancelado o `launch` devolve um job que nunca começa, e o `pending` pedido
+    // abaixo ficaria vivo até o sistema matar o processo.
+    val app = context.applicationContext as? FalaAgendaApplication
+    if (app == null || !app.appScope.isActive) {
+        Log.w(TAG, "Sem escopo para regravar os alarmes")
+        return
+    }
     val pending = goAsync()
-    val app = context.applicationContext as FalaAgendaApplication
     app.appScope.launch {
         try {
             app.container.tasks.rescheduleAll()

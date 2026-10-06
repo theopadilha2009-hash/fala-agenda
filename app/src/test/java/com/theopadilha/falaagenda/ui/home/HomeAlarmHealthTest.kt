@@ -49,7 +49,8 @@ class HomeAlarmHealthTest {
     }
 
     @Test
-    fun aHomeLeAExatidaoDoAlarmeDoAparelho() {        ShadowAlarmManager.setCanScheduleExactAlarms(false)
+    fun aHomeLeAExatidaoDoAlarmeDoAparelho() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(false)
 
         val viewModel = HomeViewModel(AppContainer(context))
         assertThat(viewModel.canScheduleExact.value).isFalse()

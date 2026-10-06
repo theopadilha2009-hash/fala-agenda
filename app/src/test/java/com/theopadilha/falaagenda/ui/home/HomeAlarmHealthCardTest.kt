@@ -3,7 +3,6 @@ package com.theopadilha.falaagenda.ui.home
 import android.app.Application
 import android.content.Context
 import android.os.PowerManager
-import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.hasScrollAction
@@ -110,6 +109,29 @@ class HomeAlarmHealthCardTest {
         // `assertExists`, e não `assertIsDisplayed`: a janela do Robolectric é baixa e o cartão
         // fica no fim da lista. O que o teste prova é que ele chegou à árvore da home.
         compose.onNodeWithText(SAUDE_BATERIA_BOTAO).assertExists()
+    }
+
+    /**
+     * A segunda fonte do cartão, que os dois testes acima **não** prendem: com a bateria
+     * liberada, quem faz o cartão aparecer é a falta do alarme exato.
+     *
+     * A revisão provou por mutação que trocar `canScheduleExact` por constante no call-site
+     * deixava a suíte inteira verde: o teste de bateria restrita pinava uma fonte só, e o
+     * negativo com a bateria liberada não distingue "lê o aparelho" de "só olha a bateria".
+     * Sem este caso, o cartão do aviso atrasado podia sumir para sempre sem nada acusar —
+     * que é justamente o insumo que o fix do aviso velho introduziu.
+     */
+    @Test
+    fun semAlarmeExatoOCartaoDoAtrasoChegaAteAHome() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(false)
+        bateriaRestrita(restrita = false)
+        val viewModel = HomeViewModel(AppContainer(context))
+
+        comporHome(viewModel)
+
+        compose.onNode(hasScrollAction())
+            .performScrollToNode(hasText(AVISO_INEXATO_BOTAO))
+        compose.onNodeWithText(AVISO_INEXATO_BOTAO).assertExists()
     }
 
     /**

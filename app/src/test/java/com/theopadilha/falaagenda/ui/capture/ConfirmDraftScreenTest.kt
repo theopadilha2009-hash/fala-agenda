@@ -1,6 +1,7 @@
 package com.theopadilha.falaagenda.ui.capture
 
 import android.app.Application
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
@@ -8,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -176,6 +178,40 @@ class ConfirmDraftScreenTest {
             "Salvar · ${AgendaFormat.dateLabel(segunda, hoje).lowercase(ptBr)} ${AgendaFormat.time(hora)}",
             substring = true,
         )
+    }
+
+    /**
+     * "Encerrar série" é irreversível — o repositório cancela os avisos pendentes e marca a
+     * série como encerrada, sem desfazer. Antes, um toque encerrava o remédio de todo dia
+     * direto. Este caso prende a confirmação: o primeiro toque só pergunta e não encerra nada;
+     * o segundo, com a consequência escrita na tela, é que encerra.
+     */
+    @Test
+    fun encerrarSeriePedeConfirmacaoAntesDeEncerrar() {
+        var encerrou = false
+        val regra = recurrenceFor(RecurrenceKind.DAILY, hoje, emptySet())
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                ConfirmDraftScreen(
+                    initial = rascunho("Tomar remédio", hoje, hora, regra),
+                    onCancel = {},
+                    onSave = {},
+                    editing = true,
+                    isRecurring = true,
+                    onEndSeries = { encerrou = true },
+                )
+            }
+        }
+
+        compose.onNodeWithText("Encerrar série").performScrollTo().performClick()
+
+        // O toque abre a pergunta; nada foi encerrado ainda.
+        compose.onNodeWithText("cancela todos os avisos futuros", substring = true).assertIsDisplayed()
+        assertThat(encerrou).isFalse()
+
+        compose.onNodeWithText("Sim, encerrar").performClick()
+
+        assertThat(encerrou).isTrue()
     }
 
     private fun tela(draft: ParsedTaskDraft) {

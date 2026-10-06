@@ -3,15 +3,14 @@ package com.theopadilha.falaagenda.ui.capture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -105,26 +104,30 @@ fun QuickConfirmDialog(
                     "Para mudar o texto, a data, o horário ou o valor, toque em Mudar.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                PrimaryButton(
-                    text = if (saving) "Salvando…" else "Salvar",
-                    enabled = !saving && date != null && time != null,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onSave(draft)
-                    },
-                )
                 SecondaryButton("Mudar", enabled = !saving) { onEdit(draft) }
             }
         },
+        // O primário é o confirmar, não o cancelar: esta caixa existe para ela conferir e
+        // salvar o que falou, e "Cancelar" no lugar de destaque a fazia cancelar por reflexo
+        // — o recado que ela acabou de falar ia embora num toque distraído. O "Cancelar"
+        // desceu para o botão secundário, e o "Salvar" ocupa o slot de confirmação.
         confirmButton = {
-            TextButton(
-                onClick = onCancel,
+            PrimaryButton(
+                text = if (saving) "Salvando…" else "Salvar",
+                modifier = Modifier.testTag("quick_confirm_confirmar"),
+                enabled = !saving && date != null && time != null,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onSave(draft)
+                },
+            )
+        },
+        dismissButton = {
+            SecondaryButton(
+                text = "Cancelar",
+                modifier = Modifier.testTag("quick_confirm_cancelar"),
                 enabled = !saving,
-                // Altura mínima: com a fonte grande do sistema o "Cancelar" era cortado.
-                modifier = Modifier.heightIn(min = 56.dp),
-            ) {
-                Text("Cancelar")
-            }
+            ) { onCancel() }
         },
     )
 }

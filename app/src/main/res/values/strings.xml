@@ -41,7 +41,7 @@
     <string name="allow">Permitir</string>
     <string name="later">Agora não</string>
     <string name="continue_label">Continuar</string>
-    <string name="inexact_warning">O Android não deixou o alarme exato. A tarefa foi salva, mas o aviso pode atrasar.</string>
+    <string name="inexact_warning">O aviso pode atrasar alguns minutos. A tarefa foi salva.</string>
     <string name="open_alarm_settings">Abrir ajustes de alarme</string>
     <string name="empty_today">Nada para hoje. Toque no microfone para falar um recado.</string>
     <string name="notification_channel">Lembretes</string>

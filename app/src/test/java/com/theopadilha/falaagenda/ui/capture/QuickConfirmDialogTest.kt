@@ -1,6 +1,9 @@
 package com.theopadilha.falaagenda.ui.capture
 
 import android.app.Application
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.di.AppContainer
@@ -8,7 +11,9 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.ui.AgendaFormat
+import com.theopadilha.falaagenda.ui.theme.FalaAgendaTheme
 import kotlinx.coroutines.runBlocking
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -43,6 +48,35 @@ import java.time.temporal.TemporalAdjusters
 )
 class QuickConfirmDialogTest {
     private val container = AppContainer(ApplicationProvider.getApplicationContext())
+
+    @get:Rule
+    val compose = createComposeRule()
+
+    /**
+     * O confirmar é o botão de destaque; o cancelar é o de saída. Nesta caixa ela confirma o
+     * que acabou de falar, e com "Cancelar" no slot primário o reflexo era cancelar e perder o
+     * recado. Os botões são de largura cheia e quebram em linhas dentro do diálogo, então a
+     * posição física não separa os dois slots — o que separa é qual deles é o `confirmButton`
+     * do M3. Cada botão carrega a tag do seu slot, e este caso prende quem ocupa qual: sem
+     * ele, trocar "Salvar" e "Cancelar" de slot de volta passa despercebido.
+     */
+    @Test
+    fun oConfirmarEOQueFicaNoSlotPrimario() {
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                QuickConfirmDialog(
+                    draft = rascunho("Tomar remédio", LocalDate.now().plusDays(1), RecurrenceRule()),
+                    saving = false,
+                    onSave = {},
+                    onEdit = {},
+                    onCancel = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("quick_confirm_confirmar").assertTextEquals("Salvar")
+        compose.onNodeWithTag("quick_confirm_cancelar").assertTextEquals("Cancelar")
+    }
 
     @Test
     fun aCaixaNaoPrometeODiaQueOAgendamentoDescarta() {

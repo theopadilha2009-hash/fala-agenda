@@ -104,6 +104,9 @@ fun ConfirmDraftScreen(
         runCatching { titleFocus.requestFocus() }
     }
     var showTime by remember { mutableStateOf(false) }
+    // "Encerrar" cancela todos os avisos futuros da série e não tem volta — não há desfazer
+    // no repositório. O toque abre a confirmação; só o "Sim" de lá chama o `onEndSeries`.
+    var confirmingEndSeries by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     val haptic = LocalHapticFeedback.current
 
@@ -402,7 +405,7 @@ fun ConfirmDraftScreen(
                     SecondaryButton("Excluir", enabled = !saving) { onDelete() }
                 }
                 if (isRecurring && onEndSeries != null) {
-                    SecondaryButton("Encerrar série", enabled = !saving) { onEndSeries() }
+                    SecondaryButton("Encerrar série", enabled = !saving) { confirmingEndSeries = true }
                 }
             }
             Text(
@@ -462,6 +465,31 @@ fun ConfirmDraftScreen(
             },
             title = { Text("Horário") },
             text = { TimePicker(state = state) },
+        )
+    }
+
+    // Encerrar a série é a única ação desta tela que não tem desfazer: o repositório cancela
+    // os avisos pendentes e marca a série como encerrada, sem restaurar. Para o remédio de
+    // todo dia isso é a coisa mais perigosa que ela pode tocar aqui, então o toque pergunta
+    // antes — com a consequência escrita e sem o "Sim" no lugar de destaque.
+    if (confirmingEndSeries && onEndSeries != null) {
+        AlertDialog(
+            onDismissRequest = { confirmingEndSeries = false },
+            title = { Text("Encerrar esta série?") },
+            text = {
+                Text(
+                    "Isso cancela todos os avisos futuros de “$title”. Os dias que já passaram ficam como estão, e não dá para desfazer.",
+                )
+            },
+            confirmButton = {
+                SecondaryButton("Sim, encerrar", enabled = !saving) {
+                    confirmingEndSeries = false
+                    onEndSeries()
+                }
+            },
+            dismissButton = {
+                PrimaryButton("Manter os avisos", enabled = !saving) { confirmingEndSeries = false }
+            },
         )
     }
 }

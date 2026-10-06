@@ -188,8 +188,11 @@ fun OnboardingScreen(
             )
             Spacer(Modifier.weight(1f))
             if (micRefused) {
+                // O sujeito é o aplicativo, não ela: ela não "deixou de permitir", ela não
+                // entendeu o pedido (ou tocou fora). O texto diz o que falta e o que acontece
+                // sem isso, sem cobrar uma decisão que não foi tomada.
                 Text(
-                    "Você não permitiu o microfone. Sem ele o aplicativo não ouve o recado — mas dá para escrever a tarefa.",
+                    "O aplicativo precisa do microfone para ouvir o recado. Sem ele, dá para escrever a tarefa.",
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                 )
@@ -201,7 +204,7 @@ fun OnboardingScreen(
             }
             if (notifRefused) {
                 Text(
-                    "Você não permitiu os avisos. Sem eles o aplicativo não consegue avisar na hora marcada.",
+                    "Para avisar no horário, o aplicativo precisa de permissão para mostrar avisos. Sem ela, nenhum lembrete aparece.",
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                 )
@@ -212,8 +215,10 @@ fun OnboardingScreen(
                 )
             }
             if (exactRefused) {
+                // "Alarme exato" é termo do sistema. Aqui ela lê o que isso significa na vida
+                // dela — o aviso pode atrasar — sem prometer o horário certo.
                 Text(
-                    "Você não permitiu o alarme exato. O aviso ainda toca, mas pode atrasar alguns minutos.",
+                    "Falta uma permissão para o aviso tocar no horário certo. Sem ela, o aviso ainda toca, mas pode atrasar alguns minutos.",
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                 )

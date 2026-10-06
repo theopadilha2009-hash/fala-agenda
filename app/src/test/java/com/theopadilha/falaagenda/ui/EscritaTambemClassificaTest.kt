@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.ui
 
 import android.app.Application
 import android.content.Context
+import androidx.navigation.NavController
 import androidx.navigation.NavHostController
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
@@ -71,7 +72,8 @@ class EscritaTambemClassificaTest {
 
     @Test
     fun comandoEscritoSaiDaTelaENaoCriaTarefa() {
-        confirmWrite(nav(), viewModel, "cancela o médico")
+        val nav = navEspiao()
+        confirmWrite(nav, viewModel, "cancela o médico")
 
         val agenda = agenda()
         assertThat(agenda.today).isEmpty()
@@ -80,6 +82,21 @@ class EscritaTambemClassificaTest {
         // A tela de escrita não fica esperando um rascunho que não vem: sem isto a rota
         // "write" seguiria na frente da resposta publicada na home, e ela não veria nada.
         assertThat(writeStepFor(viewModel.speech.state.value)).isEqualTo(WriteStep.Waiting)
+        // E ela precisa estar VENDO a resposta: sem o pop a rota "write" continua na frente
+        // e o snackbar da home — que é onde o recado aparece — não está visível.
+        assertThat(nav.pops).isEqualTo(1)
+    }
+
+    /**
+     * O caminho inverso, que é o que prova que o pop é do comando e não de todo
+     * `confirmWrite`: um recado escrito segue para a confirmação e a rota NÃO pode sair.
+     */
+    @Test
+    fun recadoEscritoSegueNaTelaESemPop() {
+        val nav = navEspiao()
+        confirmWrite(nav, viewModel, "tomar remédio amanhã às 9h")
+
+        assertThat(nav.pops).isEqualTo(0)
     }
 
     @Test
@@ -153,6 +170,22 @@ class EscritaTambemClassificaTest {
     // --- helpers ---------------------------------------------------------------------
 
     private fun nav() = NavHostController(context)
+
+    /**
+     * Um `NavController` de verdade que conta os pops. O `NavHostController` do teste
+     * anterior não tinha grafo, então `popBackStack()` era um no-op silencioso: dava para
+     * apagar a linha do `confirmWrite` que faz o comando voltar para a home e os testes
+     * seguiam verdes — a resposta publicada ficaria numa tela que ela não está vendo.
+     */
+    private fun navEspiao() = object : NavController(context) {
+        var pops = 0
+            private set
+
+        override fun popBackStack(): Boolean {
+            pops++
+            return true
+        }
+    }
 
     private fun agenda() = runBlocking { container.tasks.snapshotAgenda() }
 

@@ -210,8 +210,9 @@ class LocalTaskParser(
 
         // "todo dia 5 do mês" é mensal, mas "todo dia 5" sozinho é diário — sem o "do mês" ela
         // está falando do dia inteiro, não do 5º do mês. Exigir o "do mês" evita a recorrência
-        // mensal silenciosa que aparecia quando ela omitia o "às".
-        val monthly = Regex("""\bto[doas]+\s+dia\s+(\d{1,2})\s+do\s+mes\b""")
+        // mensal silenciosa que aparecia quando ela omitia o "às". "no dia 15 do mês" (sem o
+        // "todo") é a mesma coisa: com o "do mês", é o 15º dia, todo mês.
+        val monthly = Regex("""\b(?:(?:to[doas]+|nos?)\s+)?dia\s+(\d{1,2})\s+do\s+mes\b""")
         monthly.find(remaining)?.let { m ->
             val day = m.groupValues[1].toInt()
             remaining = remaining.replace(m.value, " ")
@@ -330,6 +331,25 @@ class LocalTaskParser(
 
         data class ClockMatch(val match: MatchResult, val hourRaw: Int, val minute: Int, val period: String)
 
+        // "às vinte e cinco de maio": o "às" abre o dia do mês por extenso, não uma hora. Sem isto o
+        // "vinte" virava 20:00 e o resto ("cinco de maio") virava o dia 5. Devolve o dia por extenso
+        // para extractDate e segue com o resto da frase (pode haver uma hora de verdade mais adiante).
+        AS_DAY_OF_MONTH.find(remaining)?.let { m ->
+            remaining = remaining.replaceRange(
+                m.range.first,
+                m.range.last + 1,
+                m.groupValues[1] + " de " + m.groupValues[2],
+            )
+        }
+
+        // "às vinte e cinco"/"às vinte e quatro": o composto passa de 23h e não é hora válida. Antes
+        // o CLOCK_WORD casava só o "vinte" (20:00) e o "cinco" sobrava no título — 20h com cara de
+        // certeza para uma hora que ela não disse. Ambíguo, para ela repetir.
+        INVALID_HOUR_WORD.find(remaining)?.let { m ->
+            remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            return TimeHit(null, remaining, true, "“${m.value}” não é um horário válido. Confirme a hora.")
+        }
+
         val found = mutableListOf<ClockMatch>()
         CLOCK_NUMERIC.findAll(remaining).forEach { m ->
             val hourRaw = m.groupValues[1].toInt()
@@ -346,14 +366,26 @@ class LocalTaskParser(
             found += ClockMatch(m, m.groupValues[1].toInt(), 0, m.groupValues[2])
         }
         CLOCK_BARE_WORD.findAll(remaining).forEach { m ->
-            val hourRaw = WORD_HOURS[m.groupValues[1]] ?: return@forEach
-            // "às nove e vinte" já foi pego pelo CLOCK_WORD: o relógio "pelado" só entra quando não
-            // há um "às" sobreposto, senão o mesmo horário viraria dois matches.
-            if (found.any { it.match.range.first <= m.range.first && m.range.first <= it.match.range.last }) {
-                return@forEach
+            // "às vinte e cinco": o "vinte e cinco" é o dia do mês, não 20:25. Se o "às" que precede
+            // a hora começa um composto, a regex longa casa o composto inteiro; a curta começaria
+            // dentro dele ("vinte") e a palavra da unidade sobraria no título.
+            val longMatch = found.any { it.match.range.first <= m.range.first && m.range.first <= it.match.range.last }
+            val shorterThanLong = found.any {
+                it.match.range.first <= m.range.first && m.range.last < it.match.range.last
             }
+            if (longMatch && !shorterThanLong) return@forEach
+            val hourRaw = WORD_HOURS[m.groupValues[1]] ?: return@forEach
             val raw = m.groupValues[2]
-            val minute = raw.toIntOrNull() ?: MINUTE_TAIL_WORDS[raw] ?: 0
+            val base = raw.toIntOrNull() ?: MINUTE_TAIL_WORDS[raw] ?: 0
+            // "oito e vinte e cinco" sem o "às": a unidade depois da dezena é o minuto (25), senão o
+            // "cinco" sumia da hora e sobrava no título.
+            val unit = m.groupValues[3]
+            val minute = if (unit.isBlank()) {
+                base
+            } else {
+                if (raw !in MINUTE_TENS) return@forEach
+                base + (MINUTE_UNITS[unit] ?: return@forEach)
+            }
             found += ClockMatch(m, hourRaw, minute, m.groupValues[4])
         }
         if (found.size > 1) {
@@ -524,7 +556,14 @@ class LocalTaskParser(
 
         // "no dia 25": dia do mês avulso. Sem mês dito, o próximo 25 (este mês se ainda não passou,
         // senão o do mês seguinte) — a regra de mês por extenso, mas com o dia em dígito.
-        Regex("""\b(?:no\s+)?dia\s+(\d{1,2})(?!\s*(?:de\s+cada|do\s+mes))\b""").find(remaining)?.let { m ->
+        val dayOfMonth = Regex("""\b(?:no\s+)?dia\s+(\d{1,2})(?!\s*(?:de\s+cada|do\s+mes))\b""")
+        val dayMatches = dayOfMonth.findAll(remaining).toList()
+        if (dayMatches.size > 1) {
+            // "no dia 25 e no dia 30": duas datas numa frase. Escolher a primeira em silêncio é o
+            // mesmo defeito de colar duas tarefas — ambíguo, para ela separar.
+            return DateHit(null, remaining, true)
+        }
+        dayMatches.firstOrNull()?.let { m ->
             val day = m.groupValues[1].toInt()
             remaining = remaining.replace(m.value, " ")
             if (day !in 1..31) return DateHit(null, remaining, true)
@@ -603,7 +642,9 @@ class LocalTaskParser(
 
     private fun applyPeriodHour(hourRaw: Int, period: String): Int = when {
         period.contains("tarde") && hourRaw in 1..11 -> hourRaw + 12
-        period.contains("noite") && hourRaw in 1..11 -> hourRaw + 12
+        // "da noite" só soma 12 de 7h em diante ("às 8 da noite" = 20h). Com 1–6 a madrugada é a
+        // leitura natural — "às 3 e meia da noite" é 03:30, não 15:30.
+        period.contains("noite") && hourRaw in 7..11 -> hourRaw + 12
         // "às 12 da noite" é meia-noite; "às 12 da manhã" também.
         period.contains("noite") && hourRaw == 12 -> 0
         period.contains("manha") && hourRaw == 12 -> 0
@@ -632,9 +673,41 @@ class LocalTaskParser(
      * Duas orações com verbo de tarefa cada ("... e ...") são duas tarefas, não uma. A primeira
      * versão colava as duas num título só, com o primeiro dia e a primeira hora — e a caixa rápida
      * prometia certeza para as duas de uma vez.
+     *
+     * Também pega a segunda oração sem verbo ("marcar médico terça e remédio às oito"), que é a
+     * forma natural na fala: o dia numa oração e a hora em outra denunciam tarefas diferentes. O
+     * guard do dia da semana evita o falso positivo de série ("toda terça e quinta às 18h"), em que
+     * o "e" lista dias, não tarefas.
      */
-    private fun looksLikeTwoTasks(text: String): Boolean =
-        text.split(Regex("""\be\b""")).count { TASK_VERB.containsMatchIn(it) } >= 2
+    private fun looksLikeTwoTasks(text: String): Boolean {
+        // "vinte e cinco"/"quarenta e cinco": o "e" aqui é do número, não separa orações. Colar as
+        // duas palavras antes de dividir evita partir "às vinte e cinco de maio" em duas orações.
+        val glued = text.replace(NUMBER_E, "$1$2")
+        val clauses = glued.split(Regex("""\be\b"""))
+        if (clauses.count { TASK_VERB.containsMatchIn(it) } >= 2) return true
+
+        // "toda terça e quinta natação às 18h": o "e" lista dias da mesma série, não tarefas.
+        val weekdayList = clauses.dropLast(1).indices.any { i ->
+            endsWithWeekday(clauses[i]) && startsWithWeekday(clauses[i + 1])
+        }
+        if (weekdayList) return false
+
+        if (clauses.none { TASK_VERB.containsMatchIn(it) }) return false
+
+        // O dia numa oração e a hora em outra denunciam tarefas diferentes, mesmo sem verbo na
+        // segunda ("marcar médico terça e remédio às oito"). Dia e hora na MESMA oração são uma
+        // tarefa só ("buscar as crianças amanhã às 15h").
+        return clauses.indices.any { i ->
+            DATE_SIGNAL.containsMatchIn(clauses[i]) &&
+                clauses.indices.any { j -> j != i && TIME_SIGNAL.containsMatchIn(clauses[j]) }
+        }
+    }
+
+    private fun startsWithWeekday(clause: String): Boolean =
+        WEEKDAY_ANY.containsMatchIn(clause.trimStart().substringBefore(' '))
+
+    private fun endsWithWeekday(clause: String): Boolean =
+        WEEKDAY_ANY.containsMatchIn(clause.trimEnd().substringAfterLast(' '))
 
     private fun extractTitle(remaining: String, original: String): String {
         val leftover = TextNormalizer.compactSpaces(remaining)
@@ -703,7 +776,9 @@ class LocalTaskParser(
         // O Vosk pt-BR costuma devolver a hora por extenso sem o "às" ("tomar remédio oito e meia").
         // Só reconhece com o "e <minutos>" colado, para não capturar "oito" solto no título.
         private val CLOCK_BARE_WORD = Regex(
-            """\b($WORD_HOUR_ALT)\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?\b""",
+            """\b($WORD_HOUR_ALT)\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?\b""" +
+                // "vinte e cinco de maio" é o dia do mês, não 20:25 — o " de <mês>" desempata.
+                """(?!\s+de\s+(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b)""",
         )
         private val CLOCK_BARE = Regex(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
@@ -856,6 +931,16 @@ class LocalTaskParser(
         /** "às 12 e meia da noite": o período vem depois do minuto, não colado no número. */
         private val TRAILING_PERIOD = Regex("""\s+(?:a|da|de|na)\s+(manha|tarde|noite|madrugada)\b""")
 
+        /** "às vinte e cinco de maio": o "às" abre o dia do mês por extenso, não uma hora. */
+        private val AS_DAY_OF_MONTH = Regex(
+            """\bas\s+($WORD_DAY_ALT)\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b""",
+        )
+
+        /** "às vinte e quatro".."às vinte e nove": composto acima de 23h — não é hora válida. */
+        private val INVALID_HOUR_WORD = Regex(
+            """\bas\s+vinte\s+e\s+(?:quatro|cinco|seis|sete|oito|nove)\b""",
+        )
+
         private val WORD_AMOUNTS = mapOf(
             "uma" to 1,
             "um" to 1,
@@ -895,6 +980,30 @@ class LocalTaskParser(
                 """mandar|manda|reservar|reserva|revisar|revisa|consultar|consulta|avisar|avisa|""" +
                 """encontrar|encontra|visitar|visita|limpar|limpa|lavar|lava|cozinhar|cozinha|""" +
                 """estudar|estuda|treinar|treina|caminhar|caminha|correr|leve|anotar|anota)\b""",
+        )
+
+        /** Dia da semana solto — para distinguir "terça e quinta" (lista) de "terça e remédio". */
+        private val WEEKDAY_ANY = Regex("""\b(?:$WEEKDAY_ALT)(?:-?feira)?\b""")
+
+        /** "vinte e cinco"/"oito e meia": o "e" pertence ao número — não separa orações. */
+        private val NUMBER_E = Regex(
+            """\b(meia|uma|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|catorze|""" +
+                """quatorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta|quarenta|cinquenta)""" +
+                """\s+e\s+(meia|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|vinte|trinta|quarenta|cinquenta)\b""",
+        )
+
+        /** Onde a oração fala de um dia: dia da semana, hoje/amanhã, "dia N", data por extenso. */
+        private val DATE_SIGNAL = Regex(
+            """\b(?:$WEEKDAY_ALT)(?:-?feira)?\b""" +
+                """|\bhoje\b|\bamanha\b|\bdepois\s+de\s+amanha\b""" +
+                """|\bdia\s+\d{1,2}\b|\bsemana\s+que\s+vem\b|\b\d{1,2}[/-]\d{1,2}\b""" +
+                """|\b(?:$WORD_DAY_ALT)\s+de\s+(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b""" +
+                """|\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b""",
+        )
+
+        /** Onde a oração fala de uma hora: "às N", "às <palavra>", meio-dia, "daqui a ...". */
+        private val TIME_SIGNAL = Regex(
+            """\bas\s+(?:\d{1,2}|[a-z])|\bmeio[-\s]?dia\b|\bmeia[-\s]?noite\b|\bdaqui\b""",
         )
 
         private val FILLERS = setOf(

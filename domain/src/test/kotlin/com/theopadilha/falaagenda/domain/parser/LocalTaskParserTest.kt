@@ -554,4 +554,90 @@ class LocalTaskParserTest {
         assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.DAILY)
         assertThat(draft.recurrence.dayOfMonth).isNull()
     }
+
+    // ---- Correções do review: o parser não pode cravar hora/data errada com cara de certeza ----
+
+    @Test
+    fun relogioPorExtensoComMinutoComposto() {
+        // B1: "oito e vinte e cinco" sem o "às" é 08:25. A versão anterior lia só a dezena (08:20)
+        // e ainda comia o "cinco" do título.
+        val vinteCinco = parser.parse("tomar remédio oito e vinte e cinco")
+        assertThat(vinteCinco.localTime).isEqualTo(LocalTime.of(8, 25))
+        assertThat(vinteCinco.title).isEqualTo("Tomar remédio")
+
+        val quarentaCinco = parser.parse("tomar remédio oito e quarenta e cinco")
+        assertThat(quarentaCinco.localTime).isEqualTo(LocalTime.of(8, 45))
+        assertThat(quarentaCinco.title).isEqualTo("Tomar remédio")
+
+        // Contraste que já funcionava: com o "às".
+        val comAs = parser.parse("tomar remédio às oito e vinte e cinco")
+        assertThat(comAs.localTime).isEqualTo(LocalTime.of(8, 25))
+    }
+
+    @Test
+    fun diaDoMesPorExtensoNaoViraHora() {
+        // B2: "às vinte e cinco de maio" é a data (25 de maio), não 20:00 com o dia 5.
+        val draft = parser.parse("pagar conta às vinte e cinco de maio")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2027, 5, 25))
+        assertThat(draft.localTime).isNull()
+
+        // Sem o "às" já funcionava — não pode regredir.
+        val semAs = parser.parse("pagar conta vinte e cinco de maio")
+        assertThat(semAs.localDate).isEqualTo(LocalDate.of(2027, 5, 25))
+    }
+
+    @Test
+    fun horaVinteECompostoNaoDeixaRestoNoTitulo() {
+        // B3: "às vinte e cinco" não é 20:00 com o "cinco" sobrando no título; 25 não é hora válida,
+        // então fica ambíguo em vez de cravar.
+        val vinteCinco = parser.parse("tomar remédio às vinte e cinco")
+        assertThat(vinteCinco.ambiguous).isTrue()
+        assertThat(vinteCinco.title).isEqualTo("Tomar remédio")
+
+        val vinteQuatro = parser.parse("tomar remédio às vinte e quatro")
+        assertThat(vinteQuatro.ambiguous).isTrue()
+        assertThat(vinteQuatro.title).isEqualTo("Tomar remédio")
+    }
+
+    @Test
+    fun periodoDaNoiteComHoraMadrugadaNaoViraTarde() {
+        // B4: "às 3 e meia da noite" é 03:30 (madrugada), não 15:30.
+        val noite = parser.parse("tomar remédio às 3 e meia da noite")
+        assertThat(noite.localTime).isEqualTo(LocalTime.of(3, 30))
+
+        // "da tarde" continua somando 12.
+        val tarde = parser.parse("tomar remédio às 3 e meia da tarde")
+        assertThat(tarde.localTime).isEqualTo(LocalTime.of(15, 30))
+
+        // "da noite" com hora de fim de tarde/noite continua somando 12.
+        val oito = parser.parse("tomar remédio às 8 e meia da noite")
+        assertThat(oito.localTime).isEqualTo(LocalTime.of(20, 30))
+    }
+
+    @Test
+    fun duasTarefasComSegundaOracaoSemVerboViramAmbiguas() {
+        // B5: a segunda oração sem verbo ("e remédio às oito") é a forma natural na fala dela —
+        // o dia e a hora caem em orações diferentes, o sinal de duas tarefas.
+        val draft = parser.parse("marcar médico terça e remédio às oito")
+        assertThat(draft.ambiguous).isTrue()
+
+        // Uma série ("toda terça e quinta às 18h") tem dia e hora na mesma oração: não é ambígua.
+        val serie = parser.parse("toda terça e quinta natação às 18h")
+        assertThat(serie.ambiguous).isFalse()
+    }
+
+    @Test
+    fun doisDiasDoMesNaMesmaFraseViraAmbiguo() {
+        // B6: "no dia 25 e no dia 30" são duas datas, não a primeira em silêncio.
+        val draft = parser.parse("pagar conta no dia 25 e no dia 30")
+        assertThat(draft.ambiguous).isTrue()
+    }
+
+    @Test
+    fun noDiaQuinzeDoMesViraMensal() {
+        // B7: "no dia 15 do mês" (com o "do mês") é mensal; antes não virava data nem recorrência.
+        val draft = parser.parse("pagar conta no dia 15 do mês")
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.MONTHLY)
+        assertThat(draft.recurrence.dayOfMonth).isEqualTo(15)
+    }
 }

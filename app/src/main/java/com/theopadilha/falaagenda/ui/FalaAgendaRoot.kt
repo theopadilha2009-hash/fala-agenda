@@ -486,7 +486,7 @@ fun FalaAgendaRoot(
                 onCancel = { cancelWrite(nav, homeVm.speech) },
                 externalError = writeError,
                 onTextChanged = { writeError = null },
-                onConfirm = { text -> homeVm.speech.understand(text) },
+                onConfirm = { text -> confirmWrite(nav, homeVm, text) },
             )
         }
         composable("quick/{minutes}") { entry ->
@@ -687,6 +687,29 @@ internal fun agendaNotice(agendaUi: AgendaUi, occurrenceId: String): AgendaNotic
 internal fun cancelWrite(nav: NavController, speech: SpeechSession) {
     speech.discard()
     nav.popBackStack()
+}
+
+/**
+ * O "Continuar" da tela de escrever — o texto que ela digitou ou ditou.
+ *
+ * Esta porta de texto não pode ter classificação própria: a rota `"write"` chamava
+ * `speech.understand` direto (o caminho cru da captura) e escrever "cancela o médico" criava a
+ * tarefa "Cancela o médico", com ela acreditando ter cancelado. É o defeito que a home já
+ * corrigiu, pela outra porta. Aqui o texto passa pela MESMA [HomeViewModel.understandSpeech]:
+ * o retorno diz se foi captura (vai para a confirmação) ou comando.
+ *
+ * Um comando não fica na tela de escrita. A resposta dele é publicada no `StatusMessage` do
+ * ViewModel, que a home mostra no `Snackbar` — e o `Snackbar` da home não está visível com a
+ * rota `"write"` na frente. Uma mensagem publicada numa tela que ela não está vendo é o mesmo
+ * que silêncio: por isso o comando volta para a home, que é onde ele aparece. O rascunho que
+ * sobrou de uma captura anterior é descartado na saída (o mesmo [SpeechSession.discard] do
+ * "Cancelar"), senão ele sequestra a próxima abertura da tela (ver [cancelWrite]).
+ */
+internal fun confirmWrite(nav: NavController, viewModel: HomeViewModel, text: String) {
+    if (!viewModel.understandSpeech(text)) {
+        viewModel.speech.discard()
+        nav.popBackStack()
+    }
 }
 
 private const val NO_EPOCH_DAY = Long.MIN_VALUE

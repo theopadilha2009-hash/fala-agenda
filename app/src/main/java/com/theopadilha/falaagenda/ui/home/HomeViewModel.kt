@@ -725,27 +725,47 @@ class HomeViewModel(
      *
      * O que o app não sabe fazer ele reconhece e DIZ que não sabe ([UnsupportedKind]), em vez
      * de criar uma tarefa com cara de sucesso. Nunca fingir que fez.
+     *
+     * Devolve `true` quando o texto seguiu o caminho de captura (virou rascunho de tarefa) e
+     * `false` quando foi um comando. A home chama e ignora o retorno; a tela de escrever usa o
+     * retorno para saber se fica nela (captura, indo para a confirmação) ou volta para a home,
+     * que é onde o desfecho do comando aparece. A classificação é uma só — nenhuma porta de
+     * texto decide sozinha o que é comando.
      */
-    fun understandSpeech(text: String) {
+    fun understandSpeech(text: String): Boolean =
         when (val intent = SpeechIntentClassifier.classify(text)) {
             // Recado novo: o caminho de sempre, inalterado.
-            SpeechIntent.Capture -> speech.understand(text)
-
-            is SpeechIntent.Ask -> viewModelScope.launch {
-                publishStatus(answerFor(intent.whenDay))
+            SpeechIntent.Capture -> {
+                speech.understand(text)
+                true
             }
 
-            is SpeechIntent.Complete -> resolveTarget(intent.target) { item ->
-                complete(item)
+            is SpeechIntent.Ask -> {
+                viewModelScope.launch {
+                    publishStatus(answerFor(intent.whenDay))
+                }
+                false
             }
 
-            is SpeechIntent.Cancel -> resolveTarget(intent.target) { item ->
-                delete(item)
+            is SpeechIntent.Complete -> {
+                resolveTarget(intent.target) { item ->
+                    complete(item)
+                }
+                false
             }
 
-            is SpeechIntent.Unknown -> publishStatus(unsupportedMessage(intent.kind))
+            is SpeechIntent.Cancel -> {
+                resolveTarget(intent.target) { item ->
+                    delete(item)
+                }
+                false
+            }
+
+            is SpeechIntent.Unknown -> {
+                publishStatus(unsupportedMessage(intent.kind))
+                false
+            }
         }
-    }
 
     /**
      * A resposta da pergunta. Lê a agenda agora ([TaskRepository.snapshotAgenda]) em vez de usar

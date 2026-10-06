@@ -712,6 +712,62 @@ Varredura read-only com harness próprio (`/tmp/fala-caca`, cópia fiel do `main
 - **A escalada para a IA** — sem `SUPABASE_URL`/`ANON_KEY` o `HybridParser` nunca chama o remoto; mediu-se só o rascunho local.
 - **Calendário real dos feriados móveis** — P2 afirma "dia errado" pelo dia da semana ser o da semana corrente, o que independe da data exata do feriado.
 
+## Caça de conversa nova (06/10, varredura medida contra o `main`)
+
+Varredura read-only montando as telas reais (Robolectric + Compose) e exercitando o `HomeViewModel` real. `HEAD` avançou durante a sessão (`a56012e` → `efe26ac`), mas `git diff a56012e..HEAD -- app/src/main domain/src/main` está **vazio** — o código medido é o mesmo.
+
+### [1] ENGANO SILENCIOSO — "apaga o remédio" **cria** a tarefa "Apaga remédio"
+
+O `SpeechIntentClassifier` cobre `apaga/exclui/deleta + isso/isto` (ERASE) e `cancela/cancele/desmarca` (Cancel), mas **não** `apaga/exclui/deleta + substantivo`. Medido no caminho real (`understandSpeech`):
+
+```
+Capture  <<< "apaga o remédio"      Cancel(target=remedio)  <<< "cancela o remédio"
+Capture  <<< "exclui a consulta"    Unknown(kind=ERASE)     <<< "apaga isso"
+Capture  <<< "deleta a missa"       Unknown(kind=ERASE)     <<< "exclui isso"
+Capture  <<< "tira o remédio"
+Capture  <<< "remove a consulta"
+draft = "Apaga remédio"   status=null   erro=null
+```
+
+Ela acha que apagou; o app a leva para "Confira antes de salvar" com a tarefa **"Apaga remédio"**. Responsável: `domain/.../parser/SpeechIntent.kt:242-249` (o ERASE exige o demonstrativo) e `:214` (só a família "cancela").
+
+**Nuance honesta:** é deliberado — o comentário `:236-237` diz que `"apaga a luz"` (sem "isso") deve continuar captura. É o mesmo trade-off do `conclui` (decisão de produto aberta). Mas a fala mais provável da mãe ("apaga o remédio") cai no lado silencioso, e isso não estava em nenhum lugar.
+
+### [2] ENGANO SILENCIOSO — salvar o mesmo recado duas vezes cria dois alarmes no mesmo horário
+
+`saveDraft` sempre cria uma série nova; não há detecção de duplicata (`grep` por "duplicad/overlap" só acha comentários). Medido com o repositório real, gravando o mesmo rascunho duas vezes:
+
+```
+tarefas com o mesmo nome/hora na agenda = 2
+ocorrencias = [ ...:2026-10-07, ...:2026-10-07 ]
+```
+
+Dois `seriesId` distintos, duas ocorrências no mesmo dia/hora → **dois alarmes tocam juntos**, e nada na tela diz "você já tem isso". Caminhos reais: falar de novo; o texto da fala ainda em voo quando ela toca "Escrever tarefa"/salva; o mesmo recado salvo pela caixa rápida e pela confirmação. Responsável: `TaskRepository.saveDraft` (`app/.../data/repo/TaskRepository.kt:124`) e `HomeViewModel.saveDraft` (`:520-535`).
+
+### [3] PRESA — tarefa que repete e não foi avisada: sem "Fazer hoje", só "Concluir"
+
+Medido montando a `ConfirmDraftScreen` real com `editing=true`, `status=MISSED`, `isRecurring=true`:
+
+```
+'Fazer hoje' nos=0    'Concluir' nos=1
+```
+
+O botão "Fazer hoje" é condicionado a `!isRecurring` (`capture/ConfirmDraftScreen.kt:404`) e o `onRetry` do root só existe para a ocorrência editada (`FalaAgendaRoot.kt:385-391`). Para o remédio de todo dia que não tocou, a única ação primária é "Concluir", que **marca a dose passada como feita** sem aviso e sem tocar hoje. A raiz já estava no doc (tabela de conversa); a medição da árvore e o `arquivo:linha` são novos.
+
+### [4] FRICÇÃO — corrigir o período do dia depende do relógio 24 h
+
+A árvore da confirmação mostra, no lugar do horário, só os chips `[8h][12h][18h][20h]` e o seletor (`ContentDescription = '[Horário 20:00. Toque para mudar.]'`). Não existe nó "Manhã/Tarde/Noite" nem AM/PM (as assertivas `onNodeWithText("Manhã").assertDoesNotExist()` passam). Quando o app adivinha o período errado ("tomar remédio às 8" → 20:00), corrigir para 8 h é **um** toque no chip; mas para 7:30 ou 9:15 o único caminho é o `TimePicker` com `is24Hour = true` (`ConfirmDraftScreen.kt:450-475`), sem manhã/tarde — o ponto mais difícil para a mãe.
+
+### [5] FRICÇÃO — toda resposta de comando vive num snackbar de ~4 s
+
+O único canal para o desfecho dos comandos é `SnackbarHostState.say(...)` (`HomeScreen.kt:378-400`), com `SnackbarDuration.Short` para tudo que não tem desfazer: "Feito.", "Não achei nenhuma tarefa com esse nome.", "Tem mais de uma tarefa com esse nome…", a resposta de "o que tenho hoje?" e o próprio "Vai avisar amanhã às 8h.". Não há tela nem histórico, e o `say()` **descarta a anterior** para não enfileirar (`HomeScreen.kt:894-901`). O doc citava isso só para a pergunta; é sistêmico. O undo recebe `Long`, então esse caminho é melhor.
+
+### O que a medição de conversa NÃO cobriu
+
+- **A `HomeScreen` inteira** (com `MicDock`/microfone e `NavHost`) — mediu-se o `HomeViewModel` e a `HomeDrawerSheet` isolados.
+- **A árvore da caixa "Pode salvar?"** — o `AlertDialog` do M3 produz dois roots no Robolectric e o `printToString()` recusa; mediou-se a lógica (`quickConfirmPromise`) e a tela de destino.
+- **Áudio do Vosk** e o disparo real do alarme sob Doze — só o aparelho prova.
+
 ## O que só o aparelho prova
 
 1. **Entrega real sob Doze/OEM:** que o `setAlarmClock` (`ReminderScheduler.kt:46`)

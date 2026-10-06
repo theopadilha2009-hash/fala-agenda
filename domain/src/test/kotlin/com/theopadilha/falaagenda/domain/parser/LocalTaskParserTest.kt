@@ -1923,10 +1923,13 @@ class LocalTaskParserTest {
         // P1-B (3ª revisão): o ramo do "daqui a N dias/semanas" devolvia a conta crua sem nunca
         // olhar o dia nomeado na mesma frase. Quinta 20/08, "sexta daqui a dois dias" caía no
         // SÁBADO 22/08 — e como não marcava ambíguo, a caixa rápida confirmava em silêncio um dia
-        // que ela não disse. O dia nomeado é a expressão específica: ele manda.
+        // que ela não disse. O dia nomeado é a expressão específica e manda — mas quando ele e a
+        // conta crua DISCORDAM, o rascunho escala em vez de cravar um dos dois calado (P1 deste
+        // lote): o "amb=true" é parte do contrato, não um detalhe.
         val sexta = parser.parse("sexta daqui a dois dias pagar conta às 10h")
         assertThat(sexta.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
         assertThat(sexta.title).isEqualTo("Pagar conta")
+        assertThat(sexta.ambiguous).isTrue()
 
         assertThat(parser.parse("domingo daqui a dois dias pagar conta às 10h").localDate)
             .isEqualTo(LocalDate.of(2026, 8, 23))
@@ -1934,11 +1937,13 @@ class LocalTaskParserTest {
             .isEqualTo(LocalDate.of(2026, 8, 24))
 
         // Com a semana o deslocamento cru cai em quinta: o dia dito ganha e é a PRIMEIRA sexta
-        // depois de hoje, sem pular uma semana inteira.
+        // depois de hoje, sem pular uma semana inteira — mas ambíguo, porque as duas datas ditas
+        // não caem juntas.
         assertThat(parser.parse("sexta daqui a uma semana pagar conta às 10h").localDate)
             .isEqualTo(LocalDate.of(2026, 8, 21))
-        assertThat(parser.parse("sexta daqui a duas semanas pagar conta às 10h").localDate)
-            .isEqualTo(LocalDate.of(2026, 8, 21))
+        val duasSemanas = parser.parse("sexta daqui a duas semanas pagar conta às 10h")
+        assertThat(duasSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(duasSemanas.ambiguous).isTrue()
 
         // Quando o dia dito e a conta concordam, nada muda e a caixa rápida continua confirmando.
         val sabado = parser.parse("sábado daqui a dois dias pagar conta às 10h")
@@ -2180,5 +2185,48 @@ class LocalTaskParserTest {
         // A série possível continua certa, inclusive o 29 de fevereiro (a série cai no bissexto).
         assertThat(fevereiro.parse("todo dia 15 de maio remédio às 10h").ambiguous).isFalse()
         assertThat(fevereiro.parse("todo dia 29 de fevereiro remédio às 10h").ambiguous).isFalse()
+    }
+
+    // ---- Regressões do lote do #68 (revisão independente de 06/10/2026) ----
+
+    @Test
+    fun feiraComAdverbioDeTempoNaoEhPoupadaComoSufixo() {
+        // O guard do "feira" (FEIRA_NOUN) tratava todo "de" como complemento nominal, mas
+        // "de manhã"/"de tarde"/"de noite" é ADVÉRBIO de tempo: ali o "feira" é o sufixo do dia,
+        // e sobrava no título ("Feira dentista") com a caixa rápida confirmando.
+        listOf(
+            "sexta feira de manhã dentista às 8h",
+            "na segunda feira de tarde dentista às 8h",
+            "quarta feira de noite dentista às 8h",
+        ).forEach { frase ->
+            assertThat(parser.parse(frase).title).isEqualTo("Dentista")
+        }
+
+        // O hífen já funcionava e não regride.
+        assertThat(parser.parse("sexta-feira de manhã dentista às 8h").title).isEqualTo("Dentista")
+
+        // O SUBSTANTIVO continua poupado: "feira de <complemento>" e "na feira do bairro".
+        assertThat(parser.parse("sexta feira de ciências às 8h").title.lowercase()).contains("feira")
+        assertThat(parser.parse("ir na feira do bairro sábado às 8h").title.lowercase()).contains("feira")
+    }
+
+    @Test
+    fun diaDitoComRelativoDivergenteEscala() {
+        // P1 deste lote: o dia nomeado vencia SEMPRE e descartava o N em silêncio — "quinta daqui a
+        // duas semanas" caía em HOJE (20/08), completa e não-ambígua. Quando o dia dito e o
+        // deslocamento cru discordam, o dia dito continua (é a expressão específica), mas o
+        // rascunho escala — cravar um dos dois calado é o defeito.
+        val quintaDuasSemanas = parser.parse("quinta daqui a duas semanas pagar conta às 10h")
+        assertThat(quintaDuasSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(quintaDuasSemanas.ambiguous).isTrue()
+        assertThat(quintaDuasSemanas.canQuickConfirm(clock.instant(), zone)).isFalse()
+
+        val quintaSeteSemanas = parser.parse("quinta daqui a 7 semanas pagar conta às 10h")
+        assertThat(quintaSeteSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(quintaSeteSemanas.ambiguous).isTrue()
+
+        val sextaDuasSemanas = parser.parse("sexta daqui a duas semanas pagar conta às 10h")
+        assertThat(sextaDuasSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(sextaDuasSemanas.ambiguous).isTrue()
     }
 }

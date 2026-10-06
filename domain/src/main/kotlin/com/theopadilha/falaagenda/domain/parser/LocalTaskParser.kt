@@ -711,9 +711,13 @@ class LocalTaskParser(
             // O dia nomeado é a expressão específica e manda: vale a PRIMEIRA ocorrência dele a
             // partir de hoje, e não "a primeira depois da conta crua". A diferença aparece quando a
             // conta crua já passou do dia: quinta + 1 semana = quinta, e o "on-or-after" dava a sexta
-            // da semana SEGUINTE, pulando a de amanhã. Como as datas cruas aqui são "hoje + N" e o
-            // intervalo entre ocorrências do mesmo dia é de 7 dias, "a partir de hoje" nunca produz
-            // uma data anterior à que ela pediu — o que era o risco de descartar a conta.
+            // da semana SEGUINTE, pulando a de amanhã.
+            //
+            // Mas o dia nomeado não pode vencer SOZINHO: "quinta daqui a duas semanas" com hoje
+            // numa quinta caía em HOJE, descartando o "duas semanas" em silêncio (P1 deste lote).
+            // Dois dias ditos com uma borda só não têm um dia que os satisfaça — a mesma regra do
+            // `monthEdge`. Quando a conta crua e o dia nomeado DISCORDAM, vale o dia nomeado (a
+            // expressão específica), mas o rascunho escala: cravar um dos dois calado é o defeito.
             val namedDay = extractWeekDays(remaining)
             if (namedDay.size == 1) {
                 remaining = stripWeekDays(remaining)
@@ -722,6 +726,14 @@ class LocalTaskParser(
                     today,
                     today,
                 )
+                if (onNamedDay != null && onNamedDay != date) {
+                    return DateHit(
+                        onNamedDay,
+                        remaining,
+                        true,
+                        "${NotasDoRascunho.DATA_AMBIGUA} “${m.value}” e o dia dito não caem no mesmo dia.",
+                    )
+                }
                 return DateHit(onNamedDay ?: date, remaining, false)
             }
             return DateHit(date, remaining, false)
@@ -1542,9 +1554,16 @@ class LocalTaskParser(
          * "feira" é o sufixo do dia, e poupá-lo devolvia o "Feira" ao título. O determinante que
          * denuncia o substantivo é o "de" do complemento ("feira de ciências"), não o que abre o
          * sintagma seguinte.
+         *
+         * O "de" do complemento nominal NÃO é todo "de": "de manhã"/"de tarde"/"de noite" é
+         * advérbio de tempo, e ali o "feira" continua sendo o sufixo do dia. Tratar todo "de" como
+         * complemento deixava "sexta feira de manhã dentista" com o título "Feira dentista",
+         * não-ambíguo e confirmável. A classe inteira ("<dia> feira de <advérbio>") fecha com a
+         * negação do advérbio dentro do lookahead.
          */
         private const val FEIRA_NOUN_TAIL_SRC = """(?:de|do|da|dos|das)\b"""
-        private const val FEIRA_NOUN = """\s+feira(?!\s+de\b)"""
+        private const val TIME_ADVERB_SRC = """(?:manha|tarde|noite|madrugada)\b"""
+        private const val FEIRA_NOUN = """\s+feira(?!\s+de\s+(?!$TIME_ADVERB_SRC))"""
         private val FEIRA_NOUN_TAIL = Regex("""^\s+$FEIRA_NOUN_TAIL_SRC""")
         private val WEEKDAY_PATTERNS = listOf(
             // "sábado"/"domingo" NÃO levam o sufixo "-feira" (só segunda a sexta): o "feira" depois

@@ -8,6 +8,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.theopadilha.falaagenda.R
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -94,12 +95,14 @@ class WidgetFonteTest {
         alturaDp = 118 * celulasParaAlturaDp(atributoDp("minHeight")) - 16,
     )
 
+    private data class Estado(val nome: String, val titulo: String, val quando: String)
+
     private val estadosReais = listOf(
         // O vazio é o texto mais longo do "quando" — "Toque para abrir a agenda" sobe para 3
         // linhas em célula estreita e é ele quem aperta o título (que é quem cede espaço).
-        Triple("Nada marcado", "Toque para abrir a agenda", "vazio"),
-        Triple("Tomar remédio de pressão", "Hoje · 08:00", "próxima"),
-        Triple("Tomar remédio", "Atrasada — Ontem · 08:00", "atrasada"),
+        Estado("vazio", "Nada marcado", "Toque para abrir a agenda"),
+        Estado("próxima", "Tomar remédio de pressão", "Hoje · 08:00"),
+        Estado("atrasada", "Tomar remédio", "Atrasada — Ontem · 08:00"),
     )
 
     /**
@@ -135,6 +138,12 @@ class WidgetFonteTest {
 
     private fun spDe(raiz: LinearLayout, id: Int): Float =
         raiz.findViewById<TextView>(id).textSize / context.resources.displayMetrics.scaledDensity
+
+    private fun cortadoDoTitulo(geometria: Geometria, estado: Estado): Int =
+        cortado(campo(layoutMedido(geometria, titulo = estado.titulo, quando = estado.quando), R.id.widget_title))
+
+    private fun cortadoDoQuando(geometria: Geometria, estado: Estado): Int =
+        cortado(campo(layoutMedido(geometria, titulo = estado.titulo, quando = estado.quando), R.id.widget_when))
 
     @Test
     fun aFonteDoWidgetNaoEAMenorDoAplicativo() {
@@ -221,21 +230,25 @@ class WidgetFonteTest {
      */
     @Test
     fun nenhumEstadoSaiCortadoNoAndroid12() {
-        for ((titulo, quando, nome) in estadosReais) {
-            val raiz = layoutMedido(geometriaAndroid12, titulo = titulo, quando = quando)
-            assertThat(cortado(campo(raiz, R.id.widget_title))).isEqualTo(0)
-            assertThat(cortado(campo(raiz, R.id.widget_when))).isEqualTo(0)
-            assertThat(nome).isNotEmpty()
+        for (estado in estadosReais) {
+            assertWithMessage("título do estado ${estado.nome} em $geometriaAndroid12")
+                .that(cortadoDoTitulo(geometriaAndroid12, estado))
+                .isEqualTo(0)
+            assertWithMessage("quando do estado ${estado.nome} em $geometriaAndroid12")
+                .that(cortadoDoQuando(geometriaAndroid12, estado))
+                .isEqualTo(0)
         }
     }
 
     @Test
     fun nenhumEstadoSaiCortadoNoAndroid11() {
-        for ((titulo, quando, nome) in estadosReais) {
-            val raiz = layoutMedido(geometriaAndroid11, titulo = titulo, quando = quando)
-            assertThat(cortado(campo(raiz, R.id.widget_title))).isEqualTo(0)
-            assertThat(cortado(campo(raiz, R.id.widget_when))).isEqualTo(0)
-            assertThat(nome).isNotEmpty()
+        for (estado in estadosReais) {
+            assertWithMessage("título do estado ${estado.nome} em $geometriaAndroid11")
+                .that(cortadoDoTitulo(geometriaAndroid11, estado))
+                .isEqualTo(0)
+            assertWithMessage("quando do estado ${estado.nome} em $geometriaAndroid11")
+                .that(cortadoDoQuando(geometriaAndroid11, estado))
+                .isEqualTo(0)
         }
     }
 

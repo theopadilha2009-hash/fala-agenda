@@ -65,6 +65,14 @@ class LocalTaskParser(
             notes += "A recorrência ficou ambígua."
         }
 
+        // O valor em reais sai antes do relógio: "pagar 30 reais às 10h" tem dois números e só o
+        // segundo é hora.
+        var amountCents: Long? = null
+        extractAmount(remaining)?.let { hit ->
+            amountCents = hit.cents
+            remaining = hit.remaining
+        }
+
         val timeHit = extractTime(remaining)
         remaining = timeHit.remaining
         var localTime = timeHit.time
@@ -205,7 +213,57 @@ class LocalTaskParser(
             transcript = original,
             notes = notes,
             source = DraftSource.LOCAL,
+            amountCents = amountCents,
         )
+    }
+
+    private data class AmountHit(val cents: Long, val remaining: String)
+
+    /**
+     * O valor em reais que ela fala: "120 reais", "cento e vinte reais", "R$ 30", "mil e duzentos
+     * reais". Vira centavos em `amountCents` — o campo já era renderizado na confirmação
+     * (`QuickConfirmDialog`) e somado no mês (`MonthInsights`), e nenhum caminho o preenchia.
+     *
+     * O número por extenso é lido da direita para a esquerda, como se fala: "cento e vinte" são
+     * 120 e não 20 com "cento" solto. Sem o valor, não inventa nada — devolve nulo.
+     */
+    private fun extractAmount(text: String): AmountHit? {
+        REAIS_NUMERIC.find(text)?.let { m ->
+            val raw = m.groupValues[1].ifBlank { m.groupValues[2] }
+            val cents = raw.replace(',', '.').toBigDecimalOrNull()?.movePointRight(2)?.toLong() ?: return@let
+            return AmountHit(cents, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
+        }
+        REAIS_EXTENSO.find(text)?.let { m ->
+            val cents = (numberFromWords(m.groupValues[1]) ?: return@let) * 100
+            return AmountHit(cents, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
+        }
+        return null
+    }
+
+    /** "cento e vinte e cinco" = 125. Nulo quando não há número nenhum para ler. */
+    private fun numberFromWords(phrase: String): Long? {
+        var total = 0L
+        var current = 0L
+        var sawNumber = false
+        for (word in phrase.split(" ")) {
+            when {
+                word == "e" -> Unit
+                word == "mil" -> {
+                    total += (if (current == 0L) 1L else current) * 1000
+                    current = 0
+                    sawNumber = true
+                }
+                word == "cem" || word == "cento" -> {
+                    current += 100
+                    sawNumber = true
+                }
+                NUMBER_WORDS.containsKey(word) -> {
+                    current += NUMBER_WORDS.getValue(word)
+                    sawNumber = true
+                }
+            }
+        }
+        return if (sawNumber) total + current else null
     }
 
     private data class RecurrenceHit(
@@ -351,12 +409,53 @@ class LocalTaskParser(
 
         // "de 8 em 8 horas", "a cada 2 horas": intervalo entre doses, não um horário do dia.
         INTERVAL.find(remaining)?.let { m ->
-            remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            val rest = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            // "a cada 12 horas começando amanhã às 8h": o "8h" é a primeira dose, não um horário
+            // qualquer. Antes o intervalo devolvia antes de ler o relógio e o app pedia justamente
+            // a hora que ela acabou de falar. Sem hora dita, continua pedindo — não inventamos.
+            val clockHit = extractClock(rest)
+            if (clockHit?.time != null) {
+                return clockHit.copy(
+                    remaining = TextNormalizer.compactSpaces(STARTS_AT.replace(clockHit.remaining, " ")),
+                )
+            }
             return TimeHit(
                 null,
-                remaining,
+                rest,
                 true,
                 "“${m.value}” é um intervalo, não um horário do dia. Diga o horário da primeira dose.",
+            )
+        }
+
+        // "das 14 às 16h": o compromisso é no INÍCIO da faixa. Sem isto o "14" (sem "h") não casava
+        // e o "16h" virava a hora do alarme — o aviso tocava no fim, com cara de certeza.
+        RANGE.find(remaining)?.let { m ->
+            val startHour = hourFromToken(m.groupValues[1]) ?: return@let
+            val endHour = hourFromToken(m.groupValues[2]) ?: return@let
+            if (startHour !in 0..23 || endHour !in 0..23) return@let
+            val rest = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            // "das duas às quatro da tarde": o "da tarde" vale para as duas pontas, e sem ele a
+            // hora do início sairia 02:00 em vez de 14:00.
+            val period = PERIOD_PHRASE.find(m.value)?.value ?: ""
+            val hour = applyPeriodHour(startHour, period)
+            return TimeHit(
+                LocalTime.of(hour % 24, 0),
+                rest,
+                ambiguous = period.isBlank() && startHour in 1..6,
+            )
+        }
+
+        // "reunião das 8 amanhã": o "das" abre a hora sem o par "às 16h". Depois da faixa, para
+        // não roubar o "das 14" da faixa antes de ela ser lida.
+        DAS_CLOCK.find(remaining)?.let { m ->
+            val raw = hourFromToken(m.groupValues[1]) ?: return@let
+            if (raw !in 0..23) return@let
+            val rest = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+            val period = PERIOD_PHRASE.find(m.value)?.value ?: ""
+            return TimeHit(
+                LocalTime.of(applyPeriodHour(raw, period) % 24, 0),
+                rest,
+                ambiguous = period.isBlank() && raw in 1..6,
             )
         }
 
@@ -392,6 +491,27 @@ class LocalTaskParser(
             remaining = remaining.replace(m.value + (tail?.second ?: ""), " ")
             return TimeHit(LocalTime.of(0, tail?.first ?: 0), remaining, false)
         }
+
+        // "de 14 a 16", "entre 9 e 10": faixa sem o "h" — não há hora para cravar (o "a"/"e" não
+        // diz se é 14h ou 16h), e os números saem do título para não deixar "14 16" pendurado nele.
+        // O "entre" fica: sem o par, é a palavra que sobra na frase.
+        BARE_RANGE_ENTRE.find(remaining)?.let { m ->
+            remaining = remaining.replace(m.value, m.groupValues[1])
+        }
+        RANGE_BARE.find(remaining)?.let { m ->
+            remaining = TextNormalizer.compactSpaces(remaining.replace(m.value, " "))
+        }
+
+        return extractClock(remaining) ?: TimeHit(null, remaining, false)
+    }
+
+    /**
+     * O relógio da frase: dígito, por extenso e o "às N" sem "h". Extraído de `extractTime` porque
+     * a faixa ("das 14 às 16h") precisa da mesma leitura depois de tirar a faixa do texto — duas
+     * cópias divergiriam, e é justamente a hora do compromisso que não pode divergir.
+     */
+    private fun extractClock(text: String): TimeHit? {
+        var remaining = text
 
         data class ClockMatch(val match: MatchResult, val hourRaw: Int, val minute: Int, val period: String)
 
@@ -915,10 +1035,15 @@ class LocalTaskParser(
         WEEKDAY_ANY.containsMatchIn(clause.trimEnd().substringAfterLast(' '))
 
     private fun extractTitle(remaining: String, original: String): String {
-        val leftover = TextNormalizer.compactSpaces(remaining)
-            .split(" ")
-            .filter { it.isNotBlank() && it !in FILLERS && !it.matches(Regex("\\d+h?")) }
-            .toMutableList()
+        // O filtro apaga só o que tem cara de hora ("8h", "8h30", "8:30"), não qualquer número:
+        // "comprar 2 caixas" perdia o "2" e o título dizia "Comprar caixas". As palavras de hora
+        // por extenso ("oito") continuam saindo quando sozinhas, senão a hora virava título.
+        val words = TextNormalizer.compactSpaces(remaining).split(" ")
+        val leftover = words.filterIndexed { index, word ->
+            word.isNotBlank() &&
+                (word !in FILLERS || (word == "meia" && words.getOrNull(index + 1) == "duzia")) &&
+                !word.matches(Regex("\\d{1,2}h(?:\\d{1,2}|oras?)?|\\d{1,2}:\\d{2}"))
+        }.toMutableList()
         val rebuilt = original.split(Regex("\\s+")).filter { word ->
             val folded = TextNormalizer.fold(word).trim(',', '.', '!', '?')
             val idx = leftover.indexOfFirst { it == folded || folded.startsWith(it) }
@@ -1030,6 +1155,99 @@ class LocalTaskParser(
         private val INTERVAL = Regex(
             """\bde\s+(?:\d{1,2}|[a-z]+)\s+em\s+(?:\d{1,2}|[a-z]+)\s+(?:horas?|minutos?)\b""" +
                 """|\b(?:a\s+)?cada\s+(?:\d{1,2}|[a-z]+)\s+(?:horas?|minutos?)\b""",
+        )
+
+        /**
+         * "das 14 às 16h": faixa de horário. O grupo 1 é a primeira hora, o 2 a última. O "h" no
+         * fim da segunda é o que a distingue de "entre 9 e 10"/"de 14 a 16", que seguem sem hora
+         * reconhecida — o alvo é a faixa que ela fala com "das ... às ...h".
+         */
+        private val RANGE = Regex(
+            """\b(?:(?:das|de)\s+|\bas\s+)(\d{1,2}|[a-z]+(?:\s+e\s+[a-z]+)?)(?:\s*h(?:oras?)?)?""" +
+                """\s+(?:as|ate)\s+(\d{1,2}|[a-z]+(?:\s+e\s+[a-z]+)?)(?:\s*h(?:oras?)?)?""" +
+                """(?:\s+(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?\b""",
+        )
+
+        /** "reunião das 8 amanhã": o "das" abre a hora mesmo sem o "h" e sem o par "às". */
+        private val DAS_CLOCK = Regex("""\bdas\s+(\d{1,2}|[a-z]+(?:\s+e\s+[a-z]+)?)\b""")
+
+        /**
+         * "de 14 a 16", "entre 9 e 10": faixa sem o "h". Não vira hora — "de 14 a 16" não diz se o
+         * compromisso é às 14h ou às 16h, e cravar uma das duas seria o mesmo defeito de antes, ao
+         * contrário. Sai do texto para o título não carregar "14 16".
+         */
+        private val RANGE_BARE = Regex(
+            """\b(?:(?:das|de)\s+|\bas\s+)(\d{1,2})\s+(?:a|ate|as)\s+(\d{1,2})\b""",
+        )
+
+        /** "entre 9 e 10": só os números saem; o "entre" é a palavra que sobra na frase. */
+        private val BARE_RANGE_ENTRE = Regex("""\b(entre)\s+\d{1,2}\s+e\s+\d{1,2}\b""")
+
+        /** A hora da faixa em dígito ("14") ou por extenso ("duas"). */
+        private fun hourFromToken(raw: String): Int? =
+            raw.toIntOrNull() ?: WORD_HOURS[TextNormalizer.compactSpaces(raw)]
+
+        /** "começando amanhã às 8h": a primeira dose do intervalo foi dita. */
+        private val STARTS_AT = Regex("""\bcomec(?:ando|a|ar)\b""")
+
+        /**
+         * "120 reais", "R$ 30": o valor em dígito. O "R$" sozinho já é dinheiro — sem o segundo
+         * grupo, "pagar R$ 30" ficava com o "R$" pendurado no título e sem valor nenhum.
+         */
+        private val REAIS_NUMERIC = Regex(
+            """\b(\d+(?:[.,]\d{1,2})?)\s*(?:reais|real|contos?)\b""" +
+                """|\br\s*\$\s*(\d+(?:[.,]\d{1,2})?)""",
+        )
+
+        /** "cento e vinte reais", "mil e duzentos reais": o valor por extenso. */
+        private val REAIS_EXTENSO = Regex(
+            """\b((?:um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|catorze|""" +
+                """quatorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta|quarenta|cinquenta|""" +
+                """sessenta|setenta|oitenta|noventa|cem|cento|duzentos|trezentos|quatrocentos|""" +
+                """quinhentos|seiscentos|setecentos|oitocentos|novecentos|mil)(?:\s+e\s+(?:um|uma|dois|""" +
+                """duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|catorze|quatorze|""" +
+                """quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta|quarenta|cinquenta|sessenta|""" +
+                """setenta|oitenta|noventa|cem|cento|duzentos|trezentos|quatrocentos|quinhentos|""" +
+                """seiscentos|setecentos|oitocentos|novecentos|mil))*)\s+(?:reais|real|contos?)\b""",
+        )
+
+        /** O valor falado, palavra a palavra: "cento e vinte e cinco" = 125. */
+        private val NUMBER_WORDS = mapOf(
+            "um" to 1, "uma" to 1,
+            "dois" to 2, "duas" to 2,
+            "tres" to 3,
+            "quatro" to 4,
+            "cinco" to 5,
+            "seis" to 6,
+            "sete" to 7,
+            "oito" to 8,
+            "nove" to 9,
+            "dez" to 10,
+            "onze" to 11,
+            "doze" to 12,
+            "treze" to 13,
+            "catorze" to 14, "quatorze" to 14,
+            "quinze" to 15,
+            "dezesseis" to 16,
+            "dezessete" to 17,
+            "dezoito" to 18,
+            "dezenove" to 19,
+            "vinte" to 20,
+            "trinta" to 30,
+            "quarenta" to 40,
+            "cinquenta" to 50,
+            "sessenta" to 60,
+            "setenta" to 70,
+            "oitenta" to 80,
+            "noventa" to 90,
+            "duzentos" to 200, "duzentas" to 200,
+            "trezentos" to 300, "trezentas" to 300,
+            "quatrocentos" to 400, "quatrocentas" to 400,
+            "quinhentos" to 500, "quinhentas" to 500,
+            "seiscentos" to 600, "seiscentas" to 600,
+            "setecentos" to 700, "setecentas" to 700,
+            "oitocentos" to 800, "oitocentas" to 800,
+            "novecentos" to 900, "novecentas" to 900,
         )
 
         /** "daqui a duas horas e meia": o "e meia" depois do valor relativo vale 30 minutos. */

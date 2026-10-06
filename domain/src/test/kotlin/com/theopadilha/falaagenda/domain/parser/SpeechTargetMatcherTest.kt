@@ -15,6 +15,20 @@ class SpeechTargetMatcherTest {
     private fun candidates(vararg titles: String) =
         titles.mapIndexed { i, t -> SpeechCandidate(id = "id$i", title = t) }
 
+    /**
+     * O caminho REAL da fala: `classify` decide a intenção e produz o alvo, `resolve` casa o
+     * alvo com a agenda. Chamar a matcher com a frase crua esconde o que o parser já tirou (o
+     * gatilho, o artigo) — e foi um alvo irreal desses que sustentou o ramo composite.
+     */
+    private fun resolveBySpeech(fala: String, vararg titles: String): SpeechTargetResolution {
+        val target = when (val intent = SpeechIntentClassifier.classify(fala)) {
+            is SpeechIntent.Complete -> intent.target
+            is SpeechIntent.Cancel -> intent.target
+            else -> error("A fala não virou comando de concluir/cancelar: $intent")
+        }
+        return SpeechTargetMatcher.resolve(target, candidates(*titles))
+    }
+
     @Test
     fun umUnicoTituloCasa() {
         val r = SpeechTargetMatcher.resolve("médico", candidates("Consulta médica"))
@@ -39,11 +53,12 @@ class SpeechTargetMatcherTest {
 
     @Test
     fun oTituloInteiroDentroDoAlvoCasa() {
-        val r = SpeechTargetMatcher.resolve(
-            "cancela a consulta médica de amanhã",
-            candidates("Consulta médica"),
-        )
-        assertThat(r).isEqualTo(SpeechTargetResolution.One("id0"))
+        // O alvo REAL que o parser produz em "cancela a consulta médica de amanhã": o gatilho e
+        // o artigo saem, "amanhã" é temporal e não conta. Chega como "consulta medica de
+        // amanha" e casa pela MAIORIA ESTRITA (2 de 2) — sem precisar do ramo composite, que
+        // era sustentado por este teste passando a frase crua.
+        assertThat(resolveBySpeech("cancela a consulta médica de amanhã", "Consulta médica"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
     }
 
     @Test
@@ -262,5 +277,98 @@ class SpeechTargetMatcherTest {
                 candidates("Remédio do cachorro"),
             ),
         ).isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    // --- P1: o ramo composite reabria o buraco destrutivo, pelo caminho REAL -------------
+    //
+    // Com o título de UMA palavra significativa, o ramo "título inteiro dentro do alvo" casa
+    // sempre que aquela palavra aparece no alvo — ele era MAIS permissivo que a maioria
+    // estrita. "já tomei o remédio do dentista" com [Dentista, Tomar remédio] na agenda virava
+    // `One(Dentista)` e o app concluía "Dentista" respondendo "Feito." — exatamente a ação
+    // destrutiva que mente que o PR existe para eliminar. Antes do PR, era `Ambiguous`.
+
+    @Test
+    fun remedioDoDentistaNaoConcluiODentista() {
+        // Título de uma palavra só ("Dentista") NÃO pode casar por conter a palavra no alvo:
+        // o alvo "remedio do dentista" é de duas significativas e só 1 casa. Ambíguo — nunca
+        // concluir a tarefa errada calado.
+        assertThat(resolveBySpeech("já tomei o remédio do dentista", "Dentista", "Tomar remédio"))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun remedioDoDentistaComODentistaSozinhoNaAgendaNaoCasa() {
+        // O caso mais grave do ramo: com UMA tarefa só ("Dentista") na agenda, o alvo
+        // "remedio do dentista" (1 de 2) casava o título inteiro de uma palavra e virava `One`
+        // — apagava ou concluía "Dentista" calado. Tem de ser `None`.
+        assertThat(resolveBySpeech("cancela o remédio do dentista", "Dentista"))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    // --- P2: a maioria estrita derrubava alvos legítimos ---------------------------------
+    //
+    // O reconhecedor anexa ao alvo o marcador temporal ("amanhã", "de manhã") que o parser já
+    // consumiu como data/hora. Não é conteúdo da tarefa e não pode derrubar um casamento que
+    // sem ele aconteceria. Todos estes devolviam `One` antes do #54.
+
+    @Test
+    fun remedioDeManhaConcluiOTomarRemedio() {
+        // "de manha" é hora do dia (o parser já a consome), não conteúdo: não pode derrubar.
+        assertThat(resolveBySpeech("já tomei o remédio de manhã", "Tomar remédio"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun consultaDeAmanhaCancelaAConsultaMedica() {
+        // "amanha" é data consumida pelo parser, não conteúdo do alvo: "consulta medica de
+        // amanha" tem de casar "Consulta médica" (o "medica" flexiona).
+        assertThat(resolveBySpeech("cancela a consulta de amanhã", "Consulta médica"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun tomarRemedioHojeContinuaCasando() {
+        // Mesmo caso, pelo outro gatilho: "hoje" é circunstância, não a segunda palavra.
+        assertThat(resolveBySpeech("já tomei o remédio hoje", "Tomar remédio"))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    // --- P2 residual: a palavra a mais NÃO é temporal ------------------------------------
+    //
+    // "remédio da pressão" e "conta de luz" têm duas significativas e só uma casa (1 de 2):
+    // "remedio" casa "Tomar remédio", "conta" casa "Pagar conta". É o MESMO formato dos
+    // guardas que precisam continuar barrando — "consulta do dentista" contra "Consulta
+    // médica" (1 de 2, só "consulta") e "remédio do cachorro" contra "Passear com o cachorro"
+    // (1 de 2, só "cachorro"). "pressao" e "luz" são CONTEÚDO, não circunstância: não há sinal
+    // lexical que separe "luz" (qualificador que a tarefa omite) de "dentista" (especialista
+    // que CONTRADIZ a "médica" do título). Afrouxar aqui reabre a ação destrutiva que mente —
+    // cancelar "Conta de luz" quando ela falou "conta de água". O desfecho seguro é `None`.
+
+    @Test
+    fun remedioDaPressaoAindaNaoCasa_limiteConhecido() {
+        assertThat(resolveBySpeech("já tomei o remédio da pressão", "Tomar remédio"))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun contaDeLuzAindaNaoCasa_limiteConhecido() {
+        assertThat(resolveBySpeech("cancela a conta de luz", "Pagar conta"))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    // --- o que o endurecimento NÃO pode quebrar -----------------------------------------
+
+    @Test
+    fun remedioDoCachorroContinuaNaoCasandoOPasseio() {
+        // Sem temporal no alvo, a maioria estrita continua barrando "remedio do cachorro"
+        // contra "Passear com o cachorro" (1 de 2). O fix do P2 não pode reabrir este buraco.
+        assertThat(resolveBySpeech("já tomei o remédio do cachorro", "Passear com o cachorro"))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun consultaDoDentistaContinuaNaoCasandoAConsultaMedica() {
+        assertThat(resolveBySpeech("cancela a consulta do dentista", "Consulta médica"))
+            .isEqualTo(SpeechTargetResolution.None)
     }
 }

@@ -47,6 +47,22 @@ object SpeechTargetMatcher {
      */
     private val INFLECTION_TAILS = setOf("", "a", "o", "e", "s", "as", "os", "es")
 
+    /**
+     * Circunstância de TEMPO, não conteúdo da tarefa. O parser já a consome como data/hora
+     * ("amanhã" vira a data, "de manhã" vira o período), então no alvo ela é ruído do
+     * reconhecedor: não pode contar na maioria nem derrubar um casamento que sem ela
+     * aconteceria. Sem esta poda, "já tomei o remédio de manhã" — a fala mais provável de uma
+     * rotina — devolvia `None` e a dose não era registrada, porque "manhã" entrava como uma
+     * segunda palavra significativa e a maioria (1 de 2) não fechava.
+     *
+     * Só o ALVO é podado; o título é o nome da tarefa e continua inteiro ("Tomar remédio de
+     * manhã" casa normalmente).
+     */
+    private val TEMPORAIS = setOf(
+        "hoje", "amanha", "ontem", "manha", "tarde", "noite", "madrugada",
+        "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
+    )
+
     fun resolve(target: String, candidates: List<SpeechCandidate>): SpeechTargetResolution {
         val alvo = TextNormalizer.fold(target)
         if (alvo.length < 3) return SpeechTargetResolution.None
@@ -62,26 +78,31 @@ object SpeechTargetMatcher {
         val alvoWords = alvo.split(' ').filter { it.isNotBlank() }
         val tituloWords = TextNormalizer.fold(title).split(' ').filter { it.isNotBlank() }
 
+        // Circunstância de tempo sai do alvo antes de contar (ver [TEMPORAIS]): não é conteúdo
+        // da tarefa, e o parser já a consumiu como data/hora. Sem esta poda, "já tomei o
+        // remédio de manhã" virava 1 de 2 significativas e devolvia `None` — a dose não era
+        // registrada. Com ela, o alvo sobra em "remedio" e casa "Tomar remédio" como sempre.
+        val significativas = alvoWords.filter { it.length >= MIN_WORD && it !in TEMPORAIS }
+
         // Alvo de UMA palavra: o caso mais comum ("cancela o médico" → a consulta médica) e o
         // que a fala produz na maioria das vezes. Continua casando como sempre — palavra
         // inteira ou raiz flexiva — e não pode endurecer.
-        val significativas = alvoWords.filter { it.length >= MIN_WORD }
         if (significativas.size <= 1) {
             return significativas.any { a -> tituloWords.any { t -> wordMatches(a, t) } }
         }
-
-        // O título INTEIRO dentro do alvo é o nome composto: "consulta medica" no alvo
-        // "cancela a consulta medica de amanha". Todas as palavras significativas do título
-        // estão lá — é o casamento mais forte que existe, mesmo com palavra a mais no alvo.
-        val tituloSignificativas = tituloWords.filter { it.length >= MIN_WORD }
-        if (tituloSignificativas.isNotEmpty() &&
-            tituloSignificativas.all { t -> alvoWords.any { a -> wordMatches(a, t) } }
-        ) return true
 
         // Alvo de VÁRIAS palavras: exige a MAIORIA ESTRITA das significativas. Uma única
         // palavra genérica em comum não basta — era isso que, com uma tarefa só na agenda,
         // virava `One` e agia calado: "cancela o remédio do cachorro" apagava "Passear com o
         // cachorro" (1 de 2) e "já tomei o remédio do cachorro" concluía o passeio.
+        //
+        // Havia aqui um ramo "título inteiro dentro do alvo" que casava sem olhar a proporção.
+        // Com o título de UMA palavra significativa ("Dentista"), ele virava MAIS permissivo
+        // que a maioria: bastava a palavra aparecer em qualquer alvo. "já tomei o remédio do
+        // dentista" com [Dentista, Tomar remédio] virava `One(Dentista)` e o app concluía
+        // "Dentista" respondendo "Feito." — a ação destrutiva que mente. Ele também era
+        // redundante: os casos que o justificavam ("consulta medica de amanha") já passam pela
+        // maioria, uma vez que o temporal sai da contagem. Removido.
         val casadas = significativas.count { a -> tituloWords.any { t -> wordMatches(a, t) } }
         return casadas * 2 > significativas.size
     }

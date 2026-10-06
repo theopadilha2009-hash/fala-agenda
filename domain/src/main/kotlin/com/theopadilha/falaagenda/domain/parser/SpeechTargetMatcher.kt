@@ -33,12 +33,19 @@ object SpeechTargetMatcher {
     /**
      * Menor raiz em comum para valer como a MESMA palavra flexionada ("medico"/"medica").
      *
-     * O piso de 4 letras do casamento antigo aceitava prefixos enganosos: "carro" casava
-     * "Carregador do celular", "conta" casava "Contrato do aluguel" e "luz" casava "Luzia,
-     * aniversário" — concluir ou apagar a tarefa errada. Com 5, a flexão legítima continua
-     * casando e as palavras diferentes de prefixo curto ficam de fora.
+     * Um prefixo longo NÃO basta: "medico"/"medicamento", "conta"/"contador",
+     * "carro"/"carroça" e "carteira"/"carteirinha" começam igual e são palavras diferentes.
+     * Com um alvo só na agenda, o casamento é `One` e a ação acontece calada — conclui ou
+     * apaga a tarefa errada. Quem separa os dois casos é [INFLECTION_TAILS], não o tamanho.
      */
     private const val MIN_STEM = 5
+
+    /**
+     * Os restos que ainda são a MESMA palavra: gênero ("medico"/"medica"), número
+     * ("conta"/"contas") e a vogal temática. Qualquer outro resto é sufixo derivacional
+     * ("amento", "dor", "inha", "ca") — outra palavra, e o casamento não vale.
+     */
+    private val INFLECTION_TAILS = setOf("", "a", "o", "e", "s", "as", "os", "es")
 
     fun resolve(target: String, candidates: List<SpeechCandidate>): SpeechTargetResolution {
         val alvo = TextNormalizer.fold(target)
@@ -63,13 +70,18 @@ object SpeechTargetMatcher {
     }
 
     /**
-     * A raiz comum tem que começar a palavra (comparação de prefixo), nunca no meio: "dia" e
-     * "medio" compartilham "dio" no meio e não são a mesma coisa.
+     * A raiz comum tem de começar a palavra (nunca no meio: "dia" e "medio" compartilham "dio"
+     * e não são a mesma coisa) e o que sobra DEPOIS dela tem de ser flexão nos dois lados.
+     *
+     * É o resto que separa "medico"/"medica" (restos "o"/"a" — a mesma palavra) de
+     * "medico"/"medicamento" (restos ""/"amento" — palavras diferentes), sem depender de um
+     * tamanho de prefixo que sempre terá um par realista para furar.
      */
     private fun shareStem(a: String, b: String): Boolean {
         if (a.length < MIN_STEM || b.length < MIN_STEM) return false
         var i = 0
         while (i < a.length && i < b.length && a[i] == b[i]) i++
-        return i >= MIN_STEM
+        if (i < MIN_STEM) return false
+        return a.substring(i) in INFLECTION_TAILS && b.substring(i) in INFLECTION_TAILS
     }
 }

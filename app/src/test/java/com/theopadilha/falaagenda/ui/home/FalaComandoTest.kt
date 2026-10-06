@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.domain.model.OccurrenceIds
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
@@ -170,10 +171,12 @@ class FalaComandoTest {
      */
     @Test
     fun rotinaRecorrenteConcluiNaProximaOcorrencia() {
-        runBlocking {
-            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now(), diario()))
-            // O start do processo materializa as próximas datas da mesma série.
-            container.tasks.rescheduleAll()
+        val hoje = LocalDate.now()
+        val salvo = runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", hoje, diario())).also {
+                // O start do processo materializa as próximas datas da mesma série.
+                container.tasks.rescheduleAll()
+            }
         }
         // O cenário do defeito: mais de uma pendente com o MESMO nome na agenda.
         assertThat(agenda().today + agenda().upcoming).hasSize(3)
@@ -181,20 +184,55 @@ class FalaComandoTest {
         viewModel.understandSpeech("já tomei o remédio")
 
         assertThat(proximoRecado()).isEqualTo("Feito.")
+        // QUAL data foi eleita — a mais próxima (hoje) —, e não só quantas sobraram: uma
+        // eleição errada (a mais distante) concluiria a ocorrência de outro dia, calada.
+        assertThat(statusDa(salvo.series.id, hoje)).isEqualTo(OccurrenceStatus.COMPLETED)
+        assertThat(statusDa(salvo.series.id, hoje.plusDays(1))).isEqualTo(OccurrenceStatus.PENDING)
+        assertThat(statusDa(salvo.series.id, hoje.plusDays(2))).isEqualTo(OccurrenceStatus.PENDING)
     }
 
     @Test
     fun rotinaRecorrenteCancelaANearest() {
-        runBlocking {
-            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now(), diario()))
-            container.tasks.rescheduleAll()
+        val hoje = LocalDate.now()
+        val salvo = runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", hoje, diario())).also {
+                container.tasks.rescheduleAll()
+            }
         }
 
         viewModel.understandSpeech("cancela o remédio")
 
         assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
-        // Só a data eleita sai; as outras da mesma série continuam de pé.
-        assertThat(agenda().today + agenda().upcoming).hasSize(2)
+        // A data eleita (a mais próxima) sai; as outras da MESMA série continuam de pé.
+        assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje))).isNull()
+        assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje.plusDays(1)))).isNotNull()
+        assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje.plusDays(2)))).isNotNull()
+    }
+
+    /**
+     * O desfazer ponta a ponta de um cancelamento por voz: o recado carrega o item eleito, e
+     * desfazê-lo devolve a data certa — não outra da mesma série.
+     */
+    @Test
+    fun desfazerOCancelamentoPorVozDevolveADataEleita() {
+        val hoje = LocalDate.now()
+        val salvo = runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", hoje, diario())).also {
+                container.tasks.rescheduleAll()
+            }
+        }
+        viewModel.understandSpeech("cancela o remédio")
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje))).isNull()
+
+        val undo = viewModel.statusMessage.value!!.undo
+        assertThat(undo).isInstanceOf(StatusMessage.Undo.Delete::class.java)
+        viewModel.undoDelete((undo as StatusMessage.Undo.Delete).item)
+        esperaAGravacaoTerminar()
+
+        // A data eleita volta; as outras nunca saíram.
+        assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje))).isNotNull()
+        assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje.plusDays(1)))).isNotNull()
     }
 
     // --- reconhecer e não fazer ------------------------------------------------------
@@ -233,6 +271,13 @@ class FalaComandoTest {
     // --- helpers ---------------------------------------------------------------------
 
     private fun agenda() = runBlocking { container.tasks.snapshotAgenda() }
+
+    private fun statusDa(seriesId: String, data: LocalDate): OccurrenceStatus? =
+        agenda().find(OccurrenceIds.of(seriesId, data))?.occurrence?.status
+
+    private fun esperaAGravacaoTerminar() {
+        runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.busy.first { !it } } }
+    }
 
     private fun proximoRecado(): String =
         runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.statusMessage.filterNotNull().first().text } }

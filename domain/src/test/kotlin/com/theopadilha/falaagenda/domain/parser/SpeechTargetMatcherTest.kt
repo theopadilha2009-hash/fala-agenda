@@ -115,4 +115,49 @@ class SpeechTargetMatcherTest {
         assertThat(SpeechTargetMatcher.resolve("medico", candidates("Consulta médica")))
             .isEqualTo(SpeechTargetResolution.One("id0"))
     }
+
+    // --- prefixo de 5 letras não é a mesma palavra ------------------------------------
+    //
+    // Radicais DIFERENTES que começam igual não podem casar: com um alvo só na agenda, o
+    // casamento é `One` e a ação acontece calada — conclui ou apaga a tarefa errada.
+
+    @Test
+    fun medicoNaoCasaMedicamento() {
+        // O caso provável na agenda dela: "médico" e "medicamento" só compartilham "medic".
+        assertThat(SpeechTargetMatcher.resolve("medico", candidates("Tomar medicamento")))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun contaNaoCasaContador() {
+        assertThat(SpeechTargetMatcher.resolve("conta", candidates("Contador de água")))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun carroNaoCasaCarroca() {
+        assertThat(SpeechTargetMatcher.resolve("carro", candidates("Carroça do vizinho")))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun carteiraNaoCasaCarteirinha() {
+        assertThat(SpeechTargetMatcher.resolve("carteira", candidates("Carteirinha do ônibus")))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    // --- o que DEVE continuar casando -------------------------------------------------
+
+    @Test
+    fun palavraInteiraAindaCasa() {
+        assertThat(SpeechTargetMatcher.resolve("consulta", candidates("Consulta médica")))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun flexaoRegularAindaCasa() {
+        // "remedio" (falado, sem acento) e "remédio" (título) são a mesma palavra.
+        assertThat(SpeechTargetMatcher.resolve("remedio", candidates("Remédio do cachorro")))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
 }

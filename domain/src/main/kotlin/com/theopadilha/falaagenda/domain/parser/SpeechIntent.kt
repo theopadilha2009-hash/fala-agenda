@@ -71,20 +71,28 @@ object SpeechIntentClassifier {
     }
 
     /**
-     * O preâmbulo de cortesia que pode anteceder o comando ("por favor, cancela o médico").
+     * O preâmbulo que pode anteceder o comando: a interjeição e a cortesia com que ela começa
+     * a falar espontaneamente ("ah, cancela o médico", "por gentileza, cancela o médico").
+     *
      * É o único material tolerado ANTES do gatilho — o resto da fala antes dele muda o sentido
-     * da frase.
+     * da frase. A lista é generosa de propósito: uma senhora falando não começa pelo verbo, e
+     * com a lista estreita a fala legítima caía em captura e virava a tarefa "Ah, cancela
+     * médico" — exatamente o defeito que a camada existe para consertar.
      */
     private val FILLER_PREFIX = Regex(
-        "^(por favor|favor|pode|poderia|podias|ei|oi|olha|escuta|escute|entao|e|eh)\\b[\\s,!.]+",
+        "^(por favor|por gentileza|por obsequio|gentileza|favor|" +
+            "pode|poderia|podias|consegue|consegues|" +
+            "ve pra mim|ve pra|ve|veja|olha|olhe|escuta|escute|" +
+            "ah|bom|bem|entao|ei|oi|ola|opa|e|eh)\\b[\\s,!.]+",
     )
 
     /** A fala sem o preâmbulo de cortesia, que é onde a âncora do gatilho olha. */
     private fun withoutFiller(folded: String): String {
         var rest = folded
         while (true) {
+            rest = rest.trimStart(' ', ',', '.', '!', '?', ';', ':')
             val prefix = FILLER_PREFIX.find(rest) ?: return rest
-            rest = rest.substring(prefix.range.last + 1).trim()
+            rest = rest.substring(prefix.range.last + 1)
         }
     }
 
@@ -127,11 +135,14 @@ object SpeechIntentClassifier {
             "\\b(agenda|compromisso|compromissos|tarefa|tarefas|dia)\\b",
     )
 
-    // "tem algo hoje?": a pergunta pelo indefinido, e o dia é obrigatório. Sem o dia,
-    // "tenho algo marcado com o dentista" — afirmação — viraria pergunta e a tarefa se
-    // perderia; o "algo" sozinho não é pergunta.
+    // "tem algo hoje?": a pergunta pelo indefinido, ABRINDO a fala, com o dia logo depois do
+    // "algo". As duas restrições são necessárias e nenhuma sozinha basta: "tenho algo marcado
+    // com o dentista amanhã" também começa com "tenho algo" — é a tarefa, não a pergunta —, e
+    // o dia tem de vir colado ao indefinido (no máximo um "pra/para/de"), não no fim de
+    // qualquer frase.
     private val temAlgo = Regex(
-        "\\b(tenho|tem|ha)\\s+(algo|alguma coisa|algum compromisso|alguma tarefa)\\b.*\\b(hoje|amanha)\\b",
+        "\\b(tenho|tem|ha)\\s+(algo|alguma coisa|algum compromisso|alguma tarefa)" +
+            "\\s+((pra|para|de)\\s+)?(hoje|amanha)\\b",
     )
 
     private val amanha = Regex("\\bamanha\\b")
@@ -143,12 +154,16 @@ object SpeechIntentClassifier {
             // dia/agenda.
             (opensWith(oQueTenho, rest) != null && agendaCue.containsMatchIn(folded)) ||
                 // "quais os compromissos de hoje?" / "me mostra a agenda": a pergunta pelo
-                // substantivo ou pelo pedido dirigido a quem responde.
-                quaisAgenda.containsMatchIn(folded) ||
-                meMostra.containsMatchIn(folded) ||
-                // "tem algo amanhã?": a pergunta pelo indefinido, e o dia é obrigatório. Sem o
-                // dia, "tenho algo marcado com o dentista" — afirmação — viraria pergunta.
-                temAlgo.containsMatchIn(folded)
+                // substantivo ou pelo pedido dirigido a quem responde — ABRINDO a fala. No
+                // meio ("comprar qual tarefa está faltando", "pedir pra ela me fala o dia")
+                // é o objeto da tarefa, não uma pergunta.
+                opensWith(quaisAgenda, rest) != null ||
+                opensWith(meMostra, rest) != null ||
+                // "tem algo amanhã?": a pergunta pelo indefinido, ABRINDO a fala, e o dia é
+                // obrigatório. No meio ("tenho algo marcado com o dentista amanhã") é uma
+                // afirmação sobre a tarefa — e sem a âncora ela viraria pergunta e a tarefa
+                // nunca nasceria.
+                opensWith(temAlgo, rest) != null
         if (!pergunta) return null
         // Só hoje e amanhã: são as duas janelas que a home mostra. "depois de amanhã" contém
         // "amanhã" e cai em amanhã — limitação conhecida e preferível a inventar uma terceira
@@ -226,7 +241,7 @@ object SpeechIntentClassifier {
     // Só os pronomes "isso/isto": eles não têm substantivo depois, então não nomeiam alvo
     // nenhum. "cancela essa consulta" fica de fora de propósito — "essa consulta" É o alvo, e
     // tratá-la como ERASE perderia um cancelamento que o app sabe fazer.
-    private val cancelaIsso = Regex("\\b(cancela|cancele)\\s+(isso|isto)\\b")
+    private val cancelaIsso = Regex("\\b(cancela|cancele|desmarca|desmarque)\\s+(isso|isto)\\b")
 
     private fun unknown(folded: String): SpeechIntent? {
         val rest = withoutFiller(folded)

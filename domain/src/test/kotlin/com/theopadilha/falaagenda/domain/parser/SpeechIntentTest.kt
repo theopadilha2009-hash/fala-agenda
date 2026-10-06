@@ -234,4 +234,87 @@ class SpeechIntentTest {
         // que ainda não sabe apagar falando, em vez de procurar um alvo que não foi dito.
         assertThat(intent("cancela isso")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
     }
+
+    @Test
+    fun desmarcaIssoEhReconhecidoENaoExecutado() {
+        // "desmarca" é sinônimo de cancelar e tem de cair no MESMO caminho de "cancela isso":
+        // sem isto ele virava um cancelamento com o alvo literal "isso" e respondia
+        // "Não achei nenhuma tarefa com esse nome."
+        assertThat(intent("desmarca isso")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    @Test
+    fun desmarqueIssoEhReconhecidoENaoExecutado() {
+        assertThat(intent("desmarque isso")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    // --- a abertura tolera as interjeições e cortesias de quem fala --------------------
+
+    @Test
+    fun ahNaoImpedeOCancelamento() {
+        val intent = intent("Ah, cancela o médico")
+        assertThat(intent).isInstanceOf(SpeechIntent.Cancel::class.java)
+        assertThat((intent as SpeechIntent.Cancel).target).isEqualTo("medico")
+    }
+
+    @Test
+    fun bomNaoImpedeOCancelamento() {
+        assertThat(intent("Bom, cancela o médico")).isInstanceOf(SpeechIntent.Cancel::class.java)
+    }
+
+    @Test
+    fun porGentilezaNaoImpedeOCancelamento() {
+        assertThat(intent("Por gentileza, cancela o médico"))
+            .isInstanceOf(SpeechIntent.Cancel::class.java)
+    }
+
+    @Test
+    fun vePraMimNaoImpedeOCancelamento() {
+        assertThat(intent("Vê pra mim, cancela o médico"))
+            .isInstanceOf(SpeechIntent.Cancel::class.java)
+    }
+
+    // --- "tenho algo" e as perguntas por substantivo também ancoram --------------------
+
+    @Test
+    fun tenhoAlgoMarcadoComODentistaAmanhaContinuaTarefa() {
+        // "tenho algo ... amanhã" no MEIO ("tenho algo marcado com o dentista amanhã") é uma
+        // afirmação sobre a tarefa, não uma pergunta: sem a âncora ela viraria Ask e a tarefa
+        // nunca nasceria.
+        assertThat(intent("tenho algo marcado com o dentista amanhã")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun tenhoAlgoPraFazerAmanhaContinuaTarefa() {
+        assertThat(intent("Tenho algo pra fazer amanhã")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun temAlgoAmanhaSemOOQueContinuaPergunta() {
+        // O que o "tem algo" acrescenta é a pergunta SEM o "o que": "tem algo amanhã?" continua
+        // sendo pergunta mesmo ancorado.
+        assertThat(intent("tem algo amanhã?")).isEqualTo(SpeechIntent.Ask(AskWhen.TOMORROW))
+    }
+
+    @Test
+    fun comprarQualTarefaEstaFaltandoContinuaTarefa() {
+        // "qual tarefa" no meio é o objeto da compra, não uma pergunta sobre a agenda.
+        assertThat(intent("Comprar qual tarefa está faltando")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun perguntarQualOCompromissoContinuaTarefa() {
+        assertThat(intent("Perguntar qual o compromisso de sexta")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun pedirPraElaMeFalaODiaContinuaTarefa() {
+        assertThat(intent("Pedir pra ela me fala o dia")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun quaisOsCompromissosAindaEhPergunta() {
+        // A forma que abre a fala continua pergunta — a âncora não pode matar o caso legítimo.
+        assertThat(intent("quais os compromissos de hoje?")).isEqualTo(SpeechIntent.Ask(AskWhen.TODAY))
+    }
 }

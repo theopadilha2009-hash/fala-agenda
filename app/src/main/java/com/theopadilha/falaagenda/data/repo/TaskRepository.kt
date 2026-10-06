@@ -6,6 +6,7 @@ import com.theopadilha.falaagenda.data.local.SeriesDao
 import com.theopadilha.falaagenda.data.local.SeriesEntity
 import com.theopadilha.falaagenda.data.local.toDomain
 import com.theopadilha.falaagenda.data.local.toEntity
+import com.theopadilha.falaagenda.domain.model.OccurrenceIds
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
@@ -134,7 +135,9 @@ class TaskRepository(
         )
         // A mesma conta que a tela usa para prometer (ver `AgendaFormat.promiseOfChoice`): a
         // primeira ocorrência de uma regra que repete nunca nasce num instante vencido — um
-        // alarme no passado dispara na hora.
+        // alarme no passado dispara na hora. Aqui a escolha é piso e a data vencida não chega a
+        // virar ocorrência; a edição e o "Desfazer" têm outro contrato e passam por
+        // `occurrencesForChoice`, que arquiva a data vencida em vez de descartá-la.
         val firstDate = DraftSchedule.firstOccurrence(
             rule = series.recurrence,
             chosenDate = series.startLocalDate,
@@ -143,8 +146,7 @@ class TaskRepository(
             now = now,
         ).date
         var occurrence = OccurrenceLifecycle.materialize(series, firstDate, now)
-        val scheduledAt = occurrence.scheduledAt
-        if (DraftSchedule.bornWithoutReminder(scheduledAt, series.recurrence, now)) {
+        if (DraftSchedule.bornWithoutReminder(occurrence.scheduledAt, series.recurrence, now)) {
             occurrence = occurrence.copy(
                 status = OccurrenceStatus.MISSED,
                 missedAt = now,
@@ -305,28 +307,21 @@ class TaskRepository(
         // (`seriesId:localDate`), e `materialize` nasce com `lastReminderAt` nulo. Zerado, o
         // cartão migrava para "Não consegui avisar" — o aplicativo assumindo uma falha que
         // foi dela, que foi avisada e não fez (ver `missedSections`).
-        val fresh = OccurrenceLifecycle.materialize(series, item.occurrence.localDate, now)
-            .copy(lastReminderAt = item.occurrence.lastReminderAt)
-        if (fresh.scheduledAt.isBefore(now) && !series.recurrence.isRecurring) {
-            occurrenceDao.applyBatch(
-                seriesDao = seriesDao,
-                upserts = listOf(
-                    fresh.copy(
-                        status = OccurrenceStatus.MISSED,
-                        missedAt = now,
-                        nextReminderAt = null,
-                    ).toEntity(),
-                ),
-                deletes = emptyList(),
-                series = series.toEntity(),
-                deleteSeriesRow = false,
-            )
-            return@withLock
-        }
-        val scheduled = scheduler.schedule(fresh, series, first = true)
+        //
+        // A decisão de qual ocorrência a data que volta grava é a mesma da edição
+        // (`occurrencesForChoice`), de propósito: as duas perguntam o que nasce de uma data
+        // escolhida. Desfazer o Excluir de uma tarefa que repete com a data de hoje já passada
+        // não pode rearmar o instante vencido — o `AlarmManager` dispara na hora; a ocorrência
+        // de hoje vira não realizada e a próxima da regra é que fica pendente.
+        val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
+        val choice = occurrencesForChoice(series, item.occurrence.localDate, item.occurrence, existing, now)
+        val scheduled = choice.armed?.let { scheduler.schedule(it, series, first = true) }
         occurrenceDao.applyBatch(
             seriesDao = seriesDao,
-            upserts = listOf(fresh.copy(inexactAlarm = scheduled.inexact).toEntity()),
+            upserts = listOfNotNull(
+                choice.expired?.toEntity(),
+                choice.armed?.copy(inexactAlarm = scheduled?.inexact ?: false)?.toEntity(),
+            ),
             deletes = emptyList(),
             series = series.toEntity(),
             deleteSeriesRow = false,
@@ -388,9 +383,8 @@ class TaskRepository(
             )
             return@withLock EditOutcome.SAVED
         }
-        val pending = occurrenceDao.forSeries(series.id)
-            .map { it.toDomain() }
-            .filter { it.status == OccurrenceStatus.PENDING }
+        val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
+        val pending = existing.filter { it.status == OccurrenceStatus.PENDING }
         pending.forEach { scheduler.cancel(it.id) }
         val updatedSeries = series.copy(
             title = title.trim(),
@@ -405,45 +399,28 @@ class TaskRepository(
             // materialização futura.
             skippedDates = OccurrenceLifecycle.unskipDate(series.skippedDates, date),
         )
-        // Mesma data é a MESMA linha (`seriesId:localDate`): a ocorrência editada substitui a
-        // antiga, e o aviso que já saiu não deixa de ter saído porque ela corrigiu o horário.
-        // Zerado, o cartão migrava para "Não consegui avisar" e dizia "O aviso não tocou."
-        // para quem foi avisada (ver `missedSections`). Data nova é id novo: aí não há aviso
-        // nenhum para herdar.
-        val refreshed = OccurrenceLifecycle.materialize(updatedSeries, date, now).let { nova ->
-            if (original.localDate == date) nova.copy(lastReminderAt = original.lastReminderAt) else nova
-        }
         val serieRow = updatedSeries.toEntity()
         val substituidas = pending.map { it.id }
-        // A escolha que já passou e não repete nasce sem alarme — o mesmo predicado da criação,
-        // compartilhado, para o anúncio da edição não discordar do que acabou de ser gravado.
-        if (DraftSchedule.bornWithoutReminder(refreshed.scheduledAt, updatedSeries.recurrence, now)) {
-            occurrenceDao.applyBatch(
-                seriesDao = seriesDao,
-                upserts = listOf(
-                    refreshed.copy(
-                        status = OccurrenceStatus.MISSED,
-                        missedAt = now,
-                        nextReminderAt = null,
-                    ).toEntity(),
-                ),
-                deletes = substituidas,
-                series = serieRow,
-                deleteSeriesRow = false,
-            )
-            return@withLock EditOutcome.SAVED
-        }
-        // EM ABERTO: editar uma tarefa que repete para um horário de hoje já passado arma o
-        // alarme no instante vencido, e o `AlarmManager` dispara na hora do mesmo jeito. O
-        // conserto aqui seria a mesma regra da criação — não armar instante que já passou —,
-        // mas nesta estrada ela exige decidir qual data a edição materializa, e o contrato da
-        // edição é honrar a data escolhida literalmente (ver `AgendaFormat.promiseOfChoice`).
-        // Isso é decisão de produto, não deste conserto: a criação não tem esse impasse porque
-        // lá a escolha é piso e quem decide é a regra.
-        val scheduled = scheduler.schedule(refreshed, updatedSeries, first = true)
+        // A edição honra a data que ela tocou, mas instante vencido nunca fica pendente com
+        // alarme — `occurrencesForChoice` arquiva a data vencida como não realizada e, na regra
+        // que repete, arma a próxima. Era aqui que editar "todo dia às 08:00" para as 18:00 de
+        // hoje, às 20:00, armava o alarme no passado e o `AlarmManager` disparava no ato da
+        // edição. A mesma peça do "Desfazer" do Excluir (`restore`), de propósito: as duas
+        // perguntam a mesma coisa.
+        val choice = occurrencesForChoice(
+            series = updatedSeries,
+            chosenDate = date,
+            previous = original,
+            existing = existing,
+            now = now,
+        )
+        val scheduled = choice.armed?.let { scheduler.schedule(it, updatedSeries, first = true) }
         occurrenceDao.applyBatch(
             seriesDao = seriesDao,
-            upserts = listOf(refreshed.copy(inexactAlarm = scheduled.inexact).toEntity()),
+            upserts = listOfNotNull(
+                choice.expired?.toEntity(),
+                choice.armed?.copy(inexactAlarm = scheduled?.inexact ?: false)?.toEntity(),
+            ),
             deletes = substituidas,
             series = serieRow,
             deleteSeriesRow = false,
@@ -637,6 +614,66 @@ class TaskRepository(
             }
     }
 
+    /**
+     * O que uma escrita manual grava para a data que a usuária escolheu: a ocorrência que fica
+     * pendente e recebe o alarme, e a que já venceu e fica arquivada como não realizada.
+     *
+     * Compartilhada de propósito entre a edição (`editOccurrence`) e o "Desfazer" do Excluir
+     * (`restore`), porque as duas perguntam a mesma coisa — qual ocorrência nasce da data
+     * escolhida. Cada uma tinha a sua cópia, e cada cópia perdia um ramo: a edição só cobria a
+     * regra que não repete e o desfazer rearmava a data literal mesmo vencida. Cópias da mesma
+     * decisão divergem; uma só não.
+     *
+     * Instante vencido nunca fica pendente com alarme: o `AlarmManager` dispara na hora para um
+     * instante no passado. A escolha que já passou vira não realizada, e a regra que repete
+     * segue na próxima data dela — é o que "todo dia às 18:00" significa. A que não repete não
+     * tem próxima: fica só com a não realizada, sem alarme nenhum.
+     */
+    private fun occurrencesForChoice(
+        series: TaskSeries,
+        chosenDate: java.time.LocalDate,
+        previous: TaskOccurrence?,
+        existing: List<TaskOccurrence>,
+        now: Instant,
+    ): ChoiceOccurrences {
+        // Mesma data é a MESMA linha (`seriesId:localDate`): o aviso que já saiu não deixa de
+        // ter saído porque ela corrigiu o horário. Data nova é id novo, e aí não há aviso para
+        // herdar (ver `missedSections`).
+        val inherited = previous?.takeIf { it.localDate == chosenDate }?.lastReminderAt
+        val chosen = OccurrenceLifecycle.materialize(series, chosenDate, now)
+            .copy(lastReminderAt = inherited)
+        if (!chosen.scheduledAt.isBefore(now)) {
+            return ChoiceOccurrences(armed = chosen, expired = null)
+        }
+        val expired = chosen.copy(
+            status = OccurrenceStatus.MISSED,
+            missedAt = now,
+            nextReminderAt = null,
+        )
+        if (!series.recurrence.isRecurring) return ChoiceOccurrences(armed = null, expired = expired)
+        // A próxima data sai da mesma peça da criação: a escolha é piso e a regra move. Um passo
+        // só da regra não bastaria — com a data escolhida já no passado ele também nasceria
+        // vencido e o alarme dispararia na hora de novo.
+        val nextDate = DraftSchedule.firstOccurrence(
+            rule = series.recurrence,
+            chosenDate = chosenDate,
+            chosenTime = series.localTime,
+            zoneId = series.zoneId,
+            now = now,
+        ).date
+        val nextId = OccurrenceIds.of(series.id, nextDate)
+        // Ocorrência já viva não é reaberta: concluída ou não realizada na próxima data fica
+        // como está, e só uma PENDING é que é rearmada — e aí com o progresso que ela já tinha
+        // (mesmo critério de `advance`, que passa a existente para `materialize`).
+        val nextExisting = existing.firstOrNull { it.id == nextId }
+        val armed = when {
+            nextExisting == null -> OccurrenceLifecycle.materialize(series, nextDate, now)
+            nextExisting.status != OccurrenceStatus.PENDING -> null
+            else -> OccurrenceLifecycle.materialize(series, nextDate, now, existing = nextExisting)
+        }
+        return ChoiceOccurrences(armed = armed, expired = expired)
+    }
+
     private suspend fun applyLifecycle(series: TaskSeries, now: Instant) {
         // O "hoje" aqui é o mesmo que parte as seções da agenda (`clock.today()`): com dois
         // fusos em jogo a tela listava em "Hoje" uma ocorrência que o ciclo de vida já tinha
@@ -725,6 +762,17 @@ data class SaveResult(
 data class SchedulerOutcome(
     val inexact: Boolean,
     val scheduled: Boolean,
+)
+
+/**
+ * O que uma escolha de data vira numa escrita manual — ver `TaskRepository.occurrencesForChoice`.
+ * [armed] é a ocorrência que recebe o alarme (nula quando não há nenhuma pendente a armar: a
+ * escolha vencida que não repete, ou uma próxima que já existe e não está pendente). [expired] é
+ * a escolha que venceu, arquivada como não realizada, e só existe nesse caso.
+ */
+data class ChoiceOccurrences(
+    val armed: TaskOccurrence?,
+    val expired: TaskOccurrence?,
 )
 
 /**

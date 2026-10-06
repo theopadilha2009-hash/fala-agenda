@@ -179,6 +179,102 @@ class TaskRepositoryTest {
         assertThat(row.nextReminderAtEpochMs).isNull()
     }
 
+    /**
+     * Editar uma tarefa que repete para um horário de hoje já passado não pode armar o alarme
+     * no instante vencido: o `AlarmManager` dispara na hora, e o celular apitava no ato da
+     * edição. São 20:00, ela corrige o remédio "todo dia às 08:00" para as 18:00 de hoje — a
+     * ocorrência de hoje vence, e quem fica armado é a de amanhã às 18:00.
+     */
+    @Test
+    fun editarRecorrenteParaHojeJaPassadoArmaAProximaENaoHoje() {
+        runBlocking {
+            val noite = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 20, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaNoite = TaskRepository(seriesDao, occDao, noite, sched)
+            val series = serieDe("s-remedio", "Remédio").copy(
+                startLocalDate = LocalDate.of(2026, 8, 20),
+                localTime = LocalTime.of(8, 0),
+            )
+            seriesDao.upsert(series.toEntity())
+            val deHoje = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(
+                ocorrenciaDe(
+                    series.id,
+                    LocalDate.of(2026, 8, 20),
+                    LocalTime.of(8, 0),
+                    OccurrenceStatus.PENDING,
+                ).toEntity(),
+            )
+
+            repoDaNoite.editOccurrence(
+                deHoje,
+                "Remédio",
+                LocalDate.of(2026, 8, 20),
+                LocalTime.of(18, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            // Hoje venceu: nasce como não realizada, sem alarme nenhum.
+            val vencida = occDao.get(deHoje)!!.toDomain()
+            assertThat(vencida.status).isEqualTo(OccurrenceStatus.MISSED)
+            assertThat(vencida.nextReminderAt).isNull()
+            assertThat(sched.scheduled).doesNotContain(deHoje)
+            // A próxima (amanhã às 18:00) é quem fica armada — é o que "todo dia às 18:00" quer dizer.
+            val amanha = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21))
+            val proxima = occDao.get(amanha)!!.toDomain()
+            assertThat(proxima.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(proxima.scheduledAt)
+                .isEqualTo(LocalDate.of(2026, 8, 21).atTime(18, 0).atZone(zone).toInstant())
+            assertThat(sched.scheduled).contains(amanha)
+        }
+    }
+
+    /**
+     * O mesmo buraco no "Desfazer" do Excluir: desfazer a exclusão de uma tarefa que repete
+     * com a data de hoje já passada rearmava o instante vencido e o alarme tocava na hora.
+     * A ocorrência de hoje volta como não realizada e a próxima é que fica armada.
+     */
+    @Test
+    fun desfazerExclusaoRecorrenteDeHojeJaPassadoArmaAProximaENaoHoje() {
+        runBlocking {
+            val noite = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 20, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaNoite = TaskRepository(seriesDao, occDao, noite, sched)
+            val series = serieDe("s-remedio", "Remédio").copy(
+                startLocalDate = LocalDate.of(2026, 8, 20),
+                localTime = LocalTime.of(8, 0),
+            )
+            seriesDao.upsert(series.toEntity())
+            val deHoje = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            val ocorrencia = ocorrenciaDe(
+                series.id,
+                LocalDate.of(2026, 8, 20),
+                LocalTime.of(8, 0),
+                OccurrenceStatus.PENDING,
+            )
+            occDao.upsert(ocorrencia.toEntity())
+            repoDaNoite.deleteOccurrence(deHoje)
+
+            repoDaNoite.restore(AgendaItem(ocorrencia, series))
+
+            val vencida = occDao.get(deHoje)!!.toDomain()
+            assertThat(vencida.status).isEqualTo(OccurrenceStatus.MISSED)
+            assertThat(vencida.nextReminderAt).isNull()
+            assertThat(sched.scheduled).doesNotContain(deHoje)
+            val amanha = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21))
+            assertThat(occDao.get(amanha)!!.toDomain().status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(sched.scheduled).contains(amanha)
+        }
+    }
+
     @Test
     fun deleteCancelaAlarme() = runBlocking {
         val saved = repo.saveDraft(completeDraft("Consulta", LocalDate.of(2026, 8, 22), LocalTime.of(10, 0)))

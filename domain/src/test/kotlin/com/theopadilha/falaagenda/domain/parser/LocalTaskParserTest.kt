@@ -1950,4 +1950,235 @@ class LocalTaskParserTest {
         assertThat(parser.parse("daqui a dois dias pagar conta às 10h").localDate)
             .isEqualTo(LocalDate.of(2026, 8, 22))
     }
+
+    // ---- A1: data numérica sem ano que já passou não rola para o ano seguinte calada ----
+
+    @Test
+    fun dataNumericaSemAnoJaPassadaNaoRolaOAnoSeguinteEmSilencio() {
+        // Hoje é quinta, 20/08/2026. O 05/08 deste ano era cinco dias atrás; o parser rolava para
+        // 2027-08-05 com ambiguous=false e a caixa rápida confirmava quase um ano à frente calada.
+        val reuniao = parser.parse("reunião 05/08 às 10h")
+        assertThat(reuniao.localDate).isEqualTo(LocalDate.of(2027, 8, 5))
+        assertThat(reuniao.ambiguous).isTrue()
+        assertThat(reuniao.notes.joinToString()).contains("já passou")
+        assertThat(reuniao.canQuickConfirm(clock.instant(), zone)).isFalse()
+
+        val consulta = parser.parse("consulta 12/08 às 10h")
+        assertThat(consulta.localDate).isEqualTo(LocalDate.of(2027, 8, 12))
+        assertThat(consulta.ambiguous).isTrue()
+    }
+
+    @Test
+    fun dataNumericaSemAnoAindaFuturaContinuaCertaESemAmbiguidade() {
+        // O contraste que não pode regredir: o Natal deste ano ainda não chegou.
+        val natal = parser.parse("prova 25/12 às 09:30")
+        assertThat(natal.localDate).isEqualTo(LocalDate.of(2026, 12, 25))
+        assertThat(natal.ambiguous).isFalse()
+
+        val futuro = parser.parse("médico 22/08 às 10h")
+        assertThat(futuro.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+        assertThat(futuro.ambiguous).isFalse()
+    }
+
+    // ---- A2: data que não existe é recusada, nunca clampada para o último dia do mês ----
+
+    @Test
+    fun dataImpossivelNaoViraOUltimoDiaDoMes() {
+        // O `clampToValidDate` devolvia 28/02 para 31/02 em silêncio, com a caixa rápida confirmando.
+        listOf("31/02", "30/02", "31/04", "31/06").forEach { raw ->
+            val draft = parser.parse("reunião $raw às 10h")
+            assertThat(draft.localDate).isNull()
+            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.missingFields).contains(MissingDraftField.DATE)
+            assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+        }
+    }
+
+    @Test
+    fun vinteENoveDeFevereiroValeNoBissextoENaoVira28() {
+        // Data válida em ano bissexto: não pode ser rejeitada.
+        val bissexto = parser.parse("consulta 29/02/2028 às 10h")
+        assertThat(bissexto.localDate).isEqualTo(LocalDate.of(2028, 2, 29))
+        assertThat(bissexto.ambiguous).isFalse()
+
+        // Sem ano, o próximo 29 de fevereiro de verdade é o de 2028 — e o rascunho fica ambíguo,
+        // porque o ano é palpite.
+        val semAno = parser.parse("consulta 29/02 às 10h")
+        assertThat(semAno.localDate).isEqualTo(LocalDate.of(2028, 2, 29))
+        assertThat(semAno.ambiguous).isTrue()
+
+        // Em ano não bissexto, 29/02 não é 28/02: a data não existe e o app recusa.
+        val naoBissexto = parser.parse("consulta 29/02/2027 às 10h")
+        assertThat(naoBissexto.localDate).isNull()
+        assertThat(naoBissexto.ambiguous).isTrue()
+
+        // Com o ano dito, a data impossível também é recusa — o caminho que clampava calado.
+        val comAno = parser.parse("reunião 31/02/2027 às 10h")
+        assertThat(comAno.localDate).isNull()
+        assertThat(comAno.ambiguous).isTrue()
+    }
+
+    @Test
+    fun dataPorExtensoImpossivelTambemERecusada() {
+        val impossivel = parser.parse("reunião 31 de fevereiro às 10h")
+        assertThat(impossivel.localDate).isNull()
+        assertThat(impossivel.ambiguous).isTrue()
+
+        // O 29 de fevereiro por extenso, sem ano, rola para o próximo bissexto em vez de virar 28.
+        val bissexto = parser.parse("reunião 29 de fevereiro às 10h")
+        assertThat(bissexto.localDate).isEqualTo(LocalDate.of(2028, 2, 29))
+    }
+
+    // ---- A3: a refeição é o núcleo da tarefa, não um filler ----
+
+    @Test
+    fun refeicaoEhONucleoDoTituloNaoUmFiller() {
+        // Hoje é quinta, 20/08/2026, 15:00 — o relógio do achado.
+        val tarde = LocalDateTime.of(2026, 8, 20, 15, 0)
+        val p = parserEm(tarde)
+
+        val domingo = p.parse("almoço de domingo às 12h")
+        assertThat(domingo.title).isEqualTo("Almoço")
+        assertThat(domingo.missingFields).doesNotContain(MissingDraftField.TITLE)
+        assertThat(domingo.canQuickConfirm(tarde.atZone(zone).toInstant(), zone)).isTrue()
+
+        val invertido = p.parse("almoço às 12h de domingo")
+        assertThat(invertido.title).isEqualTo("Almoço")
+        assertThat(invertido.missingFields).doesNotContain(MissingDraftField.TITLE)
+
+        val comMeninas = p.parse("almoço com as meninas sábado às 12h")
+        assertThat(comMeninas.title).isEqualTo("Almoço com meninas")
+
+        val naCasaDaFilha = p.parse("almoço na casa da filha domingo às 12h")
+        assertThat(naCasaDaFilha.title).isEqualTo("Almoço casa filha")
+    }
+
+    @Test
+    fun refeicaoComoDataDoAlmocoContinuaSemInventarHora() {
+        // O "depois do almoço" continua sendo período vago: não virou título nem hora.
+        val draft = parser.parse("sexta-feira depois do almoço")
+        assertThat(draft.localDate!!.dayOfWeek).isEqualTo(DayOfWeek.FRIDAY)
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.ambiguous).isTrue()
+    }
+
+    // ---- A4: "dia N de <mês>" não deixa o "dia" no título ----
+
+    @Test
+    fun naoRegrideNasFrasesMedidasDoAchado() {
+        // As frases que o lote de datas numéricas poderia quebrar de tabela.
+        val oitoDaNoite = parser.parse("tomar remédio às 8 da noite")
+        assertThat(oitoDaNoite.localTime).isEqualTo(LocalTime.of(20, 0))
+
+        val amanhaDeManha = parser.parse("tomar remédio amanhã de manhã")
+        assertThat(amanhaDeManha.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(amanhaDeManha.localTime).isNull()
+        assertThat(amanhaDeManha.ambiguous).isTrue()
+
+        val deDuasEmDuas = parser.parse("remédio de duas em duas horas")
+        assertThat(deDuasEmDuas.localTime).isNull()
+        assertThat(deDuasEmDuas.ambiguous).isTrue()
+        assertThat(deDuasEmDuas.title).isEqualTo("Remédio")
+    }
+
+    @Test
+    fun diaNumeroDeMesNaoDeixaODiaNoTitulo() {
+        val missa = parser.parse("dia 15 de novembro missa às 10h")
+        assertThat(missa.localDate).isEqualTo(LocalDate.of(2026, 11, 15))
+        assertThat(missa.localTime).isEqualTo(LocalTime.of(10, 0))
+        assertThat(missa.title).isEqualTo("Missa")
+
+        val desfile = parser.parse("dia 7 de setembro desfile")
+        assertThat(desfile.localDate).isEqualTo(LocalDate.of(2026, 9, 7))
+        assertThat(desfile.title).isEqualTo("Desfile")
+
+        val comNo = parser.parse("no dia 15 de novembro missa às 10h")
+        assertThat(comNo.localDate).isEqualTo(LocalDate.of(2026, 11, 15))
+        assertThat(comNo.title).isEqualTo("Missa")
+    }
+
+    /**
+     * A outra metade do A4: o "dia"/"no dia" antes do dia **por extenso**. Só o caminho de dígito
+     * tinha teste, então tirar o `(?:no\s+)?dia\s+` do `extensoPalavra` deixava a suíte verde
+     * enquanto "no dia quinze de novembro missa" voltava a virar "Dia missa".
+     */
+    @Test
+    fun diaPorExtensoComOPrefixoNaoDeixaODiaNoTitulo() {
+        val comNo = parser.parse("no dia quinze de novembro missa às 10h")
+        assertThat(comNo.localDate).isEqualTo(LocalDate.of(2026, 11, 15))
+        assertThat(comNo.localTime).isEqualTo(LocalTime.of(10, 0))
+        assertThat(comNo.title).isEqualTo("Missa")
+
+        val semNo = parser.parse("dia quinze de novembro missa às 10h")
+        assertThat(semNo.localDate).isEqualTo(LocalDate.of(2026, 11, 15))
+        assertThat(semNo.title).isEqualTo("Missa")
+    }
+
+    // ---- F1: o dia do mês avulso ("no dia 31") também recusa a data que não existe ----
+
+    @Test
+    fun diaDoMesAvulsoQueNaoExisteERecusado() {
+        // Hoje é 10/02/2026. O caminho do dia avulso não passa pelo `resolveDate` e continuava
+        // clampando: "no dia 31" virava 28/02 com `ambiguous = false` e a caixa rápida confirmava.
+        val fevereiro = parserEm(LocalDateTime.of(2026, 2, 10, 15, 0))
+        val agora = LocalDateTime.of(2026, 2, 10, 15, 0).atZone(zone).toInstant()
+        listOf(
+            "consulta no dia 31 às 10h",
+            "consulta dia 31 às 10h",
+            "consulta no dia 30 às 10h",
+        ).forEach { frase ->
+            val draft = fevereiro.parse(frase)
+            assertThat(draft.localDate).isNull()
+            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.missingFields).contains(MissingDraftField.DATE)
+            assertThat(draft.canQuickConfirm(agora, zone)).isFalse()
+        }
+
+        // O dia que existe no mês continua resolvido e sem ambiguidade.
+        val valido = fevereiro.parse("consulta no dia 25 às 10h")
+        assertThat(valido.localDate).isEqualTo(LocalDate.of(2026, 2, 25))
+        assertThat(valido.ambiguous).isFalse()
+
+        // O 29 em fevereiro de um ano comum não existe — e não pode virar 28/02 nem estourar.
+        val vinteENove = fevereiro.parse("consulta no dia 29 às 10h")
+        assertThat(vinteENove.localDate).isNull()
+        assertThat(vinteENove.ambiguous).isTrue()
+
+        // E o dia 31 de um mês que tem 31 continua valendo.
+        val trintaEUm = fevereiro.parse("consulta no dia 31 de março às 10h")
+        assertThat(trintaEUm.localDate).isEqualTo(LocalDate.of(2026, 3, 31))
+        assertThat(trintaEUm.ambiguous).isFalse()
+    }
+
+    // ---- F2: a série anual com dia impossível no mês dito também é recusa ----
+
+    @Test
+    fun serieComDiaImpossivelNoMesFicaAmbigua() {
+        // O ramo `yearlyExtenso` ("todo dia N de <mês>", a forma como ela fala) devolvia
+        // `ambiguous = false` literal, sem o guard que os outros ramos do mesmo `extractRecurrence`
+        // têm: a caixa rápida confirmava calada uma série cujo dia não existe.
+        val fevereiro = parserEm(LocalDateTime.of(2026, 2, 10, 15, 0))
+        val agora = LocalDateTime.of(2026, 2, 10, 15, 0).atZone(zone).toInstant()
+        listOf(
+            "todo dia 32 de fevereiro remédio às 10h",
+            "todo dia 99 de fevereiro remédio às 10h",
+            "todo dia 31 de abril remédio às 10h",
+        ).forEach { frase ->
+            val draft = fevereiro.parse(frase)
+            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.canQuickConfirm(agora, zone)).isFalse()
+        }
+
+        // A mesma data dita com "todo ano" já era recusada por aquele ramo — o guard que faltava
+        // aqui era o do `yearlyExtenso`, que é a forma como ela fala ("todo dia N de <mês>").
+        assertThat(fevereiro.parse("todo ano dia 32 de fevereiro remédio às 10h").ambiguous).isTrue()
+        assertThat(fevereiro.parse("todo ano dia 31 de abril remédio às 10h").ambiguous).isTrue()
+
+        // O dia 31 existe em meses de 31 dias: a série anual continua certa e sem ambiguidade.
+        assertThat(fevereiro.parse("todo dia 31 de maio remédio às 10h").ambiguous).isFalse()
+
+        // A série possível continua certa, inclusive o 29 de fevereiro (a série cai no bissexto).
+        assertThat(fevereiro.parse("todo dia 15 de maio remédio às 10h").ambiguous).isFalse()
+        assertThat(fevereiro.parse("todo dia 29 de fevereiro remédio às 10h").ambiguous).isFalse()
+    }
 }

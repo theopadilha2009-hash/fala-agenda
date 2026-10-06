@@ -878,3 +878,94 @@ Cada edição de uma série duplicada espalha doses deslocadas, e as duas série
 
 ---
 
+## Caça de valores, durações e faixas (06/10, medida contra o `main` `9e34aae`)
+
+Varredura read-only em cópia (`/tmp/caca-valores`), relógio congelado **2026-08-20 10:00** America/Sao_Paulo. `qc` = `canQuickConfirm` do próprio modelo.
+
+### PERIGOSO — confirma em silêncio, agenda errado
+
+| # | frase real | o que o app faz | causa | dano |
+|---|---|---|---|---|
+| **V1** | `fisioterapia das 14 às 16h amanhã` | **16:00**, `amb=false`, `qc=true` | `CLOCK_NUMERIC` (`:770-772`) exige `:` ou `h` depois do número, então o "14" **nem é visto como hora**; só o "16h" casa e não há ambiguidade | o alarme toca **2h depois** do que ela disse. `trabalho das 8 às 17`→17:00, `médico das 9 às 10 da manhã`→10:00, `das duas às quatro da tarde`→16:00 (e título `Duas`) |
+| **V2** | `pagar a conta de luz de 120 reais amanhã às 10h` | `amountCents=null`, `qc=true`, título `Pagar conta luz reais` | **nenhum** caminho preenche `amountCents` (grep por `reais\|centavos\|R\$` em `domain/src/main` = 0). O campo existe na tela (`QuickConfirmDialog.kt:96`) e alimenta o resumo do mês (`MonthInsights.kt:81`). E não há segunda chance: `deveEscalar` só escala por falta de data/hora — e aqui vieram as duas. O schema da IA (`openai.ts` `PARSED_TASK_SCHEMA`) nem tem o campo | o valor falado some da tela e do resumo do mês; `pagar R$ 30`→título `Pagar R$`, `anota 45 reais`→título `Reais` |
+
+Contraste que localiza o V1: `reunião das 14h às 16h` (as duas com "h") → `time=null, amb=true`, **correto** — o `found.size > 1` funciona; o furo é a hora sem sufixo não entrar em `found`.
+
+### PERDA — dado falado se perde
+
+| # | frase real | resultado | causa |
+|---|---|---|---|
+| **V3** | `comprar 2 caixas de leite` | título `Comprar caixas leite` | `extractTitle` (`:715`) filtra `!\it.matches(Regex("\\d+h?"))` — limpa hora, mas come **qualquer** número solto. Por extenso sobrevive (`duas caixas` fica) |
+| **V4** | `comprar meia dúzia de ovos` | título `Comprar dúzia ovos` | `meia` está em `FILLERS` (`:1014`); meia dúzia = 6, dúzia = 12 — o título diz o dobro |
+| **V5** | `tomar remédio a cada 12 horas começando amanhã às 8h` | `time=null`, `amb=true`, nota "Diga o horário da primeira dose" | `extractTime` retorna no `INTERVAL` (`:288-297`) com `time=null` **antes** de ler o relógio — o "8h" que ela disse é jogado fora e o app pede o que ela acabou de falar. Título fica com "começando" pendurado |
+| **V6** | `tomar remédio três vezes por dia` | `rec=NONE`, título `Tomar remédio três vezes dia` | a frequência não vira recorrência nem nota; com dígito o número some pelo filtro do V3 |
+
+### MEDIDO E OK — não mexer
+
+Duração relativa: `ligar em dez minutos`→10:10, `em uma hora`→11:00, `daqui a duas horas`→12:00, `daqui a duas horas e meia`→12:30, `daqui a meia hora`/`em meia hora`→10:30 — todas com título limpo. Intervalo de dose: `a cada duas horas`, `de 6 em 6 horas`, `de 8 em 8 horas`, `de 12 em 12 horas` → `amb=true`, título `Tomar remédio`, nota correta. Quantidade por extenso sobrevive no título. Data/hora junto de valor ou quantidade não quebram.
+
+## Caça à jornada de correção (06/10, medida contra o `main` `9e34aae`)
+
+Seis classes Robolectric em cópia (`/tmp/caca-conversa`), relógio fixo, lendo os `ScheduledAlarm` reais.
+
+### [1] P0 — a rotina cadastrada depois da hora toca o aviso no ato e persegue o dia inteiro
+
+Às 10:00 ela fala "tomar remédio às 8 da manhã, todo dia". O salvamento grava a 1ª ocorrência **amanhã** (correto); na abertura seguinte, o `rescheduleAll` materializa a ocorrência de **hoje** e arma um alarme para **2026-08-20T08:00** — instante passado, que o `AlarmManager` entrega no ato. A escada de repetições continua a partir daí: 10:15, 10:45, 11:45, ... até o fim do dia, e a dose fica pendente em "Hoje · 08:00".
+
+Dois caminhos que se completam:
+- `advance` (`OccurrenceLifecycle.kt:154-156`) materializa a ocorrência de hoje e `applyLifecycle` a grava **direto no DAO** (`TaskRepository.kt:737`), sem passar por `storeAndArm` (`:774-781`) — o guard que recusa materializar ocorrência nova já vencida.
+- O laço do `rescheduleAll` (`:628-642`) lê a linha PENDING e a entrega ao `AlarmManager`, porque `valeRearmar` (`OccurrenceLifecycle.kt:215-222`) devolve `true` para instante vencido com `lastReminderAt` nulo dentro da janela de 6h (`entregaPendente`, `:236-246`). O `storeAndArm` não é chamado porque `spawnUpcomingPreview` pula a data que já existe (`:800`).
+- O comentário de `:750-773` afirma que o invariante está fechado; a varredura o fura. **Tarefa única no mesmo cenário não tem o fantasma** (`status=MISSED`, nenhum alarme) — o defeito é exclusivo do caminho recorrente.
+
+Com a **notificação bloqueada**, o degrau nunca é gasto (`lastReminderAt` fica nulo), então `entregaPendente` continua verdadeiro e **cada abertura do app rearma o disparo** — 5 aberturas entre 10:00 e 14:00 = 5 disparos.
+
+### [2] P1 — "apaga o remédio e cria o de pressão" vira a tarefa "Apaga remédio cria pressão"
+
+O "e" é absorvido no alvo (`SpeechIntent.targetAfter`, `:282-287`): o alvo vira `remedio e cria o de pressao` e o matcher não acha nada — o app diz "Não achei" e **nenhum dos dois comandos acontece**. No caso do "apaga" é pior: o verbo não é reconhecido (`apagaIsso` exige `isso|isto|essa|esse`, `:242-244`), cai em `Capture` e o app **cria a tarefa com o texto da ordem**, `conf=0.55`, sem data e sem hora. Ela acha que apagou e criou; a agenda ganha rascunho-lixo e o remédio continua lá.
+
+### [3] P1 — corrigir o horário de hoje numa série nunca cria a ocorrência de hoje
+
+Ela corrige para "hoje 8h" e o app responde "Vai avisar amanhã às 08:00": a data de hoje é arquivada como MISSED e não é recriada pendente (`occurrencesForChoice` `:660-718` devolve `armed = null` no ramo não-recorrente; o `spawnUpcomingPreview` seguinte não re-materializa porque a linha já existe). O botão "Fazer hoje" só aparece quando `!isRecurring` (`ConfirmDraftScreen.kt:412`). Atrito ligado: escolhendo hoje 18:00 o recado é "Vai avisar **amanhã** às 18:00" — `announceOfEdit` (`HomeViewModel.kt:592-608`) cita `plan.date`, não a data tocada, enquanto a agenda mostra a linha de hoje com alarme às 18:00.
+
+### [4] P2 — "Adiar" some depois que o horário passa
+
+`snooze` devolve `ActionOutcome.GONE` para qualquer ocorrência que não esteja PENDING (`TaskRepository.kt:473`), e a virada do dia já a marcou MISSED. Ela toca no aviso das 8h às 10h, quer "Adiar 30 min" e ouve "Não deu para adiar esta tarefa", sem alternativa na tela. Mesma parede no "Desfazer o Concluir" de ocorrência vencida e no adiamento que atravessa a meia-noite.
+
+### [5] P2 — o "Adiar" da tela usa o relógio real
+
+`HomeViewModel.snooze` anuncia com `ZonedDateTime.now()` (`:660`), enquanto o resto do app lê `container.clock` — o padrão de "duas contas para a mesma coisa" já catalogado.
+
+### MEDIDO E OK — não mexer
+
+Corrigir o horário troca o alarme e cancela o velho (sem sobra); numa série os três alarmes passam juntos e o número de linhas continua 3. Desfazer o Excluir devolve a data certa e rearma os três (o item viaja no recado, então o "Desfazer" do primeiro não desfaz o segundo). Desfazer o Concluir restaura a linha sem duplicar série. Sair sem decidir não grava nada. O widget não tem caminho de edição divergente. Recado de comando = 4 s, de desfazer = 10 s.
+
+## Caça à notificação e ao widget (06/10, medida contra o `main` `9e34aae`)
+
+Quatro rodadas, 25 testes em cópia (`/tmp/caca-notif`), lendo o `RemoteViews` real de `views()`.
+
+### [1] P1 — o widget esconde a tarefa atrasada de hoje
+
+Às 15h, com o remédio das 08:00 ainda pendente **e** uma consulta amanhã às 09:00, o widget mostra `Próxima · Consulta médica · Amanhã · 09:00` — a dose de hoje **não aparece em lugar nenhum**, e a home, no mesmo estado, põe justamente ela em primeiro lugar ("Boa tarde. Próximo: Tomar remédio, hoje às 08:00.").
+
+`snapshotOf` (`AgendaWidgetProvider.kt:101-104`) filtra `!scheduledAt.isBefore(now)` e só cai no fallback (o que já passou) quando **não existe nada à frente**. Como o app sempre materializa um preview de até 3 próximas ocorrências (`spawnUpcomingPreview`, `TaskRepository.kt:792-804`), numa série recorrente **sempre há algo à frente** — o rótulo "Atrasada" praticamente nunca aparece. Com dose atrasada e **nada** à frente o widget acerta (`Atrasada · Tomar remédio · Hoje · 08:00`); com dose de ontem + algo hoje mostra a de hoje (correto por decisão). O item do catálogo anterior (`:631-639`) fechava isso como "recorte diferente" citando só o caso "nada à frente" — o caso **com** algo à frente não estava coberto e é o que acontece todo dia numa série.
+
+### [2] P2 — "Atrasada" é o vocabulário que a home abandonou
+
+O kicker do widget diz `Atrasada`/`Próxima`/`Agenda`; a home chama a seção de "Não realizadas" (`strings.xml:6`), e há PR dedicado a tirar a culpa dos textos. O widget é a superfície que fica na tela inicial.
+
+### [3] P2 — a notificação não diz a hora nem o dia
+
+Título = só o título da tarefa; texto fixo `"Está na hora. Pode concluir ou adiar daqui, sem abrir o aplicativo."` — o **mesmo** para a dose de hoje às 08:00 e para a dose de ontem que tocou atrasada. Se a tarefa se chama "Remédio", ela não sabe qual dose é.
+
+### [4] P2 — o aviso de ação não aplicada leva a uma tela que fala de outra coisa
+
+O aviso ("Não deu para adiar" / "Nada foi adiado e não vai tocar outro aviso.") tem `setAutoCancel(true)` e `contentIntent` para `MainActivity` com o id de uma ocorrência que **acabou de sair da agenda**: ao tocar, ele some e a tela responde "Esta tarefa não está mais na agenda." O aviso é a única coisa que diz que o adiamento dela não pegou.
+
+### MEDIDO E OK — não mexer
+
+Concluir pela notificação funciona: muda para COMPLETED, **remove a notificação da barra**, a ocorrência de amanhã segue PENDING com `nextReminderAtEpochMs` novo, e o alarme de hoje é cancelado. Adiar funciona e é ilimitado dentro do dia (30 seguidos mantêm PENDING); atravessa a meia-noite (23:50 → 00:20). Ignorar o alarme **substitui** a notificação (mesmo id), não empilha, e o degrau seguinte (+60 min) fica armado. A virada do dia limpa a barra e marca MISSED. Reboot re-arma o alarme e a varredura. Tocar no corpo abre a tarefa. Ação desconhecida não derruba o lembrete. Rótulos de data do widget corretos depois do meio-dia e na virada.
+
+**Não medido:** widget inflado de verdade (`ShadowAppWidgetManager.createWidget` estoura `Resources$NotFoundException` no Robolectric — mediu-se o `RemoteViews` que o launcher aplica); o receiver em processo morto; o Android real limpando a barra no reboot.
+
+---
+

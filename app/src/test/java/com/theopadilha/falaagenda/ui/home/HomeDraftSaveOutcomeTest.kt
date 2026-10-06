@@ -158,6 +158,38 @@ class HomeDraftSaveOutcomeTest {
         assertThat(saved.message).contains("Vai avisar")
     }
 
+    /**
+     * O gêmeo do teste acima no caminho da edição que repete: corrigir o remédio "todo dia" para
+     * um horário de hoje já passado arquiva a ocorrência de hoje e arma a próxima data da regra
+     * (`TaskRepository.occurrencesForChoice`). O anúncio dizia "Vai avisar hoje às 08:00" — um
+     * aviso que não existe, porque nenhum alarme toca hoje.
+     */
+    @Test
+    fun aEdicaoRecorrenteParaHorarioDeHojeJaPassadoAnunciaAProximaData() {
+        val hoje = LocalDate.now()
+        val salvo = runBlocking {
+            container.tasks.saveDraft(
+                recado(data = hoje.plusDays(1), regra = RecurrenceRule(RecurrenceKind.DAILY)),
+            )
+        }
+
+        // Uma data de ontem com a regra que repete: a escolha vence em qualquer hora do dia, e a
+        // próxima data da regra é que fica armada. Ontem (e não "hoje às 00:01") para o cenário
+        // não depender da hora em que a suíte roda.
+        viewModel.edit(
+            id = salvo.occurrence.id,
+            title = "tomar remédio",
+            date = hoje.minusDays(1),
+            time = LocalTime.of(8, 30),
+            recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+        )
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        val amanha = hoje.plusDays(1)
+        assertThat(saved.message).contains(AgendaFormat.dateLabel(amanha, hoje).lowercase())
+        assertThat(saved.message).doesNotContain("Vai avisar hoje")
+    }
+
     /** Desfecho consumido não volta a aparecer numa recomposição qualquer. */
     @Test
     fun oDesfechoConsumidoNaoVolta() {

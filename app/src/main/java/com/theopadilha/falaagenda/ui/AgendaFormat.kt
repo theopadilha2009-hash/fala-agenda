@@ -1,5 +1,6 @@
 package com.theopadilha.falaagenda.ui
 
+import com.theopadilha.falaagenda.data.repo.ChoiceSchedule
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import java.time.Duration
@@ -58,8 +59,9 @@ object AgendaFormat {
     /**
      * [editing] diz qual contrato vale, porque são dois: criar uma série ancora a primeira
      * ocorrência na regra — a data escolhida é só piso, ver [DraftSchedule.firstOccurrence] —,
-     * enquanto editar materializa a data escolhida literalmente. A tela descreve o contrato
-     * que vai valer, e não o que ela tocou.
+     * enquanto editar decide por [ChoiceSchedule]: a data escolhida vale, mas se ela já venceu a
+     * ocorrência é arquivada e, na regra que repete, quem é armada é a próxima data da regra. A
+     * tela descreve o contrato que vai valer, e não o que ela tocou.
      */
     fun promiseOfChoice(
         chosenDate: LocalDate,
@@ -70,15 +72,29 @@ object AgendaFormat {
         zone: ZoneId,
         editing: Boolean = false,
     ): DraftPromise {
-        // A data e o motivo saem da peça compartilhada — a mesma conta com que o repositório
-        // grava a primeira ocorrência —, para a tela não recalcular nem inventar explicação.
+        // A data e o motivo saem das peças compartilhadas — as mesmas contas com que o
+        // repositório grava —, para a tela não recalcular nem inventar explicação.
         val first = DraftSchedule.firstOccurrence(recurrence, chosenDate, chosenTime, zone, now)
-        val promisedDate = if (editing) chosenDate else first.date
+        val promisedDate: LocalDate
+        val movedBecause: DraftSchedule.FirstOccurrence.Reason?
+        if (editing) {
+            val plan = ChoiceSchedule.plan(recurrence, chosenDate, chosenTime, zone, now)
+            promisedDate = plan.date
+            // Vencida: o motivo é o horário que passou, e a escolha continua valendo — só não
+            // hoje. É a mesma frase que a criação usa, para a data descartada não sumir em
+            // silêncio: sem ela a tela prometia a data tocada e o alarme tocava em outra.
+            movedBecause = if (plan.expired) DraftSchedule.FirstOccurrence.Reason.TIME_PASSED else null
+        } else {
+            promisedDate = first.date
+            movedBecause = first.movedBecause
+        }
         val promisedAt = promisedDate.atTime(chosenTime).atZone(zone).toInstant()
         // A escolha que já passou e não repete: o salvar arquiva a ocorrência como não
-        // realizada e não cria alarme nenhum (ver `TaskRepository.saveDraft`). Prometer "Vai
-        // avisar" aqui era o aplicativo anunciar um aviso que ele mesmo não arma — e a home,
-        // no toque seguinte, mostrar "Não consegui avisar" sobre a mesma tarefa.
+        // realizada e não cria alarme nenhum (ver `TaskRepository.occurrencesForChoice`).
+        // Prometer "Vai avisar" aqui era o aplicativo anunciar um aviso que ele mesmo não arma —
+        // e a home, no toque seguinte, mostrar "Não consegui avisar" sobre a mesma tarefa. O
+        // predicado só morde quando a regra não repete: na que repete, a data prometida já é a
+        // próxima da regra, futura, e não há nada a desmentir.
         if (DraftSchedule.bornWithoutReminder(promisedAt, recurrence, now)) {
             return DraftPromise(
                 recap = "Este horário já passou e a tarefa não repete: não vou avisar.",
@@ -93,7 +109,7 @@ object AgendaFormat {
                 chosenDate = chosenDate,
                 chosenTime = chosenTime,
                 promisedDate = promisedDate,
-                movedBecause = first.movedBecause,
+                movedBecause = movedBecause,
                 recurrence = recurrence,
                 today = today,
             ),

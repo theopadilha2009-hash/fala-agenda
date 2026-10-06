@@ -401,6 +401,9 @@ fun FalaAgendaRoot(
                                 nav.popBackStack()
                             }
                         },
+                        // O nome da série que o `onEndSeries` acima encerra — não o do campo
+                        // editável, que pode ter sido mudado sem salvar.
+                        seriesTitle = editingItem?.series?.title,
                         onCancel = {
                             editingItemId = null
                             nav.popBackStack()

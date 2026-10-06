@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
@@ -212,6 +213,43 @@ class ConfirmDraftScreenTest {
         compose.onNodeWithText("Sim, encerrar").performClick()
 
         assertThat(encerrou).isTrue()
+    }
+
+    /**
+     * A confirmação nomeia a série que perde os avisos — não o texto que está no campo.
+     *
+     * O `onEndSeries` do root encerra por `item.series.id`, mas o diálogo interpolava o estado
+     * do campo editável: ela renomeia "Tomar remédio" para "Vitamina" sem salvar, toca
+     * "Encerrar série", e a pergunta dizia que cancelava os avisos da "Vitamina" enquanto a
+     * série encerrada era a do remédio. Com o campo apagado, o texto saía sem nome nenhum.
+     */
+    @Test
+    fun oDialogoDeEncerrarSerieNomeiaASerieENaoOCampo() {
+        val regra = recurrenceFor(RecurrenceKind.DAILY, hoje, emptySet())
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                ConfirmDraftScreen(
+                    initial = rascunho("Tomar remédio", hoje, hora, regra),
+                    onCancel = {},
+                    onSave = {},
+                    editing = true,
+                    isRecurring = true,
+                    onEndSeries = {},
+                    seriesTitle = "Tomar remédio",
+                )
+            }
+        }
+
+        // Ela muda o campo sem salvar: a série que o encerrar alcança continua sendo a de antes.
+        compose.onNodeWithText("Tomar remédio").performTextReplacement("Vitamina")
+        compose.onNodeWithText("Encerrar série").performScrollTo().performClick()
+
+        // Igualdade exata: o texto nomeia a série, e o nome que ela digitou não aparece.
+        compose.onNodeWithText("cancela todos os avisos futuros", substring = true)
+            .assertTextEquals(
+                "Isso cancela todos os avisos futuros de “Tomar remédio”. " +
+                    "Os dias que já passaram ficam como estão, e não dá para desfazer.",
+            )
     }
 
     private fun tela(draft: ParsedTaskDraft) {

@@ -79,6 +79,12 @@ fun ConfirmDraftScreen(
     onRepeat: (() -> Unit)? = null,
     onEndSeries: (() -> Unit)? = null,
     saveError: String? = null,
+    /**
+     * O título da **série** que o [onEndSeries] encerra. Não é o do campo editável: ela pode
+     * ter mudado o texto na tela sem salvar, e a confirmação precisa nomear o que de fato
+     * perde os avisos — não o que ela está vendo escrito. Nulo na criação, onde não há série.
+     */
+    seriesTitle: String? = null,
 ) {
     // Tudo o que a pessoa mexeu aqui tem que atravessar a recriação da tela: girar o
     // aparelho no meio da conferência não pode devolver o recado do parser.
@@ -472,13 +478,22 @@ fun ConfirmDraftScreen(
     // os avisos pendentes e marca a série como encerrada, sem restaurar. Para o remédio de
     // todo dia isso é a coisa mais perigosa que ela pode tocar aqui, então o toque pergunta
     // antes — com a consequência escrita e sem o "Sim" no lugar de destaque.
+    //
+    // O nome é o da série (`seriesTitle`), não o do campo editável: a série que perde os avisos
+    // é a que o root encerra por `item.series.id`, mesmo que ela tenha mudado o texto aqui sem
+    // salvar. Sem o título da série — criação — o texto fica sem nome em vez de citar o errado.
     if (confirmingEndSeries && onEndSeries != null) {
+        val nomeDaSerie = seriesTitle?.takeIf { it.isNotBlank() }
         AlertDialog(
             onDismissRequest = { confirmingEndSeries = false },
             title = { Text("Encerrar esta série?") },
             text = {
                 Text(
-                    "Isso cancela todos os avisos futuros de “$title”. Os dias que já passaram ficam como estão, e não dá para desfazer.",
+                    if (nomeDaSerie != null) {
+                        "Isso cancela todos os avisos futuros de “$nomeDaSerie”. Os dias que já passaram ficam como estão, e não dá para desfazer."
+                    } else {
+                        "Isso cancela todos os avisos futuros desta tarefa. Os dias que já passaram ficam como estão, e não dá para desfazer."
+                    },
                 )
             },
             confirmButton = {

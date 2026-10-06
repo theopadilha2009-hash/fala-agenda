@@ -10,7 +10,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -110,11 +109,15 @@ fun QuickConfirmDialog(
         // O primário é o confirmar, não o cancelar: esta caixa existe para ela conferir e
         // salvar o que falou, e "Cancelar" no lugar de destaque a fazia cancelar por reflexo
         // — o recado que ela acabou de falar ia embora num toque distraído. O "Cancelar"
-        // desceu para o botão secundário, e o "Salvar" ocupa o slot de confirmação.
+        // desceu para o slot de saída do M3, e o "Salvar" ocupa o de confirmação.
+        //
+        // Sem `testTag` de propósito: a tag viajava no mesmo argumento que define o slot, então
+        // um teste que só a comparasse com o texto passaria com os dois blocos trocados de volta.
+        // O que prende a hierarquia é a **posição** — o slot de confirmação do M3 desenha acima
+        // do de saída (ver `QuickConfirmDialogTest`), e é o que o teste de lá mede.
         confirmButton = {
             PrimaryButton(
                 text = if (saving) "Salvando…" else "Salvar",
-                modifier = Modifier.testTag("quick_confirm_confirmar"),
                 enabled = !saving && date != null && time != null,
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -125,7 +128,6 @@ fun QuickConfirmDialog(
         dismissButton = {
             SecondaryButton(
                 text = "Cancelar",
-                modifier = Modifier.testTag("quick_confirm_cancelar"),
                 enabled = !saving,
             ) { onCancel() }
         },

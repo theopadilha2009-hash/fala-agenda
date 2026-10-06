@@ -1,9 +1,10 @@
 package com.theopadilha.falaagenda.ui.capture
 
 import android.app.Application
-import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.di.AppContainer
@@ -26,18 +27,18 @@ import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 
 /**
- * A caixa "Pode salvar?" promete o dia em que o aviso vai tocar — a data que o salvar vai
- * criar, e não a do rascunho.
+ * A caixa "Pode salvar?" — as duas coisas que ela precisa acertar.
  *
- * O caminho comum já concordava (o parser resolve a data de uma regra com o mesmo
+ * A promessa: o dia em que o aviso vai tocar, que é a data que o salvar cria e não a do
+ * rascunho. O caminho comum já concordava (o parser resolve a data de uma regra com o mesmo
  * `firstOnOrAfter`), mas a caixa mostrava a data do rascunho: um rascunho contraditório —
  * "cabelo sábado dias úteis às 9h" — chegava aqui dizendo "Vai avisar Sábado, 3 de outubro de
- * 2026 às 09:00. Dias úteis." e o salvar criava segunda.
+ * 2026 às 09:00. Dias úteis." e o salvar criava segunda. Essa parte prende [quickConfirmPromise],
+ * no arquivo da caixa, contra a ocorrência que o repositório grava de verdade.
  *
- * Não é teste de composição: esta suíte não tem como subir a caixa (o módulo roda sem
- * recursos do Android, `isIncludeAndroidResources = false`), então o que se prende aqui é a
- * peça que a caixa desenha — [quickConfirmPromise], no arquivo dela — contra a ocorrência
- * que o repositório grava de verdade.
+ * A hierarquia: qual dos dois botões é o de destaque. O módulo sobe a composição de verdade
+ * (`isIncludeAndroidResources = true`, `app/build.gradle.kts:107`), então os botões são nós
+ * reais e medíveis — é a posição deles que o caso de hierarquia usa.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(
@@ -54,11 +55,17 @@ class QuickConfirmDialogTest {
 
     /**
      * O confirmar é o botão de destaque; o cancelar é o de saída. Nesta caixa ela confirma o
-     * que acabou de falar, e com "Cancelar" no slot primário o reflexo era cancelar e perder o
-     * recado. Os botões são de largura cheia e quebram em linhas dentro do diálogo, então a
-     * posição física não separa os dois slots — o que separa é qual deles é o `confirmButton`
-     * do M3. Cada botão carrega a tag do seu slot, e este caso prende quem ocupa qual: sem
-     * ele, trocar "Salvar" e "Cancelar" de slot de volta passa despercebido.
+     * que acabou de falar, e com "Cancelar" no slot de destaque o reflexo era cancelar e perder
+     * o recado.
+     *
+     * O caso mede a **posição**, não o par tag/texto. A versão anterior prendia
+     * `onNodeWithTag("quick_confirm_confirmar")` contra "Salvar" — mas a tag viajava no mesmo
+     * argumento que escolhe o slot, então trocar os dois blocos inteiros de volta (com as tags
+     * no lugar) mantinha o teste verde: ele só pegava um `git revert`. Sem as tags, quem
+     * separa os dois slots é a geometria: o `confirmButton` do M3 desenha acima do
+     * `dismissButton`, e os dois botões têm a mesma largura e a mesma altura mínima (56.dp),
+     * então o de destaque é o de cima. Trocar os blocos de slot empurra o "Salvar" para baixo
+     * e o caso falha.
      */
     @Test
     fun oConfirmarEOQueFicaNoSlotPrimario() {
@@ -74,8 +81,15 @@ class QuickConfirmDialogTest {
             }
         }
 
-        compose.onNodeWithTag("quick_confirm_confirmar").assertTextEquals("Salvar")
-        compose.onNodeWithTag("quick_confirm_cancelar").assertTextEquals("Cancelar")
+        // Os dois botões são nós reais: o texto diz qual é qual, e o slot é o lugar onde o M3
+        // desenha o par.
+        val salvar = compose.onNodeWithText("Salvar")
+        val cancelar = compose.onNodeWithText("Cancelar")
+        salvar.assertIsDisplayed()
+        cancelar.assertIsDisplayed()
+
+        assertThat(salvar.getUnclippedBoundsInRoot().top)
+            .isLessThan(cancelar.getUnclippedBoundsInRoot().top)
     }
 
     @Test

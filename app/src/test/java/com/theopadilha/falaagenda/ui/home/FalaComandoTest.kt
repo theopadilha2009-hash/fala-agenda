@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -264,6 +265,57 @@ class FalaComandoTest {
         val salvo = runBlocking { container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().plusDays(1))) }
 
         viewModel.understandSpeech("apaga o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(salvo.occurrence.id)).isNull()
+    }
+
+    /**
+     * A única ocorrência do alvo NÃO REALIZADA também é alvo.
+     *
+     * É o estado em que ela mais vê a tarefa: a dose de ontem que o aviso não alcançou, na
+     * seção "Não realizadas", sem nenhuma pendente na agenda. O alvo não era achado — só as
+     * pendentes eram candidatas — e "apaga o remédio" caía no caminho de captura: nascia o
+     * rascunho "Apaga remédio" e a tarefa continuava lá, exatamente o defeito que esta camada
+     * veio consertar.
+     */
+    @Test
+    fun apagaORemedioNaoRealizadoApagaATarefa() {
+        val salvo = runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().minusDays(1)))
+        }
+        // O cenário do revisor: ontem, sem aviso, e nenhuma pendente.
+        assertThat(salvo.occurrence.status).isEqualTo(OccurrenceStatus.MISSED)
+        assertThat(agenda().today + agenda().upcoming).isEmpty()
+
+        viewModel.understandSpeech("apaga o remédio")
+
+        // O defeito tem duas caras e a asserção pega a primeira que aparece: sem alvo, a fala
+        // segue o caminho de captura e o rascunho "Apaga remédio" nasce. A espera é curta de
+        // propósito: o parse local responde rápido, e no caminho certo nenhum rascunho vem.
+        val draft = runBlocking {
+            withTimeoutOrNull(2_000L) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNull()
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(salvo.occurrence.id)).isNull()
+    }
+
+    /**
+     * O mesmo buraco pelo outro verbo: "cancela o remédio" também não achava o alvo quando a
+     * única ocorrência era a não realizada. Os dois caminhos usam o mesmo `lookupTarget`, e é
+     * isso que os dois testes prendem.
+     */
+    @Test
+    fun cancelaORemedioNaoRealizadoApagaATarefa() {
+        val salvo = runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().minusDays(1)))
+        }
+        assertThat(salvo.occurrence.status).isEqualTo(OccurrenceStatus.MISSED)
+
+        viewModel.understandSpeech("cancela o remédio")
 
         assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
         assertThat(agenda().find(salvo.occurrence.id)).isNull()

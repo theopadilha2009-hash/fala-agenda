@@ -250,8 +250,15 @@ object SpeechIntentClassifier {
     // "cancela isso" entra aqui também: é apagar sem dizer o nome. Sem esta linha ele caía no
     // cancelamento com o alvo literal "isso" e respondia "não achei nenhuma tarefa com esse
     // nome" — quando o certo é dizer que ainda não sabe apagar falando.
+    //
+    // "isso/isto" sempre; "essa/esse" só quando NÃO há substantivo depois (fim da fala). O
+    // demonstrativo seguido de nome ("apaga ESSA consulta") NOMEIA o alvo, e tratá-lo como
+    // ERASE sem nome mandava a fala para o beco do "ainda não sei apagar falando" enquanto
+    // "apaga o remédio" apagava — a mesma assimetria que o "cancela essa consulta" já tinha
+    // resolvido do outro lado. Sem nome depois, "apaga essa" continua sendo apagar no escuro.
     private val apagaIsso = Regex(
-        "\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto|essa|esse)\\b",
+        "\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto)\\b" +
+            "|\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(essa|esse)\\s*$",
     )
 
     // Só os pronomes "isso/isto": eles não têm substantivo depois, então não nomeiam alvo
@@ -335,6 +342,19 @@ object SpeechIntentClassifier {
     private fun stripTrailingCourtesy(text: String): String =
         text.replace(TRAILING_COURTESY, "").trim()
 
+    /**
+     * O determinante que abre o alvo e não é parte do nome: o artigo ("o médico" → "médico") e o
+     * demonstrativo ("essa consulta" → "consulta"). Sem o demonstrativo aqui, "apaga essa
+     * consulta" deixava o alvo `essa consulta`, e o `essa` — que não casa título nenhum —
+     * derrubava a maioria estrita: a tarefa existia e o app dizia que não achou.
+     *
+     * "isso/isto" ficam de fora de propósito: eles NÃO têm substantivo depois, então o alvo
+     * seria vazio — e o caminho certo para eles é o ERASE sem nome, não um alvo limpo.
+     */
+    private val LEADING_DETERMINERS = Regex(
+        "^(o|a|os|as|um|uma|meu|minha|meus|minhas|este|esta|estes|estas|esse|essa|esses|essas|aquele|aquela|aqueles|aquelas)\\s+",
+    )
+
     private fun stripLeadingArticles(text: String): String =
-        text.replaceFirst(Regex("^(o|a|os|as|um|uma|meu|minha|meus|minhas)\\s+"), "").trim()
+        text.replaceFirst(LEADING_DETERMINERS, "").trim()
 }

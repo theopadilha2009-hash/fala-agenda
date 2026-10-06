@@ -890,11 +890,19 @@ class HomeViewModel(
      *
      * Só o que ainda está de pé é alvo: concluir ou apagar algo já feito não é o que ela pediu.
      *
+     * A ocorrência NÃO REALIZADA também é alvo. Ela é o estado em que a tarefa mais aparece — a
+     * dose de ontem que o aviso não alcançou, na seção "Não realizadas" — e quando é a única
+     * ocorrência da série o alvo não existia: "apaga o remédio" caía no caminho de captura e
+     * nascia o rascunho "Apaga remédio". Apagar uma MISSED é seguro: o contrato do
+     * `deleteOccurrence` é uma DATA (mais o tombstone), nunca a série.
+     *
      * Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)
      * materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia "já
      * tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não funcionava. A
      * ocorrência eleita é a pendente mais próxima (a mais urgente), que é justamente a data que
-     * `complete` e `deleteOccurrence` já tratam.
+     * `complete` e `deleteOccurrence` já tratam. A não realizada só entra quando a série não
+     * tem NENHUMA pendente: com as duas na agenda, eleger a de ontem concluiria ou apagaria a
+     * data errada — a pendente é a que ela vê como "a tarefa".
      */
     private suspend fun lookupTarget(
         target: String,
@@ -906,10 +914,13 @@ class HomeViewModel(
             publishStatus("Não consegui ler a sua agenda agora.")
             return null
         }
-        val pendentes = sections.today + sections.upcoming
-        val porSerie = pendentes
+        val abertas = sections.today + sections.upcoming
+        val porSerie = (abertas + sections.missed)
             .groupBy { it.series.id }
-            .mapValues { (_, daSerie) -> daSerie.minBy { it.occurrence.scheduledAt } }
+            .mapValues { (_, daSerie) ->
+                val pendentes = daSerie.filter { it.occurrence.status == OccurrenceStatus.PENDING }
+                (pendentes.ifEmpty { daSerie }).minBy { it.occurrence.scheduledAt }
+            }
         val candidates = porSerie.values.map {
             SpeechCandidate(id = it.occurrence.id, title = it.series.title)
         }

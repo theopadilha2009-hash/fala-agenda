@@ -68,6 +68,29 @@ class SpeechIntentTest {
         assertThat(intent("apaga o remédio")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
     }
 
+    /**
+     * "apaga ESSA consulta" NOMEIA o alvo — o demonstrativo tem substantivo depois.
+     *
+     * A forma caía no beco do ERASE sem nome ("ainda não sei apagar falando") enquanto "apaga o
+     * remédio" apagava, e ela não tinha como saber por quê. É a mesma assimetria que o
+     * "cancela essa consulta" já tinha resolvido do outro lado da camada.
+     */
+    @Test
+    fun apagaEssaConsultaViraApagarPeloNome() {
+        assertThat(intent("apaga essa consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))
+        assertThat(intent("deleta esse remédio")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+    }
+
+    /**
+     * Sem substantivo depois, o demonstrativo não nomeia nada: "apaga essa" continua sendo
+     * apagar no escuro, e o app reconhece sem executar — não procura uma tarefa chamada "essa".
+     */
+    @Test
+    fun apagaEssaSozinhoContinuaSemNome() {
+        assertThat(intent("apaga essa")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("deleta esse")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
     @Test
     fun excluiAConsultaViraApagarPeloNome() {
         assertThat(intent("exclui a consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))

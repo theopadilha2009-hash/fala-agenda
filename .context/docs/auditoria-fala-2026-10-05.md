@@ -790,6 +790,63 @@ O único canal para o desfecho dos comandos é `SnackbarHostState.say(...)` (`Ho
 - **A árvore da caixa "Pode salvar?"** — o `AlertDialog` do M3 produz dois roots no Robolectric e o `printToString()` recusa; mediou-se a lógica (`quickConfirmPromise`) e a tela de destino.
 - **Áudio do Vosk** e o disparo real do alarme sob Doze — só o aparelho prova.
 
+## Caça ao alarme (06/10, medição com `ShadowAlarmManager`)
+
+Varredura read-only exercitando `ReminderScheduler` + `TaskRepository` + `ReminderPolicy` reais com `ShadowAlarmManager`, relógio fixo 20/08 10:00 America/Sao_Paulo. O que se mediu foram os **alarmes realmente agendados**, não a intenção do código.
+
+### [1] PERDE O TOQUE — editar uma ocorrência futura apaga os alarmes das outras e desloca a série · confiança ALTA
+
+Remédio "todo dia às 08:00", doses de 20–23/08 armadas. Ela abre a dose de **22/08** e corrige o horário (ou qualquer campo — **não existe escolha "esta × a série"**):
+
+```
+ANTES  alarmes: [20/08 08:00, 21/08 08:00, 22/08 08:00, 23/08 08:00]
+DEPOIS (sem rescheduleAll, como no app real):
+       alarmes: [21/08 00:05 (varredura), 22/08 20:00, 23/08 20:00, 24/08 20:00]
+21/08 08:00 ainda armado? false
+23/08 08:00 ainda armado? false
+depois do RESTART (rescheduleAll): 21/08 existe? false · 21/08 08:00 armado? false
+datas da série: [22/08, 23/08, 24/08]   ← 20 e 21 desapareceram
+```
+
+`editOccurrence` cancela os alarmes de **todas** as pendentes (`TaskRepository.kt:391-392`), move a **série inteira** (`startLocalDate = date`, `:396`), e o preview não rearma as datas que já existem (`spawnUpcomingPreview`, `:788`) nem as recria — a varredura só materializa `>= startLocalDate`. **20/08 e 21/08 são apagadas do banco e nunca voltam** (o restart confirma).
+
+No app da mãe: *"mudei o horário do remédio de amanhã e o de hoje/amanhã parou de tocar, sem aviso."* Qualquer item de "Próximas" é editável (`HomeScreen.kt:730`) e o `onSave` aplica à série (`FalaAgendaRoot.kt:411-435`).
+
+### [2] PERDE O TOQUE — doses de 23:01–23:59 não têm lembrete nenhum · confiança MÉDIA
+
+```
+ocorrência 22:30 -> 2026-08-21T08:00 (s1 SILÊNCIO)  FIM
+ocorrência 23:00 -> 2026-08-21T08:00 (s1 SILÊNCIO)  FIM
+ocorrência 23:59 -> FIM                              ← nenhum degrau
+```
+
+O passo 1 (`+15`) cruza o dia → `ended()` → **nenhuma insistência** (`ReminderPolicy.kt:69-90`). O passo 0 toca no horário; se esse toque for perdido, um "remédio às 23:30" tem **um tiro só**. Não é o snooze que atravessa a meia-noite (isso é do #51, de propósito) — é a escada de repetição sem degrau algum nesse recorte.
+
+### [3] TOCA A MENOS — editar para uma data futura apaga as doses entre hoje e a editada · confiança MÉDIA
+
+Mesma raiz do [1], mas inclui a **dose de hoje**: com doses de 20–25/08 armadas, editar a de 25/08 deixa armado só `[21/08 00:05, 25/08 20:00, 26/08 20:00, 27/08 20:00]` — a dose de hoje some por ela ter mexido na do fim da semana.
+
+### [4] TOCA ERRADO — doses noturnas colapsam para as 08:00 · confiança MÉDIA
+
+Uma ocorrência de 22:30–23:00 toca no passo 0 e, se não for concluída, toca **de novo às 08:00 do dia seguinte** — horário que ela não escolheu. `ReminderPolicy.kt:79-88`.
+
+### [5] TOCA A MAIS — o [1] compõe com a duplicata já documentada
+
+Cada edição de uma série duplicada espalha doses deslocadas, e as duas séries passam a divergir depois de qualquer edição.
+
+### MEDIDO E OK — não mexer
+
+- **Request codes não colidem:** `fire("s1:2026-08-21")=368777224` × `fire("s2:2026-08-21")=482872053` (SHA-256 de 28 bits, lanes distintos, `AlarmIds.kt:47-62`). Duas tarefas no mesmo horário **não** cancelam uma à outra; concluir a série A mantém o alarme de B.
+- **`setAlarmClock` só no passo 0:** todos os demais são `RTC_WAKEUP`; a escada usa `setExactAndAllowWhileIdle` (`ReminderScheduler.kt:135-141`). Sem perda de toque por tipo.
+- **DST não cria buraco:** em Europe/London, ocorrência 28/03 20:00 → `29/03 08:00+01:00` (instante absoluto correto); `nextDaySweep` não é pulado na virada.
+
+### O que a caça ao alarme NÃO cobriu
+
+- **Toque real sob Doze/OEM**, som do canal, `SCHEDULE_EXACT_ALARM`, autostart — só o aparelho prova.
+- **"Desfazer Concluir" de ocorrência com hora já passada** — `uncomplete` (`TaskRepository.kt:216-241`) arma um snooze de +1 min quando `!stillArmed && !stillOnClock`; não foi medido (hipótese de baixa confiança).
+- **Fluxo de UI de ponta a ponta** (tocar em "Próximas" → editar → salvar) — mediu-se a chamada de repositório que o `onSave` faz, não a navegação Compose.
+- **Room real** — usou-se DAOs fake (os mesmos dos testes existentes); a atomicidade transacional não foi exercitada.
+
 ## O que só o aparelho prova
 
 1. **Entrega real sob Doze/OEM:** que o `setAlarmClock` (`ReminderScheduler.kt:46`)

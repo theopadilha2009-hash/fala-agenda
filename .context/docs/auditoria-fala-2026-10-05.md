@@ -327,6 +327,28 @@ Dois sobreviventes de mutação (o ramo `hadPeriod` da faixa e o `DOSE_PERIOD`) 
 
 R6 é escolha conservadora declarada: `looksLikeTwoTasks` zera a hora do rascunho **inteiro** quando detecta duas tarefas — o rascunho de duas tarefas perde a hora mesmo da primeira. "Na dúvida, ambíguo" é a regra do app; nenhum teste do `main` dependia disso.
 
+### A QUARTA reprovação (06/10, review do `a84538f4f9`)
+
+O revert do D3 está **correto e verificado** (grep zerado nas constantes, R1–R3/R5 medidos batem, nada órfão quebrado). O que reprovou foi o ramo que veio no lugar dele: **`EM_PONTO_CLOCK`**.
+
+| finding | frase | PR | `main` |
+|---|---|---|---|
+| P1 | `amanhã reunião dia 12 em ponto` | 2026-08-21 **12:00** `amb=false` **`quick=true`** | 2026-09-12, hora nula, escalava |
+| P1 | `quinta prova dia 15 em ponto` | **hoje, 20/08, 15:00** `amb=false` **`quick=true`** | 2026-09-15, hora nula, escalava |
+| P1b | `amanhã oito em ponto e nove tomar remédio` | **08:00** `amb=false` **`quick=true`** | hora nula, não confirmava |
+
+**A causa é de ordem de execução:** `extractTime` roda **antes** de `extractDate` (`:60` e `:69`), e o ramo novo casa `(?<hora>\d{1,2})…em ponto` e **consome o número** — o `dia 12` nunca chega ao `extractDate`. A data some e a hora é inventada, com `amb=false`. A caixa rápida confirma calado.
+
+E o P1b é o **mesmo modo de falha do R4** que este PR foi consertar: o guard de múltiplos relógios (`:425`) checa só `CLOCK_NUMERIC` e `CLOCK_BARE`, **ambos exigem o "às"** (`:900`, `:913`) — hora por extenso solta passa batido. O fix fechou o caso com "às" e deixou aberto o caminho adjacente sem "às".
+
+### A lição da quarta rodada
+
+**O guard novo é o mecanismo da reprovação, não o conserto.** Nas quatro rodadas o padrão é idêntico: cada lote de regressões é fechado com mais uma condição em cima, e a condição nova abre o caso adjacente. O executor desta rodada foi despachado com a instrução explícita de **estreitar a condição do ramo em vez de adicionar mais um `if`**.
+
+### Ainda dois sobreviventes de mutação (relato × medição)
+
+O relatório da rodada anterior afirmava 8 mutações "todas derrubam teste". A revisão mediu contra a **suíte inteira** e duas sobrevivem: o `|| localTime.hour == 20` do guard do "antes do jantar" (removê-lo passa 273 testes; só o `7..11` é exercitado, nunca o `às 20h`) e o ramo `hadPeriod` da faixa (que, ao contrário, **é** load-bearing — sem ele `"antes do jantar às oito da noite"` vira ambíguo). **A discrepância entre relato e medição é ela mesma um achado:** prova por mutação que roda contra um teste só, e não contra a suíte, não prova nada.
+
 ## Achados da revisão independente do #55 (06/10)
 
 O #55 (datas nomeadas e relativos) consertou os cinco alvos e o algoritmo de Páscoa está **correto**

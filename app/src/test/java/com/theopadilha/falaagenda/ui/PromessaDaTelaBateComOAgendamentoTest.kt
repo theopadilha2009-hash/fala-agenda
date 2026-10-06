@@ -259,7 +259,11 @@ class PromessaDaTelaBateComOAgendamentoTest {
             .containsExactly(amanha)
     }
 
-    /** Excluir no passado é o caso que o modo edição já honrava — a tela diz a mesma data. */
+    /**
+     * Editando para uma data que ainda não venceu, a data escolhida é a que vale — a tela diz a
+     * mesma data, sem linha de descarte. O sábado com a regra "dias úteis" não seria a primeira
+     * ocorrência na criação, mas na edição o contrato é outro: a escolha vale enquanto futura.
+     */
     @Test
     fun editandoADataEscolhidaEADataQueVale() = runBlocking {
         val sabado = LocalDate.of(2026, 10, 3)
@@ -271,7 +275,7 @@ class PromessaDaTelaBateComOAgendamentoTest {
             chosenTime = draft.localTime!!,
             recurrence = draft.recurrence,
             today = sabado,
-            now = sabado.atTime(15, 0).atZone(zone).toInstant(),
+            now = sabado.atTime(8, 0).atZone(zone).toInstant(),
             zone = zone,
             editing = true,
         )
@@ -280,8 +284,58 @@ class PromessaDaTelaBateComOAgendamentoTest {
         assertThat(promessa.droppedChoice).isNull()
     }
 
+    /**
+     * A edição de uma tarefa que repete para um horário de hoje já passado: a ocorrência de hoje
+     * é arquivada e quem é armada é a próxima data da regra (`TaskRepository.occurrencesForChoice`),
+     * então a tela não pode prometer hoje. Prometia — `editing = true` fixava a data literal e o
+     * desvio só mordia na regra que não repete —, e ela salvava vendo "Vai avisar quinta, 20 de
+     * agosto às 18:00" para um alarme que só toca em 21/08.
+     */
+    @Test
+    fun editarRecorrenteParaHorarioDeHojeJaPassadoPrometeAProximaData() = runBlocking {
+        val noite = terca.atTime(20, 0).atZone(zone).toInstant()
+        val rule = recurrenceFor(RecurrenceKind.DAILY, terca, emptySet())
+
+        val promessa = AgendaFormat.promiseOfChoice(
+            chosenDate = terca,
+            chosenTime = LocalTime.of(18, 0),
+            recurrence = rule,
+            today = terca,
+            now = noite,
+            zone = zone,
+            editing = true,
+        )
+
+        val amanha = terca.plusDays(1)
+        assertThat(promessa.recap).contains(AgendaFormat.longDate(amanha))
+        assertThat(promessa.recap).doesNotContain(AgendaFormat.longDate(terca))
+        // E a data descartada não some em silêncio: a linha diz por que hoje não vale.
+        assertThat(promessa.droppedChoice).isNotNull()
+        assertThat(promessa.droppedChoice!!).contains(AgendaFormat.longDate(amanha))
+    }
+
+    /** E a edição para um horário ainda por vir continua prometendo o dia escolhido. */
+    @Test
+    fun editarRecorrenteParaHorarioFuturoPrometeODiaEscolhido() = runBlocking {
+        val rule = recurrenceFor(RecurrenceKind.DAILY, terca, emptySet())
+
+        val promessa = AgendaFormat.promiseOfChoice(
+            chosenDate = terca,
+            chosenTime = LocalTime.of(18, 0),
+            recurrence = rule,
+            today = terca,
+            now = agora,
+            zone = zone,
+            editing = true,
+        )
+
+        assertThat(promessa.recap).contains(AgendaFormat.longDate(terca))
+        assertThat(promessa.droppedChoice).isNull()
+    }
+
     /** O que a tela monta: os mesmos argumentos que a `ConfirmDraftScreen` tem em mãos. */
     private fun promessa(draft: ParsedTaskDraft, today: LocalDate, now: Instant) =
+
         AgendaFormat.promiseOfChoice(
             chosenDate = draft.localDate!!,
             chosenTime = draft.localTime!!,

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.data.repo.ActionOutcome
+import com.theopadilha.falaagenda.data.repo.ChoiceSchedule
 import com.theopadilha.falaagenda.data.repo.EditOutcome
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.DraftSource
@@ -544,22 +545,24 @@ class HomeViewModel(
     }
 
     /**
-     * O mesmo anúncio para o caminho da edição, que não devolve ocorrência: quem decide é o
-     * predicado compartilhado — a data que ela escolheu ali vale literalmente
-     * (`TaskRepository.editOccurrence`), então o instante do primeiro aviso é o da própria
-     * escolha, e o predicado só morde quando a tarefa não repete. Escrever a conta aqui de
-     * novo seria a terceira cópia da regra; ver `DraftSchedule`.
+     * O mesmo anúncio para o caminho da edição, que não devolve ocorrência: quem decide é a
+     * peça compartilhada com o repositório (`ChoiceSchedule`) — a data escolhida vale, mas se ela
+     * já venceu e a tarefa repete, quem é armada é a próxima data da regra, e é ela que o anúncio
+     * precisa citar. Anunciar a data tocada aqui era dizer "Vai avisar hoje às 18:00" logo depois
+     * de salvar uma edição em que nenhum alarme toca hoje. Escrever a conta aqui de novo seria
+     * mais uma cópia da regra.
      */
     private fun announceOfEdit(date: LocalDate, time: LocalTime, recurrence: RecurrenceRule): String {
-        // A edição materializa a data escolhida literalmente (`TaskRepository.editOccurrence`),
-        // então o instante do primeiro aviso é o da própria escolha — e não o da primeira
-        // ocorrência da regra, que na criação é outra coisa (ver `DraftSchedule.firstOccurrence`).
-        val chosenAt = date.atTime(time).atZone(ZoneId.systemDefault()).toInstant()
-        return if (DraftSchedule.bornWithoutReminder(chosenAt, recurrence, Instant.now())) {
-            SEM_AVISO
-        } else {
-            AgendaFormat.announce(date, time, LocalDate.now())
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        val plan = ChoiceSchedule.plan(recurrence, date, time, zone, now)
+        // A escolha vencida que não repete não vira alarme nenhum: o repositório a arquiva como
+        // não realizada (ver `TaskRepository.occurrencesForChoice`), e o anúncio diz o mesmo.
+        val promisedAt = plan.date.atTime(time).atZone(zone).toInstant()
+        if (DraftSchedule.bornWithoutReminder(promisedAt, recurrence, now)) {
+            return SEM_AVISO
         }
+        return AgendaFormat.announce(plan.date, time, LocalDate.now())
     }
 
     fun complete(item: AgendaItem) = write(

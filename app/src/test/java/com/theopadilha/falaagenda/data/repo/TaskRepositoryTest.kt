@@ -223,13 +223,19 @@ class TaskRepositoryTest {
             assertThat(vencida.status).isEqualTo(OccurrenceStatus.MISSED)
             assertThat(vencida.nextReminderAt).isNull()
             assertThat(sched.scheduled).doesNotContain(deHoje)
-            // A próxima (amanhã às 18:00) é quem fica armada — é o que "todo dia às 18:00" quer dizer.
+            // A próxima (amanhã às 18:00) é quem fica armada — é o que "todo dia às 18:00" quer
+            // dizer. O instante exato, não só o id: só o id passava com o alarme no passado.
             val amanha = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21))
             val proxima = occDao.get(amanha)!!.toDomain()
             assertThat(proxima.status).isEqualTo(OccurrenceStatus.PENDING)
             assertThat(proxima.scheduledAt)
                 .isEqualTo(LocalDate.of(2026, 8, 21).atTime(18, 0).atZone(zone).toInstant())
-            assertThat(sched.scheduled).contains(amanha)
+            assertThat(sched.armed.map { it.first }).contains(amanha)
+            assertThat(sched.armed.map { it.first }).doesNotContain(deHoje)
+            // E nenhum armamento no passado: o preview das próximas também passa por aqui.
+            sched.armed.forEach { (id, fireAt) ->
+                assertThat(fireAt.isBefore(noite.instant())).isFalse()
+            }
         }
     }
 
@@ -268,10 +274,216 @@ class TaskRepositoryTest {
             val vencida = occDao.get(deHoje)!!.toDomain()
             assertThat(vencida.status).isEqualTo(OccurrenceStatus.MISSED)
             assertThat(vencida.nextReminderAt).isNull()
-            assertThat(sched.scheduled).doesNotContain(deHoje)
             val amanha = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21))
             assertThat(occDao.get(amanha)!!.toDomain().status).isEqualTo(OccurrenceStatus.PENDING)
-            assertThat(sched.scheduled).contains(amanha)
+            // O instante, e não só o id: é ele que o `AlarmManager` recebe. Este teste era o
+            // irmão que passava com a ocorrência armada num instante vencido.
+            assertThat(sched.armed).contains(
+                amanha to LocalDateTime.of(2026, 8, 21, 8, 0).atZone(zone).toInstant(),
+            )
+            sched.armed.forEach { (id, fireAt) ->
+                assertThat(fireAt.isBefore(noite.instant())).isFalse()
+            }
+        }
+    }
+
+    /**
+     * O preview que roda depois da edição recriava a linha de hoje que a própria edição tinha
+     * acabado de arquivar, e a armava em 08:00 com o relógio já em 10:00 — o `setAlarmClock`
+     * com instante no passado dispara no ato, e o celular dela apitava logo depois de salvar.
+     * Nenhum alarme pode sair daqui com instante ≤ agora.
+     */
+    @Test
+    fun editarParaDataAnteriorNaoRearmaOHojeVencido() {
+        runBlocking {
+            val manha = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, manha, sched)
+            val series = serieDe("s-rem", "Remédio").copy(
+                startLocalDate = LocalDate.of(2026, 8, 20),
+                localTime = LocalTime.of(8, 0),
+            )
+            seriesDao.upsert(series.toEntity())
+            val deHoje = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(
+                ocorrenciaDe(
+                    series.id,
+                    LocalDate.of(2026, 8, 20),
+                    LocalTime.of(8, 0),
+                    OccurrenceStatus.PENDING,
+                ).toEntity(),
+            )
+
+            // A data escolhida é ontem, com a mesma hora: a escolha em si vence e a próxima da
+            // regra (21/08 08:00) é futura. O preview rodava em cima de `hoje` e armava 20/08
+            // 08:00 de novo — instante já passado.
+            repoDaManha.editOccurrence(
+                deHoje,
+                "Remédio",
+                LocalDate.of(2026, 8, 19),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val vencido = manha.instant()
+            assertThat(sched.armed).isNotEmpty()
+            sched.armed.forEach { (id, fireAt) ->
+                assertThat(fireAt.isBefore(vencido))
+                    .isFalse()
+            }
+            // E a linha de hoje que a edição apagou não voltou armada: só o preview a recriava.
+            assertThat(sched.armed.map { it.first }).doesNotContain(deHoje)
+            assertThat(sched.armed).contains(
+                OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21)) to
+                    LocalDateTime.of(2026, 8, 21, 8, 0).atZone(zone).toInstant(),
+            )
+        }
+    }
+
+    /**
+     * A data que ela excluiu não volta a nascer nem pelo caminho da edição: mudar só o horário
+     * do cartão de hoje não pode rematerializar o remédio de amanhã, que tem tombstone.
+     */
+    @Test
+    fun editarNaoRematerializaAProximaDataExcluida() {
+        runBlocking {
+            val manha = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, manha, sched)
+            val series = serieDe("s-rem", "Remédio").copy(
+                startLocalDate = LocalDate.of(2026, 8, 20),
+                localTime = LocalTime.of(8, 0),
+                skippedDates = setOf(LocalDate.of(2026, 8, 21)),
+            )
+            seriesDao.upsert(series.toEntity())
+            val deHoje = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(
+                ocorrenciaDe(
+                    series.id,
+                    LocalDate.of(2026, 8, 20),
+                    LocalTime.of(8, 0),
+                    OccurrenceStatus.PENDING,
+                ).toEntity(),
+            )
+
+            // A escolha de hoje vence às 10:00 (08:00 já passou); a próxima da regra seria
+            // 21/08, que está excluída — o ramo sem tombstone a materializava e rearmava.
+            repoDaManha.editOccurrence(
+                deHoje,
+                "Remédio",
+                LocalDate.of(2026, 8, 20),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val amanha = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21))
+            assertThat(occDao.get(amanha)).isNull()
+            assertThat(sched.armed.map { it.first }).doesNotContain(amanha)
+        }
+    }
+
+    /**
+     * O mesmo tombstone no "Desfazer": restaurar outro cartão não pode trazer de volta a data
+     * que ela excluiu, nem rearmar o alarme dela.
+     */
+    @Test
+    fun desfazerNaoRematerializaAProximaDataExcluida() {
+        runBlocking {
+            val manha = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, manha, sched)
+            val series = serieDe("s-rem", "Remédio").copy(
+                startLocalDate = LocalDate.of(2026, 8, 20),
+                localTime = LocalTime.of(8, 0),
+                skippedDates = setOf(LocalDate.of(2026, 8, 21)),
+            )
+            seriesDao.upsert(series.toEntity())
+            val deHoje = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            val ocorrencia = ocorrenciaDe(
+                series.id,
+                LocalDate.of(2026, 8, 20),
+                LocalTime.of(8, 0),
+                OccurrenceStatus.PENDING,
+            )
+            occDao.upsert(ocorrencia.toEntity())
+            repoDaManha.deleteOccurrence(deHoje)
+
+            repoDaManha.restore(AgendaItem(ocorrencia, series))
+
+            val amanha = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21))
+            assertThat(occDao.get(amanha)).isNull()
+            assertThat(sched.armed.map { it.first }).doesNotContain(amanha)
+        }
+    }
+
+    /**
+     * A próxima ocorrência que já existe pode carregar um `nextReminderAt` vencido — um adiamento
+     * que passou, um aviso que nunca foi entregue. `materialize` com `existing` preserva esse
+     * instante, e ele iria direto para o `AlarmManager` (disparo imediato). A decisão da escrita
+     * não entrega instante vencido: cai no materialize limpo, no horário da própria ocorrência.
+     */
+    @Test
+    fun editarNaoRearmaInstanteVencidoHerdadoDaProxima() {
+        runBlocking {
+            val manha = FixedAppClock(
+                LocalDateTime.of(2026, 8, 20, 10, 0).atZone(zone).toInstant(),
+                zone,
+            )
+            val occDao = FakeOccurrenceDao()
+            val sched = RecordingScheduler()
+            val repoDaManha = TaskRepository(seriesDao, occDao, manha, sched)
+            val series = serieDe("s-rem", "Remédio").copy(
+                startLocalDate = LocalDate.of(2026, 8, 20),
+                localTime = LocalTime.of(8, 0),
+            )
+            seriesDao.upsert(series.toEntity())
+            val deHoje = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 20))
+            occDao.upsert(
+                ocorrenciaDe(
+                    series.id,
+                    LocalDate.of(2026, 8, 20),
+                    LocalTime.of(8, 0),
+                    OccurrenceStatus.PENDING,
+                ).toEntity(),
+            )
+            // A próxima (21/08) já existe PENDING com um adiamento que venceu às 09:00 de hoje.
+            val amanha = OccurrenceIds.of(series.id, LocalDate.of(2026, 8, 21))
+            val adiadaAte = LocalDateTime.of(2026, 8, 20, 9, 0).atZone(zone).toInstant()
+            occDao.upsert(
+                ocorrenciaDe(
+                    series.id,
+                    LocalDate.of(2026, 8, 21),
+                    LocalTime.of(8, 0),
+                    OccurrenceStatus.PENDING,
+                ).copy(nextReminderAt = adiadaAte, snoozedUntil = adiadaAte).toEntity(),
+            )
+
+            repoDaManha.editOccurrence(
+                deHoje,
+                "Remédio",
+                LocalDate.of(2026, 8, 20),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            // O instante herdado (vencido) não foi para o alarme: o que foi armado para a
+            // próxima é o horário dela, futuro.
+            assertThat(sched.armed.map { it.second }).doesNotContain(adiadaAte)
+            assertThat(sched.armed).contains(
+                amanha to LocalDateTime.of(2026, 8, 21, 8, 0).atZone(zone).toInstant(),
+            )
         }
     }
 
@@ -1717,6 +1929,8 @@ class TaskRepositoryTest {
 private class RecordingScheduler : AlarmScheduler {
     var exact: Boolean = true
     val scheduled = mutableListOf<String>()
+    /** O instante entregue ao `AlarmManager` em cada armamento — ver `RecordingScheduler`. */
+    val armed = mutableListOf<Pair<String, Instant>>()
     val cancelled = mutableListOf<String>()
     val recovered = mutableMapOf<String, Instant>()
     val dailySweeps = mutableListOf<Instant>()
@@ -1725,6 +1939,9 @@ private class RecordingScheduler : AlarmScheduler {
     override fun canScheduleExact(): Boolean = exact
     override fun schedule(occurrence: TaskOccurrence, series: TaskSeries, first: Boolean): SchedulerOutcome {
         scheduled += occurrence.id
+        // Como o `ReminderScheduler` de verdade: sem `nextReminderAt` não há alarme para armar,
+        // e é o `nextReminderAt` que vira o instante do `setAlarmClock`.
+        occurrence.nextReminderAt?.let { armed += occurrence.id to it }
         return SchedulerOutcome(inexact = !exact, scheduled = true)
     }
     override fun cancel(occurrenceId: String) {

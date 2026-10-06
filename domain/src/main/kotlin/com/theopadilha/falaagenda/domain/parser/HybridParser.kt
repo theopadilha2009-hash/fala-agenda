@@ -72,17 +72,17 @@ class HybridParser(
         transcript: String,
     ): ParsedTaskDraft {
         val title = remoteDraft.title.ifBlank { localDraft.title }
-        val localDate = remoteDraft.localDate ?: localDraft.localDate
-        val localTime = remoteDraft.localTime ?: localDraft.localTime
+        val mergedDate = remoteDraft.localDate ?: localDraft.localDate
+        val mergedTime = remoteDraft.localTime ?: localDraft.localTime
         val missing = buildSet {
             if (title.isBlank()) add(MissingDraftField.TITLE)
-            if (localDate == null) add(MissingDraftField.DATE)
-            if (localTime == null) add(MissingDraftField.TIME)
+            if (mergedDate == null) add(MissingDraftField.DATE)
+            if (mergedTime == null) add(MissingDraftField.TIME)
         }
         return remoteDraft.copy(
             title = title,
-            localDate = localDate,
-            localTime = localTime,
+            localDate = mergedDate,
+            localTime = mergedTime,
             recurrence = if (remoteDraft.recurrence.isRecurring) {
                 remoteDraft.recurrence
             } else {
@@ -95,7 +95,14 @@ class HybridParser(
             // rápida continuaria barrada (`canQuickConfirm`) por uma dúvida que a IA já resolveu.
             ambiguous = remoteDraft.ambiguous && missing.isNotEmpty(),
             transcript = transcript,
-            notes = notasDomescladas(localDraft.notes, remoteDraft.notes, localDate, localTime),
+            notes = notasDomescladas(
+                locais = localDraft.notes,
+                remotas = remoteDraft.notes,
+                remotoTrouxeData = remoteDraft.localDate != null,
+                remotoTrouxeHora = remoteDraft.localTime != null,
+                finalTemData = mergedDate != null,
+                finalTemHora = mergedTime != null,
+            ),
         )
     }
 
@@ -103,21 +110,46 @@ class HybridParser(
      * As notas do local que a IA acabou de tornar falsas saem do rascunho.
      *
      * Elas são geradas em `LocalTaskParser` para o que **faltou** ("Falta a data", "Falta o
-     * horário") e para o instante vencido, e a tela as mostra em vermelho
-     * (`ConfirmDraftScreen`). Mantidas depois de a IA preencher o campo, a tela exibiria "Falta o
-     * horário" logo acima do horário preenchido — a contradição visível que o app inteiro evita.
-     * O casamento é por prefixo porque a nota nasce como texto pronto lá, e não como código.
+     * horário") e para o que o parser não cravou (a data que não existe, o ano que rolou, o
+     * instante vencido), e a tela as mostra em vermelho (`ConfirmDraftScreen`). Mantidas depois de
+     * a IA preencher o campo, a tela exibiria "Falta o horário" logo acima do horário preenchido —
+     * a contradição visível que o app inteiro evita.
+     *
+     * O casamento é por prefixo, e o prefixo mora em [NotasDoRascunho], na origem da nota. Antes
+     * esta classe tinha a lista própria de frases completas, e uma nota nova do parser — como as
+     * de data que este lote criou — ficava de fora dela sem que nada avisasse: a tela mostrava em
+     * vermelho "“05/08” já passou este ano" logo acima da data que a IA tinha acabado de resolver.
+     * Com o assunto marcado na origem, a nota nova nasce desmentível.
+     *
+     * O que desmente é o que **a IA trouxe**, não o rascunho final ter o campo. A diferença importa
+     * no caminho mais comum da escalação: "reunião 05/08 de manhã" tem data do local e hora
+     * faltando, então escala; a IA devolve só a hora. Com o rascunho final como critério, a data
+     * "2027-08-05" — que é o palpite que o **local** deu — desmentia a nota "“05/08” já passou este
+     * ano; ficou em 2027", e a tela mostrava 2027 em silêncio, sem a nota que existe justamente
+     * para explicar esse 2027. A pergunta certa é "a IA resolveu a data?", não "o rascunho tem
+     * data?".
+     *
+     * O instante vencido é a exceção, e por um motivo: as notas de "falta" falam do campo (a IA
+     * preencheu a hora?), mas [NotasDoRascunho.INSTANTE_PASSADO] fala do **resultado** — "essa data
+     * e horário já passaram". Quem decide se isso é verdade é o instante final, não quem trouxe
+     * cada metade. Exigir as duas do remoto deixava a nota ao lado de um instante futuro: com
+     * `marcar reunião hoje às 8h e pagar conta` (20/08 08:00, já passado) o remoto devolve só a hora
+     * `23:00`, o final vira 20/08 23:00 — futuro — e a nota continuava dizendo "já passaram", com
+     * `qc=true`. O remoto só acrescenta campos, então "final completo" já implica que o palpite
+     * local não está mais sozinho.
      */
     private fun notasDomescladas(
         locais: List<String>,
         remotas: List<String>,
-        localDate: LocalDate?,
-        localTime: LocalTime?,
+        remotoTrouxeData: Boolean,
+        remotoTrouxeHora: Boolean,
+        finalTemData: Boolean,
+        finalTemHora: Boolean,
     ): List<String> {
         val desmentidas = buildSet {
-            if (localDate != null) add(NOTA_FALTA_DATA)
-            if (localTime != null) add(NOTA_FALTA_HORA)
-            if (localDate != null && localTime != null) add(NOTA_INSTANTE_PASSADO)
+            if (remotoTrouxeData) addAll(NotasDoRascunho.SOBRE_A_DATA)
+            if (remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_A_HORA)
+            if (finalTemData && finalTemHora) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
         }
         return (locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } } + remotas)
             .distinct()
@@ -153,13 +185,4 @@ class HybridParser(
         return localDraft.localDate == null || localDraft.localTime == null
     }
 
-    private companion object {
-        // Prefixos das notas que o `LocalTaskParser` escreve para o que faltou e para o instante
-        // vencido. Casadas por prefixo porque lá a nota nasce como frase pronta para a tela, e o
-        // que estas constantes precisam é só reconhecê-la depois — a redação pode ganhar um
-        // complemento sem quebrar o casamento.
-        const val NOTA_FALTA_DATA = "Falta a data"
-        const val NOTA_FALTA_HORA = "Falta o horário"
-        const val NOTA_INSTANTE_PASSADO = "Essa data e horário já passaram"
-    }
 }

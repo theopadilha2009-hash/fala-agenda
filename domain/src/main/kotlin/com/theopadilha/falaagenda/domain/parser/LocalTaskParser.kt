@@ -8,14 +8,22 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import com.theopadilha.falaagenda.domain.time.AppClock
 import java.time.DayOfWeek
+import java.time.DateTimeException
 import java.time.LocalDate
 import java.time.LocalTime
-import java.time.YearMonth
+import java.time.Month
+import java.time.format.TextStyle
 import java.time.temporal.WeekFields
 import java.util.Locale
 
 /**
  * Parser determinístico pt-BR. Nunca inventa data/hora ausente.
+ *
+ * A `note` de cada `DateHit` nasce marcada com o prefixo de [NotasDoRascunho] — o casamento entre
+ * o que este parser escreve e o que o `HybridParser` tem de desmentir é pelo prefixo, e não pela
+ * frase inteira: antes a lista era de frases completas, e cada nota nova (a data que rolou o ano,
+ * a que não existe) ficava de fora dela sem que nada avisasse, sobrevivendo à IA ter resolvido a
+ * data e aparecendo em vermelho acima da data preenchida.
  */
 class LocalTaskParser(
     private val clock: AppClock,
@@ -72,7 +80,7 @@ class LocalTaskParser(
         if (dateHit.ambiguous) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += "A data ficou ambígua."
+            notes += dateHit.note ?: NotasDoRascunho.DATA_AMBIGUA
         }
 
         val periodHit = extractPeriodHint(remaining)
@@ -176,14 +184,14 @@ class LocalTaskParser(
         if (localDate != null && localTime != null) {
             val scheduled = localDate.atTime(localTime).atZone(clock.zoneId()).toInstant()
             if (scheduled.isBefore(clock.instant()) && !recurrence.isRecurring) {
-                notes += "Essa data e horário já passaram."
+                notes += NotasDoRascunho.INSTANTE_PASSADO
             }
         }
         if (missing.contains(MissingDraftField.DATE)) {
-            notes += "Falta a data. Não inventamos um dia."
+            notes += NotasDoRascunho.FALTA_DATA
         }
         if (missing.contains(MissingDraftField.TIME)) {
-            notes += "Falta o horário. Não inventamos uma hora."
+            notes += NotasDoRascunho.FALTA_HORA
         }
 
         return ParsedTaskDraft(
@@ -222,7 +230,7 @@ class LocalTaskParser(
             return RecurrenceHit(
                 RecurrenceRule(RecurrenceKind.YEARLY, dayOfMonth = day, monthOfYear = month),
                 remaining,
-                day !in 1..31,
+                !RecurrenceEngine.dayExistsInMonth(day, month),
             )
         }
 
@@ -236,7 +244,7 @@ class LocalTaskParser(
             return RecurrenceHit(
                 RecurrenceRule(RecurrenceKind.YEARLY, dayOfMonth = day, monthOfYear = month),
                 remaining,
-                false,
+                !RecurrenceEngine.dayExistsInMonth(day, month),
             )
         }
 
@@ -574,7 +582,12 @@ class LocalTaskParser(
         return null
     }
 
-    private data class DateHit(val date: LocalDate?, val remaining: String, val ambiguous: Boolean)
+    private data class DateHit(
+        val date: LocalDate?,
+        val remaining: String,
+        val ambiguous: Boolean,
+        val note: String? = null,
+    )
 
     private fun extractDate(text: String, recurrence: RecurrenceRule): DateHit {
         var remaining = text
@@ -598,42 +611,42 @@ class LocalTaskParser(
             val day = m.groupValues[1].toInt()
             val month = m.groupValues[2].toInt()
             val yearRaw = m.groupValues[3]
-            val year = when {
-                yearRaw.isBlank() -> inferYear(today, month, day)
-                yearRaw.length == 2 -> 2000 + yearRaw.toInt()
-                else -> yearRaw.toInt()
-            }
             remaining = remaining.replace(m.value, " ")
             if (month !in 1..12 || day !in 1..31) {
                 return DateHit(null, remaining, true)
             }
-            val date = RecurrenceEngine.clampToValidDate(year, month, day)
-            return DateHit(date, remaining, false)
+            val year = when {
+                yearRaw.isBlank() -> null
+                yearRaw.length == 2 -> 2000 + yearRaw.toInt()
+                else -> yearRaw.toInt()
+            }
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
+        // O "dia"/"no dia" antes do dia do mês faz parte da data, não do título: "dia 15 de
+        // novembro missa" é a missa, não "Dia missa".
         val extenso = Regex(
-            """\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
+            """\b(?:(?:no\s+)?dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
         )
         extenso.find(remaining)?.let { m ->
             val day = m.groupValues[1].toInt()
             val month = monthFromName(m.groupValues[2])
-            val year = m.groupValues[3].ifBlank { inferYear(today, month, day).toString() }.toInt()
+            val year = m.groupValues[3].ifBlank { null }?.toInt()
             remaining = remaining.replace(m.value, " ")
-            val date = RecurrenceEngine.clampToValidDate(year, month, day)
-            return DateHit(date, remaining, false)
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
         // "dois de maio": o dia por extenso. A regex acima exige dígito, então a frase ficava sem
         // data e o "dois de maio" sobrava no título.
         val extensoPalavra = Regex(
-            """\b($WORD_DAY_ALT)\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
+            """\b(?:(?:no\s+)?dia\s+)?($WORD_DAY_ALT)\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
         )
         extensoPalavra.find(remaining)?.let { m ->
             val day = WORD_DAYS[TextNormalizer.compactSpaces(m.groupValues[1])] ?: return@let
             val month = monthFromName(m.groupValues[2])
-            val year = m.groupValues[3].ifBlank { inferYear(today, month, day).toString() }.toInt()
+            val year = m.groupValues[3].ifBlank { null }?.toInt()
             remaining = remaining.replace(m.value, " ")
-            return DateHit(RecurrenceEngine.clampToValidDate(year, month, day), remaining, false)
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
         // "no dia 25": dia do mês avulso. Sem mês dito, o próximo 25 (este mês se ainda não passou,
@@ -651,7 +664,22 @@ class LocalTaskParser(
             if (day !in 1..31) return DateHit(null, remaining, true)
             val month = if (day >= today.dayOfMonth) today.monthValue else today.monthValue % 12 + 1
             val year = if (month >= today.monthValue) today.year else today.year + 1
-            return DateHit(RecurrenceEngine.clampToValidDate(year, month, day), remaining, false)
+            // O mês aqui é deduzido, e o mês deduzido pode não ter o dia dito: "no dia 31" ouvido
+            // em fevereiro não é 28/02. O `clampToValidDate` arredondava para o último dia do mês
+            // com `ambiguous = false` e a caixa rápida confirmava a data que ela não falou. É a
+            // mesma recusa do `resolveDate`, no terceiro caminho de data avulsa deste método.
+            val date = try {
+                LocalDate.of(year, month, day)
+            } catch (_: DateTimeException) {
+                val mes = Month.of(month).getDisplayName(TextStyle.FULL, locale)
+                return DateHit(
+                    null,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_IMPOSSIVEL}: o dia $day não existe em $mes. Confirme a data.",
+                )
+            }
+            return DateHit(date, remaining, false)
         }
 
         MONTH_START.find(remaining)?.let { m ->
@@ -780,13 +808,70 @@ class LocalTaskParser(
         a.get(WeekFields.ISO.weekOfWeekBasedYear()) == b.get(WeekFields.ISO.weekOfWeekBasedYear()) &&
             a.get(WeekFields.ISO.weekBasedYear()) == b.get(WeekFields.ISO.weekBasedYear())
 
-    private fun inferYear(today: LocalDate, month: Int, day: Int): Int {
-        val candidate = try {
-            YearMonth.of(today.year, month).atDay(day.coerceAtMost(YearMonth.of(today.year, month).lengthOfMonth()))
-        } catch (_: Exception) {
-            today
+    /**
+     * A data que o texto aponta, com o ano que ela não disse resolvido aqui.
+     *
+     * O ano ausente é um palpite, e um palpite não pode virar certeza calada: "reunião 05/08"
+     * dita em 20/08/2026 rolava para 05/08/2027 com `ambiguous = false` e a caixa rápida
+     * confirmava quase um ano à frente sem avisar. A data continua a mais próxima no futuro —
+     * rolar para o ano seguinte é a leitura certa, e é o que mantém "25/12" no Natal deste ano —
+     * mas agora ela chega ambígua, para a tela confirmar em vez de a caixa rápida decidir.
+     *
+     * E data que não existe é recusa, não arredondamento: "31/02" virava 28/02 com cara de
+     * certeza. `RecurrenceEngine.clampToValidDate` continua valendo para as regras que repetem
+     * ("todo dia 31"), onde o ajuste é a semântica; aqui, na data avulsa, o dia não existe e o
+     * rascunho fica sem data.
+     */
+    private fun resolveDate(
+        today: LocalDate,
+        year: Int?,
+        month: Int,
+        day: Int,
+        raw: String,
+        remaining: String,
+    ): DateHit {
+        if (year != null) {
+            val date = try {
+                LocalDate.of(year, month, day)
+            } catch (_: DateTimeException) {
+                return DateHit(
+                    null,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_IMPOSSIVEL}: “$raw” não existe no calendário.",
+                )
+            }
+            return DateHit(date, remaining, false)
         }
-        return if (candidate.isBefore(today)) today.year + 1 else today.year
+        val thisYear = try {
+            LocalDate.of(today.year, month, day)
+        } catch (_: DateTimeException) {
+            null
+        }
+        if (thisYear != null && !thisYear.isBefore(today)) {
+            return DateHit(thisYear, remaining, false)
+        }
+        // O próximo ano em que a data existe — 29/02 não vale em ano comum, e pular para o
+        // bissexto seguinte é a data que ela disse, não o 28/02 que nunca foi dito.
+        val nextYear = (today.year + 1..today.year + 8).firstOrNull { y ->
+            try {
+                LocalDate.of(y, month, day)
+                true
+            } catch (_: DateTimeException) {
+                false
+            }
+        } ?: return DateHit(
+            null,
+            remaining,
+            true,
+            "${NotasDoRascunho.DATA_IMPOSSIVEL}: “$raw” não existe no calendário.",
+        )
+        val note = if (thisYear == null) {
+            "${NotasDoRascunho.DATA_A_CONFIRMAR}: “$raw” não existe este ano; ficou em $nextYear."
+        } else {
+            "${NotasDoRascunho.DATA_A_CONFIRMAR}: “$raw” já passou este ano; ficou em $nextYear."
+        }
+        return DateHit(LocalDate.of(nextYear, month, day), remaining, true, note)
     }
 
     /**
@@ -1143,7 +1228,7 @@ class LocalTaskParser(
             "lembrete", "agendar", "agenda", "por", "favor", "preciso", "tenho",
             "marcar", "anota", "anotar", "tarefa", "compromisso", "e", "eh",
             "daqui", "hora", "horas", "minuto", "minutos", "meia",
-            "noite", "manha", "tarde", "madrugada", "almoco", "depois",
+            "noite", "manha", "tarde", "madrugada", "depois",
             "cada", "mes", "ano", "nos", "nas",
         )
     }

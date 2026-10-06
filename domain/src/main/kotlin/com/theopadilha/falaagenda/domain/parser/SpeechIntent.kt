@@ -62,15 +62,49 @@ object SpeechIntentClassifier {
         if (folded.isEmpty()) return SpeechIntent.Capture
         return ask(folded)
             ?: complete(folded)
-            ?: cancel(folded)
+            // O "reconhecer sem executar" vem ANTES de cancelar: "cancela isso" não nomeia
+            // alvo nenhum e tem de cair no caminho do ERASE, não num cancelamento sem nome
+            // (que procuraria a tarefa "isso" e não acharia).
             ?: unknown(folded)
+            ?: cancel(folded)
             ?: SpeechIntent.Capture
     }
 
+    /**
+     * O preâmbulo de cortesia que pode anteceder o comando ("por favor, cancela o médico").
+     * É o único material tolerado ANTES do gatilho — o resto da fala antes dele muda o sentido
+     * da frase.
+     */
+    private val FILLER_PREFIX = Regex(
+        "^(por favor|favor|pode|poderia|podias|ei|oi|olha|escuta|escute|entao|e|eh)\\b[\\s,!.]+",
+    )
+
+    /** A fala sem o preâmbulo de cortesia, que é onde a âncora do gatilho olha. */
+    private fun withoutFiller(folded: String): String {
+        var rest = folded
+        while (true) {
+            val prefix = FILLER_PREFIX.find(rest) ?: return rest
+            rest = rest.substring(prefix.range.last + 1).trim()
+        }
+    }
+
+    /**
+     * O gatilho só vale ABRINDO a fala (ou logo depois do preâmbulo de cortesia).
+     *
+     * A mesma palavra no meio da frase é o verbo de outra oração — "perguntar se a médica
+     * cancela a consulta", "checar se já paguei o aluguel" —, e ali não é um pedido dirigido
+     * ao app. Sem esta âncora, essas frases viravam comando e o app apagava ou concluía uma
+     * tarefa de verdade: o pior desfecho deste aplicativo.
+     */
+    private fun opensWith(regex: Regex, rest: String): MatchResult? =
+        regex.find(rest)?.takeIf { it.range.first == 0 }
+
     // --- perguntar -------------------------------------------------------------------
 
-    private val oQue = Regex("\\bo que\\b")
-    private val tenhoOuTem = Regex("\\b(tenho|tem|ha)\\b")
+    // "o que tenho/tem ... na agenda": o "o que ... tenho/tem" tem de ABRIR a fala. No meio
+    // ("comprar o que tem na lista") ele é o objeto da tarefa, não uma pergunta — e sem a
+    // âncora a frase virava pergunta e a tarefa nunca nascia.
+    private val oQueTenho = Regex("\\bo que\\b.*\\b(tenho|tem|ha)\\b")
 
     // A pergunta só é sobre a agenda quando nomeia o dia ou o que se mostra ("marcado",
     // "compromissos", "tarefas", "a fazer"). Sem esta pista, "o que tem de novo" viraria
@@ -103,12 +137,18 @@ object SpeechIntentClassifier {
     private val amanha = Regex("\\bamanha\\b")
 
     private fun ask(folded: String): SpeechIntent? {
-        val pergunta = (oQue.containsMatchIn(folded) &&
-            tenhoOuTem.containsMatchIn(folded) &&
-            agendaCue.containsMatchIn(folded)) ||
-            quaisAgenda.containsMatchIn(folded) ||
-            meMostra.containsMatchIn(folded) ||
-            temAlgo.containsMatchIn(folded)
+        val rest = withoutFiller(folded)
+        val pergunta =
+            // "o que tenho hoje?": abre a fala (ou vem logo após "por favor") e nomeia o
+            // dia/agenda.
+            (opensWith(oQueTenho, rest) != null && agendaCue.containsMatchIn(folded)) ||
+                // "quais os compromissos de hoje?" / "me mostra a agenda": a pergunta pelo
+                // substantivo ou pelo pedido dirigido a quem responde.
+                quaisAgenda.containsMatchIn(folded) ||
+                meMostra.containsMatchIn(folded) ||
+                // "tem algo amanhã?": a pergunta pelo indefinido, e o dia é obrigatório. Sem o
+                // dia, "tenho algo marcado com o dentista" — afirmação — viraria pergunta.
+                temAlgo.containsMatchIn(folded)
         if (!pergunta) return null
         // Só hoje e amanhã: são as duas janelas que a home mostra. "depois de amanhã" contém
         // "amanhã" e cai em amanhã — limitação conhecida e preferível a inventar uma terceira
@@ -131,23 +171,32 @@ object SpeechIntentClassifier {
     // "conclui/concluí o médico": imperativo (ou passado) dirigido ao app. A forma infinitiva
     // ("concluir a faculdade") fica de fora de propósito — é uma captura legítima, e ancorar
     // nela engoliria a tarefa.
-    private val conclui = Regex("\\b(conclui|marca como feito|marcar como feito)\\b")
+    //
+    // O "conclui" nu fica de fora pelo mesmo motivo: no presente ele é idêntico ao imperativo
+    // ("ela conclui", "conclui a faculdade em dezembro") e não dá para distinguir pela forma.
+    // Só o "marca como feito", que não tem outro sentido, vale — na dúvida, captura.
+    private val conclui = Regex("\\b(marca como feito|marcar como feito)\\b")
 
     private fun complete(folded: String): SpeechIntent? {
-        val hit = jaFiz.find(folded) ?: conclui.find(folded) ?: return null
-        return SpeechIntent.Complete(targetAfter(folded, hit.range.last + 1))
+        val rest = withoutFiller(folded)
+        val hit = opensWith(jaFiz, rest) ?: opensWith(conclui, rest) ?: return null
+        return SpeechIntent.Complete(targetAfter(rest, hit.range.last + 1))
     }
 
     // --- cancelar --------------------------------------------------------------------
 
-    // "cancela/cancele o médico": imperativo dirigido ao app. A forma infinitiva ("cancelar a
-    // consulta") fica de fora: é captura legítima ("me lembra de cancelar...") e viraria um
-    // cancelamento que ela não pediu.
+    // "cancela/cancele o médico": imperativo dirigido ao app, ABRINDO a fala. A forma
+    // infinitiva ("cancelar a consulta") fica de fora: é captura legítima ("me lembra de
+    // cancelar...") e viraria um cancelamento que ela não pediu. E a forma no meio da frase
+    // ("perguntar se a médica cancela a consulta", "a cancela do estacionamento") também —
+    // ali é o verbo de outra oração ou o substantivo, e tratá-la como comando apagava uma
+    // tarefa de verdade.
     private val cancela = Regex("\\b(cancela|cancele|desmarca|desmarque)\\b")
 
     private fun cancel(folded: String): SpeechIntent? {
-        val hit = cancela.find(folded) ?: return null
-        return SpeechIntent.Cancel(targetAfter(folded, hit.range.last + 1))
+        val rest = withoutFiller(folded)
+        val hit = opensWith(cancela, rest) ?: return null
+        return SpeechIntent.Cancel(targetAfter(rest, hit.range.last + 1))
     }
 
     // --- mudar (reconhecido, ainda não executado) ------------------------------------
@@ -166,13 +215,28 @@ object SpeechIntentClassifier {
     // "apaga isso", "exclui isso": apagar apontando para algo que só ela vê na tela. O app
     // não sabe QUAL tarefa, e escolher no chute é o pior desfecho — reconhece e não executa.
     // A âncora é o verbo + o demonstrativo: "apaga a luz" (sem "isso") continua sendo captura.
-    private val apagaIsso = Regex("\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto|essa|esse)\\b")
+    //
+    // "cancela isso" entra aqui também: é apagar sem dizer o nome. Sem esta linha ele caía no
+    // cancelamento com o alvo literal "isso" e respondia "não achei nenhuma tarefa com esse
+    // nome" — quando o certo é dizer que ainda não sabe apagar falando.
+    private val apagaIsso = Regex(
+        "\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto|essa|esse)\\b",
+    )
 
-    private fun unknown(folded: String): SpeechIntent? = when {
-        muda.containsMatchIn(folded) || adia.containsMatchIn(folded) ->
-            SpeechIntent.Unknown(UnsupportedKind.CHANGE)
-        apagaIsso.containsMatchIn(folded) -> SpeechIntent.Unknown(UnsupportedKind.ERASE)
-        else -> null
+    // Só os pronomes "isso/isto": eles não têm substantivo depois, então não nomeiam alvo
+    // nenhum. "cancela essa consulta" fica de fora de propósito — "essa consulta" É o alvo, e
+    // tratá-la como ERASE perderia um cancelamento que o app sabe fazer.
+    private val cancelaIsso = Regex("\\b(cancela|cancele)\\s+(isso|isto)\\b")
+
+    private fun unknown(folded: String): SpeechIntent? {
+        val rest = withoutFiller(folded)
+        return when {
+            opensWith(muda, rest) != null || opensWith(adia, rest) != null ->
+                SpeechIntent.Unknown(UnsupportedKind.CHANGE)
+            opensWith(apagaIsso, rest) != null || opensWith(cancelaIsso, rest) != null ->
+                SpeechIntent.Unknown(UnsupportedKind.ERASE)
+            else -> null
+        }
     }
 
     // --- alvo ------------------------------------------------------------------------

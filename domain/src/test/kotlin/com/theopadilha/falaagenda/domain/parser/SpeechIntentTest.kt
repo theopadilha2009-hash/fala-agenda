@@ -155,4 +155,83 @@ class SpeechIntentTest {
         // "tenho algo" sozinho não pergunta: sem o dia/indefinido de pergunta, é afirmação.
         assertThat(intent("tenho algo marcado com o dentista")).isEqualTo(SpeechIntent.Capture)
     }
+
+    // --- o gatilho só vale no COMEÇO da fala -----------------------------------------
+    //
+    // Estas são as frases em que a mesma palavra aparece no meio: ali ela é o verbo de outra
+    // oração, não um imperativo dirigido ao app. Sem a âncora, "cancela" e "já paguei"
+    // disparavam no meio e a camada apagava ou concluía uma tarefa de verdade — o pior
+    // desfecho deste app.
+
+    @Test
+    fun cancelaComoVerboNoMeioDaFraseContinuaTarefa() {
+        assertThat(intent("Perguntar se a médica cancela a consulta")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun verSeOPlanoCancelaAConsultaContinuaTarefa() {
+        assertThat(intent("Ver se o plano cancela a consulta")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun ligarPraSaberSeCancelaContinuaTarefa() {
+        assertThat(intent("Ligar pra clínica pra saber se cancela a consulta"))
+            .isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun cancelaComoSubstantivoContinuaTarefa() {
+        // "a cancela do estacionamento" é a cancela física (o objeto), não o verbo.
+        assertThat(intent("Pagar a cancela do estacionamento")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun checarSeJaPagueiContinuaTarefa() {
+        assertThat(intent("Checar se já paguei o aluguel")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun confirmarSeJaTomeiContinuaTarefa() {
+        assertThat(intent("Confirmar se já tomei o remédio da manhã")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    @Test
+    fun concluiAFaculdadeContinuaTarefa() {
+        // "conclui a faculdade em dezembro" é o que ela QUER registrar. No começo da frase
+        // "conclui" ainda é ambíguo (o presente "ele conclui" e o imperativo são iguais), e
+        // na dúvida a regra é captura.
+        assertThat(intent("Conclui a faculdade em dezembro")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    // --- o preâmbulo de cortesia não quebra o comando ---------------------------------
+
+    @Test
+    fun porFavorNaoImpedeOCancelamento() {
+        // "por favor" é o único material tolerado antes do gatilho: ela fala assim.
+        val intent = intent("por favor, cancela o médico")
+        assertThat(intent).isInstanceOf(SpeechIntent.Cancel::class.java)
+        assertThat((intent as SpeechIntent.Cancel).target).isEqualTo("medico")
+    }
+
+    @Test
+    fun porFavorNaoImpedeAPergunta() {
+        assertThat(intent("por favor, o que tenho hoje?")).isEqualTo(SpeechIntent.Ask(AskWhen.TODAY))
+    }
+
+    // --- a pergunta da agenda também não rouba tarefa --------------------------------
+
+    @Test
+    fun tarefaQueContemOQueTemNaListaContinuaTarefa() {
+        // "o que tem" no meio é o objeto da lista, não uma pergunta sobre a agenda.
+        assertThat(intent("Comprar o que tem na lista amanhã às 10")).isEqualTo(SpeechIntent.Capture)
+    }
+
+    // --- "cancela isso" é apagar sem nome --------------------------------------------
+
+    @Test
+    fun cancelaIssoEhReconhecidoENaoExecutado() {
+        // "cancela isso" aponta para o que ela vê na tela e não nomeia a tarefa: o app diz
+        // que ainda não sabe apagar falando, em vez de procurar um alvo que não foi dito.
+        assertThat(intent("cancela isso")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
 }

@@ -121,7 +121,9 @@ class FalaComandoTest {
     fun concluirUmAlvoUnicoMarcaComoFeito() {
         val salvo = runBlocking { container.tasks.saveDraft(recado("Consulta médica", LocalDate.now().plusDays(1))) }
 
-        viewModel.understandSpeech("conclui a consulta médica")
+        // "marca como feito", e não "conclui": o "conclui" nu é indistinguível do presente
+        // ("conclui a faculdade em dezembro") e por isso virou captura (ver SpeechIntentTest).
+        viewModel.understandSpeech("marca como feito a consulta médica")
 
         assertThat(proximoRecado()).isEqualTo("Feito.")
         val status = runBlocking { container.tasks.snapshotAgenda() }
@@ -157,6 +159,42 @@ class FalaComandoTest {
         assertThat(proximoRecado()).contains("mais de uma")
         val agenda = agenda()
         assertThat(agenda.upcoming).hasSize(2)
+    }
+
+    /**
+     * A rotina recorrente é o caso MAIS comum dela: "tomar remédio" todo dia. Uma série única
+     * materializa várias pendentes (a varredura do start chama `spawnUpcomingPreview`), e
+     * montar um candidato por ocorrência fazia "já tomei o remédio" virar ambíguo — a fala
+     * mais provável de uma rotina não funcionava. O alvo é a série: a ocorrência eleita é a
+     * pendente mais próxima, que é justamente a que `complete`/`deleteOccurrence` já tratam.
+     */
+    @Test
+    fun rotinaRecorrenteConcluiNaProximaOcorrencia() {
+        runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now(), diario()))
+            // O start do processo materializa as próximas datas da mesma série.
+            container.tasks.rescheduleAll()
+        }
+        // O cenário do defeito: mais de uma pendente com o MESMO nome na agenda.
+        assertThat(agenda().today + agenda().upcoming).hasSize(3)
+
+        viewModel.understandSpeech("já tomei o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Feito.")
+    }
+
+    @Test
+    fun rotinaRecorrenteCancelaANearest() {
+        runBlocking {
+            container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now(), diario()))
+            container.tasks.rescheduleAll()
+        }
+
+        viewModel.understandSpeech("cancela o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        // Só a data eleita sai; as outras da mesma série continuam de pé.
+        assertThat(agenda().today + agenda().upcoming).hasSize(2)
     }
 
     // --- reconhecer e não fazer ------------------------------------------------------
@@ -199,16 +237,22 @@ class FalaComandoTest {
     private fun proximoRecado(): String =
         runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.statusMessage.filterNotNull().first().text } }
 
-    private fun recado(titulo: String, data: LocalDate) = ParsedTaskDraft(
+    private fun recado(
+        titulo: String,
+        data: LocalDate,
+        recorrencia: RecurrenceRule = RecurrenceRule(RecurrenceKind.NONE),
+    ) = ParsedTaskDraft(
         title = titulo,
         localDate = data,
         localTime = LocalTime.of(8, 30),
-        recurrence = RecurrenceRule(RecurrenceKind.NONE),
+        recurrence = recorrencia,
         confidence = 1.0,
         missingFields = emptySet(),
         ambiguous = false,
         transcript = titulo,
     )
+
+    private fun diario() = RecurrenceRule(RecurrenceKind.DAILY)
 
     private companion object {
         const val TEMPO_LIMITE = 15_000L

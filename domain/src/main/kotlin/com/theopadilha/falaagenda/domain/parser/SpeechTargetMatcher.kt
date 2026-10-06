@@ -27,7 +27,18 @@ sealed interface SpeechTargetResolution {
  * tarefa errada.
  */
 object SpeechTargetMatcher {
-    private const val MIN_STEM = 4
+    /** Menor palavra que conta: "a"/"de" não podem casar com tudo. */
+    private const val MIN_WORD = 3
+
+    /**
+     * Menor raiz em comum para valer como a MESMA palavra flexionada ("medico"/"medica").
+     *
+     * O piso de 4 letras do casamento antigo aceitava prefixos enganosos: "carro" casava
+     * "Carregador do celular", "conta" casava "Contrato do aluguel" e "luz" casava "Luzia,
+     * aniversário" — concluir ou apagar a tarefa errada. Com 5, a flexão legítima continua
+     * casando e as palavras diferentes de prefixo curto ficam de fora.
+     */
+    private const val MIN_STEM = 5
 
     fun resolve(target: String, candidates: List<SpeechCandidate>): SpeechTargetResolution {
         val alvo = TextNormalizer.fold(target)
@@ -41,15 +52,14 @@ object SpeechTargetMatcher {
     }
 
     private fun matches(alvo: String, title: String): Boolean {
-        val titulo = TextNormalizer.fold(title)
-        // O título inteiro contido no alvo (ou vice-versa) cobre o caso de nome composto:
-        // "consulta medica" no alvo "cancela a consulta medica de amanha".
-        if (titulo.length >= 3 && (alvo.contains(titulo) || titulo.contains(alvo))) return true
-        // Fora isso, o casamento é por palavra com raiz em comum — "medico" e "medica" casam
-        // pela raiz "medic", e "remedio" não casa com "mercado" (raiz "re" curta demais).
-        return alvo.split(' ').any { a ->
-            titulo.split(' ').any { t -> shareStem(a, t) }
-        }
+        val alvoWords = alvo.split(' ').filter { it.isNotBlank() }
+        val tituloWords = TextNormalizer.fold(title).split(' ').filter { it.isNotBlank() }
+        // Palavra INTEIRA igual: é o casamento exato e o que cobre o nome composto
+        // ("consulta medica" no alvo "cancela a consulta medica de amanha"). Comparar palavra
+        // com palavra — e não substrings — é o que impede "luz" de casar "Luzia".
+        if (alvoWords.any { a -> a.length >= MIN_WORD && tituloWords.any { it == a } }) return true
+        // Fora isso, raiz flexiva: a MESMA palavra com terminação diferente ("medico"/"medica").
+        return alvoWords.any { a -> tituloWords.any { t -> shareStem(a, t) } }
     }
 
     /**

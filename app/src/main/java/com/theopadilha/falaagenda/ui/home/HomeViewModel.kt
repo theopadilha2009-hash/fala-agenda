@@ -789,10 +789,20 @@ class HomeViewModel(
             }
             // Só o que ainda está de pé é alvo: concluir ou apagar algo já feito não é o que
             // ela pediu.
-            val candidates = (sections.today + sections.upcoming).map {
+            //
+            // Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)
+            // materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia
+            // "já tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não
+            // funcionava. A ocorrência eleita é a pendente mais próxima (a mais urgente), que é
+            // justamente a data que `complete` e `deleteOccurrence` já tratam.
+            val pendentes = sections.today + sections.upcoming
+            val porSerie = pendentes
+                .groupBy { it.series.id }
+                .mapValues { (_, daSerie) -> daSerie.minBy { it.occurrence.scheduledAt } }
+            val candidates = porSerie.values.map {
                 SpeechCandidate(id = it.occurrence.id, title = it.series.title)
             }
-            val itemById = (sections.today + sections.upcoming).associateBy { it.occurrence.id }
+            val itemById = porSerie.values.associateBy { it.occurrence.id }
             when (val resolution = SpeechTargetMatcher.resolve(target, candidates)) {
                 is SpeechTargetResolution.One -> itemById[resolution.id]?.let(act)
                 SpeechTargetResolution.None ->

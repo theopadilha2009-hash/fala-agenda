@@ -72,4 +72,47 @@ class SpeechTargetMatcherTest {
         assertThat(SpeechTargetMatcher.resolve("médico", emptyList()))
             .isEqualTo(SpeechTargetResolution.None)
     }
+
+    // --- a raiz em comum não pode ser um prefixo curto qualquer -----------------------
+    //
+    // Quatro letras iguais no começo de duas palavras DIFERENTES não são a mesma palavra:
+    // "carro" e "carregador" começam as duas com "carr". Casar por prefixo curto concluía ou
+    // apagava a tarefa errada.
+
+    @Test
+    fun carroNaoCasaCarregador() {
+        assertThat(SpeechTargetMatcher.resolve("carro", candidates("Carregador do celular")))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun luzNaoCasaLuzia() {
+        assertThat(SpeechTargetMatcher.resolve("luz", candidates("Luzia, aniversário")))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun contaNaoCasaContrato() {
+        // "conta" e "contrato" só compartilham "cont": não é a mesma palavra.
+        assertThat(SpeechTargetMatcher.resolve("conta", candidates("Contrato do aluguel")))
+            .isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun remedioCasaRemedioInteiro() {
+        // O que o casamento precisa cobrir de verdade continua casando: uma palavra inteira
+        // igual à do título.
+        assertThat(SpeechTargetMatcher.resolve("remédio", candidates("Remédio do cachorro")))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    /**
+     * A raiz flexiva continua valendo: "médico" falado casa "Consulta médica" no título, e
+     * "médica" no título casa "médico" no alvo — o reconhecimento de fala erra gênero.
+     */
+    @Test
+    fun raizFlexivaAindaCasa() {
+        assertThat(SpeechTargetMatcher.resolve("medico", candidates("Consulta médica")))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
 }

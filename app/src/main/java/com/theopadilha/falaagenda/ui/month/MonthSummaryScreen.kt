@@ -36,9 +36,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.insight.InsightRow
+import com.theopadilha.falaagenda.domain.insight.MonthInsight
 import com.theopadilha.falaagenda.domain.insight.MonthInsights
 import com.theopadilha.falaagenda.domain.insight.Money
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.ui.components.QuietCard
+import com.theopadilha.falaagenda.ui.home.MissedReason
+import com.theopadilha.falaagenda.ui.home.missedReason
 import java.time.YearMonth
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -136,7 +140,14 @@ fun MonthSummaryScreen(
                 QuietCard {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("${insight.completed} feitas", style = MaterialTheme.typography.titleMedium)
-                        Text("${insight.missed} não realizadas", style = MaterialTheme.typography.bodyMedium)
+                        // Só o que ela deixou de fazer é "não realizadas". A tarefa que o
+                        // aplicativo não avisou sai separada, no mesmo vocabulário da home —
+                        // ela não pode ler "não realizadas" sobre um remédio que o app nunca
+                        // lembrou. Sem falha do app a linha é a de sempre, e o rótulo some.
+                        Text("${insight.naoRealizadas} não realizadas", style = MaterialTheme.typography.bodyMedium)
+                        if (insight.naoAvisadas > 0) {
+                            Text(insight.naoAvisadasLabel(), style = MaterialTheme.typography.bodyMedium)
+                        }
                         if (insight.spentCents > 0) {
                             Text(
                                 "Gasto marcado: ${insight.spentLabel()}",
@@ -206,5 +217,23 @@ fun AgendaSections.insightRows(): List<InsightRow> =
             date = it.occurrence.localDate,
             status = it.occurrence.status,
             amountCents = it.series.amountCents,
+            // O mesmo `missedReason` que separa as seções da home — uma conta só, dois usos:
+            // sem isto a camada de insights não teria como saber se o aviso chegou a sair, e
+            // voltaria a cobrar dela a falta que foi do aplicativo.
+            naoAvisada = it.occurrence.status == OccurrenceStatus.MISSED &&
+                missedReason(it) == MissedReason.NOT_WARNED,
         )
     }
+
+/**
+ * A linha curta do cartão de recap da home. "não realizadas" continua nomeando só o que ela
+ * deixou de fazer; a falha do aplicativo entra separada, com o mesmo texto da home ("Não
+ * consegui avisar"). A remédio que o app nunca lembrou não vira falta dela no fechamento do
+ * mês. Com `naoAvisadas == 0` o rótulo da falha é vazio e a linha é exatamente a de antes.
+ */
+fun monthRecapLine(insight: MonthInsight): String = buildString {
+    append("${insight.completed} feitas")
+    if (insight.naoRealizadas > 0) append(" · ${insight.naoRealizadas} não realizadas")
+    if (insight.naoAvisadas > 0) append(" · ${insight.naoAvisadasLabel()}")
+    if (insight.spentCents > 0) append(" · ${insight.spentLabel()}")
+}

@@ -102,6 +102,27 @@ import java.time.LocalTime
 import java.time.YearMonth
 import java.time.ZoneId
 
+/**
+ * As frases do caminho em que o aviso não sai na hora marcada — o que mais aparece para ela.
+ *
+ * Elas vivem aqui, e não soltas no composable, pelo mesmo motivo do [ReminderAlertCard]: o
+ * texto é a única coisa que ela vê quando o lembrete não sai no horário, e o teste precisa
+ * poder lê-lo. O jargão de sistema que estava aqui ("alarme exato", "ajustes de alarme") saiu
+ * — ele dizia o nome técnico da tela e não o que acontece com o lembrete dela.
+ *
+ * As frases têm de ser verdadeiras nos dois caminhos do `ReminderScheduler`: com a permissão
+ * o aviso sai na hora (`setAlarmClock`), sem ela o sistema pode atrasar
+ * (`setAndAllowWhileIdle`). Por isso o texto avisa do atraso e o botão diz o que ela ganha
+ * tocando, em vez de nomear a tela que vai abrir.
+ */
+internal const val AVISO_INEXATO_SNACKBAR =
+    "O aviso pode atrasar alguns minutos. Dá para deixar no horário certo."
+internal const val AVISO_INEXATO_CARTAO =
+    "A tarefa foi salva, mas neste celular o aviso pode tocar alguns minutos depois da hora. Toque para deixar no horário certo."
+internal const val AVISO_INEXATO_BOTAO = "Deixar no horário certo"
+internal const val AVISO_INEXATO_FALHA_AO_ABRIR =
+    "Não consegui abrir a tela para deixar o aviso no horário certo."
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -337,7 +358,7 @@ fun HomeScreen(
 
     LaunchedEffect(inexact) {
         if (inexact) {
-            snackbar.showSnackbar("O aviso pode atrasar. Abra os ajustes de alarme se quiser o horário exato.")
+            snackbar.showSnackbar(AVISO_INEXATO_SNACKBAR)
         }
     }
 
@@ -613,18 +634,18 @@ fun HomeScreen(
                     item {
                         QuietCard {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("O Android não deixou o alarme exato. A tarefa foi salva.")
+                                Text(AVISO_INEXATO_CARTAO)
                                 TextButton(onClick = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                         openOrReport(
                                             Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                                                 data = Uri.parse("package:${context.packageName}")
                                             },
-                                            "Não consegui abrir os ajustes de alarme deste celular.",
+                                            AVISO_INEXATO_FALHA_AO_ABRIR,
                                         )
                                     }
                                     viewModel.setInexactWarning(false)
-                                }) { Text("Abrir ajustes de alarme") }
+                                }) { Text(AVISO_INEXATO_BOTAO) }
                             }
                         }
                     }

@@ -19,7 +19,15 @@ val DeepGreen = Color(0xFF2F6B52)
 val CardWhite = Color(0xFFFFFFFF)
 val Ink = Color(0xFF1A1A18)
 val Muted = Color(0xFF5E5C56)
-val Line = Color(0xFFE4DFD4)
+
+// A linha que separa o cartão do fundo. O valor antigo (#E4DFD4) dava 1,18:1 contra o creme e
+// 1,33:1 contra o branco do cartão — abaixo dos 3:1 da WCAG 1.4.11 — e o cartão não tem sombra
+// para compensar (`UiBits.kt:42-43`). Este é escuro o bastante para se enxergar dos dois lados:
+// 3,26:1 contra o creme e 3,68:1 contra o branco. Mesmo tom quente do antigo, só mais fundo.
+val Line = Color(0xFF8A8577)
+// A linha clara, para onde a cor não é o que sustenta a leitura: o disco do microfone sem ação
+// e o fundo do botão desabilitado, que precisam dela clara por baixo do texto.
+val LineSoft = Color(0xFFE4DFD4)
 val Missed = Color(0xFF8B3A2F)
 val SoftGreen = Color(0xFFE3F2EA)
 
@@ -27,7 +35,10 @@ private val NightBg = Color(0xFF1A221E)
 private val NightSurface = Color(0xFF24302B)
 private val NightInk = Color(0xFFF4F1EA)
 private val NightMuted = Color(0xFFC2C0B8)
-private val NightLine = Color(0xFF3A4742)
+// Mesmo motivo do claro, contra a superfície e o fundo da noite: 3,17:1 e 3,76:1 (o antigo,
+// #3A4742, dava 1,41:1 e 1,67:1). Esverdeado, como o tom que ele substitui.
+private val NightLine = Color(0xFF6E7D76)
+private val NightLineSoft = Color(0xFF3A4742)
 private val NightPrimary = Color(0xFF8FCBB0)
 private val NightMissed = Color(0xFFE08B7A)
 
@@ -52,6 +63,7 @@ private val lightColors = lightColorScheme(
     surfaceVariant = OffWhite,
     onSurfaceVariant = Muted,
     outline = Line,
+    outlineVariant = LineSoft,
     error = Missed,
     onError = Color.White,
 )
@@ -70,6 +82,7 @@ private val darkColors = darkColorScheme(
     surfaceVariant = Color(0xFF242A27),
     onSurfaceVariant = NightMuted,
     outline = NightLine,
+    outlineVariant = NightLineSoft,
     error = NightMissed,
     onError = NightBg,
 )

@@ -71,6 +71,13 @@ object AgendaFormat {
         now: Instant,
         zone: ZoneId,
         editing: Boolean = false,
+        /**
+         * As datas que ela excluiu desta série. Só entram na conta da edição, e só para a peça
+         * saber que a próxima data da regra pode ter tombstone: nesse caso a data prometida é a
+         * próxima **viva**, a mesma que o alarme vai tocar. Sem elas a tela prometia uma data que
+         * o repositório não armava — o defeito de origem, pelo caminho da edição.
+         */
+        skippedDates: Set<LocalDate> = emptySet(),
     ): DraftPromise {
         // A data e o motivo saem das peças compartilhadas — as mesmas contas com que o
         // repositório grava —, para a tela não recalcular nem inventar explicação.
@@ -78,7 +85,7 @@ object AgendaFormat {
         val promisedDate: LocalDate
         val movedBecause: DraftSchedule.FirstOccurrence.Reason?
         if (editing) {
-            val plan = ChoiceSchedule.plan(recurrence, chosenDate, chosenTime, zone, now)
+            val plan = ChoiceSchedule.plan(recurrence, chosenDate, chosenTime, zone, now, skippedDates)
             promisedDate = plan.date
             // Vencida: o motivo é o horário que passou, e a escolha continua valendo — só não
             // hoje. É a mesma frase que a criação usa, para a data descartada não sumir em

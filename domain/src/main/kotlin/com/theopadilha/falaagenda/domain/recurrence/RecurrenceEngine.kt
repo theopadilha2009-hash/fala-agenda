@@ -18,6 +18,18 @@ object RecurrenceEngine {
         return ym.atDay(day)
     }
 
+    /**
+     * O dia existe neste mês? `31 de abril` não existe, e `29 de fevereiro` só existe no bissexto
+     * — a pergunta que `clampToValidDate` responde arredondando e que o parser precisa responder
+     * recusando, quando o dia foi dito e o mês deduzido. O 29 de fevereiro fica de fora da recusa:
+     * a série anual cai no bissexto seguinte, e o dia existe em algum ano.
+     */
+    fun dayExistsInMonth(dayOfMonth: Int, month: Int): Boolean {
+        if (dayOfMonth !in 1..31) return false
+        if (dayOfMonth == 29 && month == 2) return true
+        return dayOfMonth <= YearMonth.of(2001, month).lengthOfMonth()
+    }
+
     fun yearlyDate(year: Int, month: Int, dayOfMonth: Int): LocalDate {
         if (month == 2 && dayOfMonth == 29) {
             return if (YearMonth.of(year, 2).isLeapYear) {

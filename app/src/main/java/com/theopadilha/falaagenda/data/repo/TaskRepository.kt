@@ -389,11 +389,25 @@ class TaskRepository(
         }
         val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
         val pending = existing.filter { it.status == OccurrenceStatus.PENDING }
-        pending.forEach { scheduler.cancel(it.id) }
+        // A edição reescreve o cartão que ela tocou e o que vem da data nova para frente. O que
+        // fica estritamente antes disso não foi tocado na tela — são justamente as doses de hoje
+        // e de amanhã —, e é isso que a edição destruía: cancelava o alarme de **todas** as
+        // pendentes, apagava as linhas e movia `startLocalDate` para a data tocada, e a varredura
+        // não as trazia de volta porque só materializa datas iguais ou posteriores ao início da
+        // série. No aparelho dela: "mudei o horário do remédio de amanhã e o de hoje/amanhã
+        // parou de tocar".
+        //
+        // A série tem UM horário, então o horário novo não pode valer para a dose de hoje: a de
+        // amanhã, que também não foi tocada, continua tocando no horário dela. A dose que fica
+        // entre a data antiga e a nova também não foi tocada e continua de pé — por isso o cartão
+        // tocado entra pelo id, e não pelo corte de data.
+        val reescritas = pending.filter {
+            it.id == original.id || !it.localDate.isBefore(date)
+        }
+        reescritas.forEach { scheduler.cancel(it.id) }
         val updatedSeries = series.copy(
             title = title.trim(),
             localTime = time,
-            startLocalDate = date,
             recurrence = recurrence,
             amountCents = amountCents,
             observation = observation.trim(),
@@ -402,9 +416,15 @@ class TaskRepository(
             // marcado junto da ocorrência viva, a data ficaria bloqueada em toda
             // materialização futura.
             skippedDates = OccurrenceLifecycle.unskipDate(series.skippedDates, date),
+            // `startLocalDate` só se move quando a data muda. Movê-lo também na edição do mesmo
+            // dia era a outra metade do mesmo defeito: o início da série é o piso de toda
+            // materialização (a varredura e o preview só criam datas iguais ou posteriores a
+            // ele), então mover a série para frente apagava as datas anteriores de uma vez — e
+            // nem o restart as recriava.
+            startLocalDate = if (date != original.localDate) date else series.startLocalDate,
         )
         val serieRow = updatedSeries.toEntity()
-        val substituidas = pending.map { it.id }
+        val substituidas = reescritas.map { it.id }
         // A edição honra a data que ela tocou, mas instante vencido nunca fica pendente com
         // alarme — `occurrencesForChoice` arquiva a data vencida como não realizada e, na regra
         // que repete, arma a próxima. Era aqui que editar "todo dia às 08:00" para as 18:00 de
@@ -429,10 +449,17 @@ class TaskRepository(
             series = serieRow,
             deleteSeriesRow = false,
         )
-        // O preview é sobre o que vem depois: ancorado na data editada, editar uma data
-        // passada criava três datas vencidas, o próximo avanço marcava todas como não
-        // realizadas e a agenda ficava sem as futuras até o app reabrir.
-        spawnUpcomingPreview(updatedSeries, OccurrenceLifecycle.todayIn(clock.zoneId(), now))
+        // O preview recobre a partir da data nova: as doses que a edição reescreveu (a tocada e
+        // as que vêm depois dela) são justamente as que ele tem que rematerializar com a série
+        // nova. Com o piso em hoje ele parava antes delas — editar a dose de 22/08 cancelava a
+        // de 23/08 e o preview não a trazia de volta, que é a mesma perda por outro caminho. O
+        // piso de hoje continua valendo por baixo: ancorado numa data passada, o preview criava
+        // três datas vencidas, o próximo avanço marcava todas como não realizadas e a agenda
+        // ficava sem as futuras até o app reabrir.
+        spawnUpcomingPreview(
+            updatedSeries,
+            maxOf(date, OccurrenceLifecycle.todayIn(clock.zoneId(), now)),
+        )
         EditOutcome.SAVED
     }
 
@@ -719,6 +746,11 @@ class TaskRepository(
             chosenTime = series.localTime,
             zoneId = series.zoneId,
             now = now,
+            // As datas que ela excluiu entram na conta da peça: a próxima data da regra pode
+            // ter tombstone, e essa não recebe alarme. A peça avança até a próxima viva e é
+            // essa data que a escrita grava — a tela, que usa a mesma peça, promete a mesma.
+            // Antes a guarda ficava só aqui e a tela prometia a data excluída: era o defeito.
+            skippedDates = series.skippedDates,
         )
         // Mesma data é a MESMA linha (`seriesId:localDate`): o aviso que já saiu não deixa de
         // ter saído porque ela corrigiu o horário. Data nova é id novo, e aí não há aviso para
@@ -734,11 +766,9 @@ class TaskRepository(
         )
         // A escolha venceu e a regra não repete: não há próxima, e nenhum alarme é armado.
         if (!series.recurrence.isRecurring) return ChoiceOccurrences(armed = null, expired = expired)
-        // Data excluída pela usuária não volta a nascer: o tombstone vale aqui como vale em
-        // `advance` e no preview. Sem esta guarda, editar o horário do cartão de hoje (ou
-        // desfazer outro Excluir) rematerializava a data que ela tinha excluído e rearmava o
-        // alarme dela, com o tombstone ainda gravado.
-        if (series.isSkipped(plan.date)) return ChoiceOccurrences(armed = null, expired = expired)
+        // `plan.date` já é a próxima data **viva** da regra: a peça pulou as datas excluídas.
+        // Nenhuma guarda de tombstone aqui — uma segunda checagem seria uma segunda conta da
+        // mesma decisão, e é ela que reabriria a divergência entre a tela e o alarme.
         val nextId = OccurrenceIds.of(series.id, plan.date)
         // Ocorrência já viva não é reaberta: concluída ou não realizada na próxima data fica
         // como está, e só uma PENDING é que é rearmada — e aí com o progresso que ela já tinha
@@ -796,7 +826,16 @@ class TaskRepository(
     /**
      * Grava uma ocorrência recém-materializada e arma o alarme dela — mas só se o instante ainda
      * não passou. Entregar ao `AlarmManager` um instante vencido é disparo imediato, e é o
-     * invariante do repositório inteiro: nenhum caminho arma alarme no passado.
+     * invariante de quem **cria** ocorrência: nenhum caminho materializa uma ocorrência nova já
+     * vencida com alarme.
+     *
+     * O invariante **não** é "nenhum caminho arma alarme no passado" — isso seria falso, e
+     * "consertar" a varredura por ele mata uma funcionalidade real. O `rescheduleAll` rearma de
+     * propósito um instante já vencido quando ele é **entrega pendente** — o aviso que o Doze
+     * segurou e ainda vai tocar (ver `valeRearmar` e `entregaPendente`, coberto por
+     * `avisoBloqueadoTocaAtrasadoDentroDaJanela`). Aquele caminho não cria ocorrência nenhuma: ele
+     * rearma uma que já existia e cujo instante já passou. Quem nasce vencido é outra coisa, e é
+     * esta função que o impede.
      *
      * O `valeRearmar` da varredura não serve para decidir isto: ele trata instante vencido com
      * `lastReminderAt` nulo como entrega pendente — o aviso que o Doze segurou e ainda vai tocar
@@ -888,6 +927,12 @@ data class SchedulerOutcome(
  * passado o `AlarmManager` dispara na hora. A escolha que venceu fica arquivada como não
  * realizada e, na regra que repete, a próxima data dela é que é armada — é o que "todo dia às
  * 18:00" significa. A regra que não repete não tem próxima: fica só a não realizada, sem aviso.
+ *
+ * E a próxima data da regra pode ter tombstone — a ocorrência que ela excluiu. Essa data não
+ * volta a nascer em nenhum caminho, então não é ela que recebe o alarme: [skippedDates] entra
+ * na conta e a peça avança até a próxima data **viva** da regra, que é a mesma que o
+ * repositório vai materializar. Sem isto, a tela prometia a data excluída e o alarme não era
+ * armado — o defeito de origem deste aplicativo, pelo caminho da edição.
  */
 object ChoiceSchedule {
     /**
@@ -901,12 +946,19 @@ object ChoiceSchedule {
         val expired: Boolean,
     )
 
+    /**
+     * [skippedDates] são as datas que ela excluiu desta série (os tombstones). A peça só as
+     * consulta no ramo vencido, que é o único em que a data devolvida não é a escolhida: ali
+     * quem manda é a regra, e a data excluída não pode ser armada. Sem tombstone nenhum o
+     * resultado é idêntico ao de antes — o laço não dá nem uma volta.
+     */
     fun plan(
         rule: RecurrenceRule,
         chosenDate: LocalDate,
         chosenTime: LocalTime,
         zoneId: ZoneId,
         now: Instant,
+        skippedDates: Set<LocalDate> = emptySet(),
     ): Planned {
         val chosenAt = chosenDate.atTime(chosenTime).atZone(zoneId).toInstant()
         if (!chosenAt.isBefore(now)) return Planned(chosenDate, expired = false)
@@ -914,7 +966,18 @@ object ChoiceSchedule {
         // bastaria — com a data escolhida já no passado ele também nasceria vencido e o alarme
         // dispararia na hora de novo. Na regra que não repete o piso vale, e a data devolvida é a
         // própria escolhida: quem decide que ela não tem aviso é o `isRecurring` de quem chama.
-        val next = DraftSchedule.firstOccurrence(rule, chosenDate, chosenTime, zoneId, now).date
+        var next = DraftSchedule.firstOccurrence(rule, chosenDate, chosenTime, zoneId, now).date
+        // Data excluída não recebe alarme: avança para a próxima viva da regra, e não só um
+        // passo — com 21/08 e 22/08 excluídos a viva é 23/08. Quem move é o mesmo motor da
+        // regra (`nextAfter`), nunca uma segunda conta dela aqui. O laço termina sempre: a
+        // regra que repete avança a cada passo e os tombstones são um conjunto finito (o teto
+        // é `MAX_SKIPPED_DATES`); o limite é rede contra um motor que um dia devolva a mesma
+        // data, não o terminador de um caso real.
+        var passos = 0
+        while (next in skippedDates && passos <= skippedDates.size) {
+            next = RecurrenceEngine.nextAfter(rule, chosenDate, next) ?: break
+            passos++
+        }
         return Planned(next, expired = true)
     }
 }

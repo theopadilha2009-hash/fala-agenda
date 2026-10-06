@@ -359,6 +359,10 @@ fun FalaAgendaRoot(
                         editing = editingItem != null,
                         occurrenceStatus = editingItem?.occurrence?.status,
                         isRecurring = editingItem?.series?.recurrence?.isRecurring == true,
+                        // As datas que ela excluiu desta série: sem elas a promessa do resumo
+                        // citava uma data com tombstone, que o salvar não arma — o defeito de
+                        // origem deste aplicativo, pelo caminho da edição.
+                        skippedDates = editingItem?.series?.skippedDates.orEmpty(),
                         onComplete = editingItem?.let { item ->
                             {
                                 // O recado só aparece depois que a gravação passou: falhou,
@@ -427,6 +431,9 @@ fun FalaAgendaRoot(
                                         confirmed.recurrence,
                                         confirmed.amountCents,
                                         confirmed.observation,
+                                        // Mesmas datas excluídas que a tela recebeu: o recado
+                                        // pós-salvar tem de citar a data viva, não a do tombstone.
+                                        editingItem?.series?.skippedDates.orEmpty(),
                                     )
                                 } else {
                                     homeVm.saveDraft(confirmed, DraftSaveOrigin.CONFIRM)

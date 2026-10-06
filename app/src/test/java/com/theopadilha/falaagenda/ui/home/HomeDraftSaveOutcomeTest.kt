@@ -4,10 +4,15 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.data.local.toEntity
 import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.domain.model.OccurrenceIds
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.model.TaskOccurrence
+import com.theopadilha.falaagenda.domain.model.TaskSeries
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -190,6 +195,50 @@ class HomeDraftSaveOutcomeTest {
         assertThat(saved.message).doesNotContain("Vai avisar hoje")
     }
 
+    /**
+     * O gêmeo do teste acima no caminho do tombstone: editar uma série que repete para um
+     * horário já passado arma a próxima data da regra — mas se essa data foi excluída, a
+     * próxima **viva** é outra, e é ela que o anúncio tem de citar. `ChoiceSchedule.plan`
+     * só avança até a próxima viva quando recebe as datas excluídas, e quem as leva ao
+     * `announceOfEdit` é o chamador (`FalaAgendaRoot`, com o `skippedDates` da série).
+     *
+     * O argumento vai **explícito** aqui de propósito: pelo default (`emptySet()`) a peça
+     * devolveria a data do tombstone e o recado pós-salvar voltaria a prometer um aviso que
+     * nenhum alarme toca — a mentira que este PR existe para matar, no caminho que ele mesmo
+     * consertou. Nenhum teste exercitava este recado com tombstone, e trocar
+     * `ChoiceSchedule.plan(recurrence, date, time, zone, now, skippedDates)` por
+     * `plan(recurrence, date, time, zone, now)` dentro do `announceOfEdit` passava com a
+     * suíte inteira verde.
+     */
+    @Test
+    fun aEdicaoRecorrenteComTombstoneAnunciaAProximaDataViva() {
+        val hoje = LocalDate.now()
+        val escolhida = hoje.minusDays(1)
+        val comTombstone = hoje.plusDays(1)
+        val viva = hoje.plusDays(2)
+        val hora = LocalTime.of(8, 30)
+        val serie = serieComTombstone(comTombstone, escolhida, hora)
+
+        viewModel.edit(
+            id = OccurrenceIds.of(serie.id, escolhida),
+            title = serie.title,
+            date = escolhida,
+            time = hora,
+            recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+            skippedDates = setOf(comTombstone),
+        )
+
+        val saved = desfecho() as DraftSaveOutcome.Saved
+        // A data viva é a que o recado cita — e "amanhã", a data do tombstone, não aparece:
+        // é o que o `ChoiceSchedule.plan` sem as datas excluídas diria.
+        assertThat(saved.message).contains(AgendaFormat.dateLabel(viva, hoje).lowercase())
+        assertThat(saved.message).doesNotContain("amanhã")
+        // E a data que o repositório armou é a mesma que o anúncio prometeu.
+        val armada = runBlocking { container.db.occurrenceDao().get(OccurrenceIds.of(serie.id, viva)) }
+        assertThat(armada).isNotNull()
+        assertThat(armada!!.status).isEqualTo(OccurrenceStatus.PENDING.name)
+    }
+
     /** Desfecho consumido não volta a aparecer numa recomposição qualquer. */
     @Test
     fun oDesfechoConsumidoNaoVolta() {
@@ -304,6 +353,44 @@ class HomeDraftSaveOutcomeTest {
         assertThat(failed.origin).isEqualTo(DraftSaveOrigin.CONFIRM)
         assertThat(failed.message).contains("não está mais na agenda")
         assertThat(viewModel.writeError.value).isNull()
+    }
+
+    /**
+     * Uma série que já existe no banco com um tombstone na [comTombstone], e a ocorrência
+     * [escolhida] (vencida) para o "Salvar" da edição encontrar. É o estado em que o
+     * aplicativo fica depois de a pessoa excluir a data de amanhã: a série guarda o
+     * tombstone e a data escolhida continua viva até a edição arquivá-la.
+     */
+    private fun serieComTombstone(
+        comTombstone: LocalDate,
+        escolhida: LocalDate,
+        hora: LocalTime,
+    ): TaskSeries {
+        val agora = java.time.Instant.now()
+        val serie = TaskSeries(
+            id = java.util.UUID.randomUUID().toString(),
+            title = "tomar remédio",
+            zoneId = java.time.ZoneId.systemDefault(),
+            localTime = hora,
+            startLocalDate = escolhida,
+            recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+            skippedDates = setOf(comTombstone),
+            createdAt = agora,
+            updatedAt = agora,
+        )
+        runBlocking {
+            container.db.seriesDao().upsert(serie.toEntity())
+            container.db.occurrenceDao().upsert(
+                TaskOccurrence(
+                    id = OccurrenceIds.of(serie.id, escolhida),
+                    seriesId = serie.id,
+                    localDate = escolhida,
+                    scheduledAt = escolhida.atTime(hora).atZone(serie.zoneId).toInstant(),
+                    status = OccurrenceStatus.PENDING,
+                ).toEntity(),
+            )
+        }
+        return serie
     }
 
     private fun desfecho(): DraftSaveOutcome =

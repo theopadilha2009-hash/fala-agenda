@@ -8,14 +8,22 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import com.theopadilha.falaagenda.domain.time.AppClock
 import java.time.DayOfWeek
+import java.time.DateTimeException
 import java.time.LocalDate
 import java.time.LocalTime
-import java.time.YearMonth
+import java.time.Month
+import java.time.format.TextStyle
 import java.time.temporal.WeekFields
 import java.util.Locale
 
 /**
  * Parser determinístico pt-BR. Nunca inventa data/hora ausente.
+ *
+ * A `note` de cada `DateHit` nasce marcada com o prefixo de [NotasDoRascunho] — o casamento entre
+ * o que este parser escreve e o que o `HybridParser` tem de desmentir é pelo prefixo, e não pela
+ * frase inteira: antes a lista era de frases completas, e cada nota nova (a data que rolou o ano,
+ * a que não existe) ficava de fora dela sem que nada avisasse, sobrevivendo à IA ter resolvido a
+ * data e aparecendo em vermelho acima da data preenchida.
  */
 class LocalTaskParser(
     private val clock: AppClock,
@@ -72,14 +80,65 @@ class LocalTaskParser(
         if (dateHit.ambiguous) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += "A data ficou ambígua."
+            notes += dateHit.note ?: NotasDoRascunho.DATA_AMBIGUA
         }
 
         val periodHit = extractPeriodHint(remaining)
         remaining = periodHit.remaining
-        if (periodHit.hint != null) {
-            if (localTime != null && localTime.hour in 1..11) {
-                localTime = applyPeriod(localTime, periodHit.hint)
+        val periodHint = periodHit.hint
+        if (periodHint != null && periodHint.contains("-")) {
+            // Faixa do dia ("meio da tarde às quatro"): é um horário aproximado, não a hora que ela
+            // disse. Sem hora, fica ambíguo (nunca inventa). Com hora, o período da faixa resolve o
+            // palpite ("às quatro" → 16h); se o resultado cair fora da faixa, a hora dita e a faixa
+            // se contradizem — ambíguo, em vez de cravar um dos dois em silêncio.
+            if (localTime == null) {
+                ambiguous = true
+                confidence = minOf(confidence, 0.5)
+                notes += "“${periodHit.label}” é uma faixa do dia, não uma hora exata. Complete o horário — não inventamos."
+            } else {
+                val period = periodHint.substringAfter("-")
+                val resolved = LocalTime.of(applyPeriodHour(localTime.hour, "da $period") % 24, localTime.minute)
+                localTime = resolved
+                if (resolved.hour !in faixaHourRange(periodHint)) {
+                    ambiguous = true
+                    confidence = minOf(confidence, 0.5)
+                    notes += "“${periodHit.label}” é uma faixa do dia, não a hora que você disse. Confirme o horário."
+                }
+            }
+        } else if (periodHint != null) {
+            // O PERÍODO EXPLÍCITO vence o marco: "antes do jantar às seis da manhã" é 06:00 — o "da
+            // manhã" que ela disse não pode ser sobrescrito pelo jantar (≈20h).
+            if (timeHit.hadPeriod) {
+                // Horário já resolvido pelo período dito; nada a fazer.
+            } else if (periodHint == "jantar") {
+                // "jantar" é ≈20h. No "depois", a hora 1–6 somada dá 13–18h — a tarde, que é ANTES
+                // do jantar; contradiz o "depois". No "antes", 1–6 vira jantar−2h (18h) e 7–11
+                // vira 19–23h — depois do jantar, contradiz o "antes"; e o "às oito" (20h) já É o
+                // jantar, não "antes" dele. Nesses casos ambíguo, não crava.
+                val antesDoJantar = periodHit.label == "antes do jantar"
+                val contradiz = localTime != null &&
+                    if (antesDoJantar) {
+                        localTime.hour in 7..11 || localTime.hour == 20
+                    } else {
+                        localTime.hour in 1..6
+                    }
+                if (contradiz) {
+                    ambiguous = true
+                    confidence = minOf(confidence, 0.5)
+                    notes += "“${periodHit.label}” e a hora dita não batem. Confirme o horário."
+                } else if (localTime != null && localTime.hour in 1..6) {
+                    // "antes do jantar às seis": o jantar é ≈20h, o "antes" é a hora da tarde —
+                    // 18h, não 06:00.
+                    localTime = LocalTime.of(localTime.hour + 12, localTime.minute)
+                } else if (localTime != null && localTime.hour in 7..11) {
+                    localTime = applyPeriod(localTime, periodHint)
+                } else if (localTime == null) {
+                    ambiguous = true
+                    confidence = minOf(confidence, 0.5)
+                    notes += "“${periodHit.label}” não é um horário exato. Complete o horário — não inventamos."
+                }
+            } else if (localTime != null && localTime.hour in 1..11) {
+                localTime = applyPeriod(localTime, periodHint)
             } else if (localTime == null) {
                 ambiguous = true
                 confidence = minOf(confidence, 0.5)
@@ -94,6 +153,9 @@ class LocalTaskParser(
             ambiguous = true
             confidence = minOf(confidence, 0.45)
             notes += "Parece haver mais de uma tarefa na mesma frase. Vamos separar?"
+            // "tomar duas da manhã e duas da noite": uma hora só no rascunho ainda é uma hora
+            // completa com uma dose a menos. Sem hora, ela confirma em vez de a agenda comer uma.
+            localTime = null
         }
 
         if (localDate == null && recurrence.isRecurring) {
@@ -122,14 +184,14 @@ class LocalTaskParser(
         if (localDate != null && localTime != null) {
             val scheduled = localDate.atTime(localTime).atZone(clock.zoneId()).toInstant()
             if (scheduled.isBefore(clock.instant()) && !recurrence.isRecurring) {
-                notes += "Essa data e horário já passaram."
+                notes += NotasDoRascunho.INSTANTE_PASSADO
             }
         }
         if (missing.contains(MissingDraftField.DATE)) {
-            notes += "Falta a data. Não inventamos um dia."
+            notes += NotasDoRascunho.FALTA_DATA
         }
         if (missing.contains(MissingDraftField.TIME)) {
-            notes += "Falta o horário. Não inventamos uma hora."
+            notes += NotasDoRascunho.FALTA_HORA
         }
 
         return ParsedTaskDraft(
@@ -168,7 +230,7 @@ class LocalTaskParser(
             return RecurrenceHit(
                 RecurrenceRule(RecurrenceKind.YEARLY, dayOfMonth = day, monthOfYear = month),
                 remaining,
-                day !in 1..31,
+                !RecurrenceEngine.dayExistsInMonth(day, month),
             )
         }
 
@@ -182,7 +244,7 @@ class LocalTaskParser(
             return RecurrenceHit(
                 RecurrenceRule(RecurrenceKind.YEARLY, dayOfMonth = day, monthOfYear = month),
                 remaining,
-                false,
+                !RecurrenceEngine.dayExistsInMonth(day, month),
             )
         }
 
@@ -280,6 +342,8 @@ class LocalTaskParser(
         val remaining: String,
         val ambiguous: Boolean,
         val note: String? = null,
+        /** A hora veio com o período dito ("da manhã"): o horário já está resolvido. */
+        val hadPeriod: Boolean = false,
     )
 
     private fun extractTime(text: String): TimeHit {
@@ -391,6 +455,11 @@ class LocalTaskParser(
         if (found.size > 1) {
             return TimeHit(null, remaining, true)
         }
+        // D3 revertido: "duas da tarde" sem o "às" era reconhecido como hora por compensar a
+        // hipótese de que o Vosk derruba o "às" — hipótese nunca medida. Sem o "às" não dá para
+        // separar hora ("duas da tarde") de dose ("duas da manhã"), data ("25/12 da tarde") e
+        // recorrência ("todo dia 5 da tarde"), e a regra cravava hora/data errada com
+        // ambiguous=false. Na dúvida, ambíguo: escala para a IA em vez de agendar errado em silêncio.
         val hit = found.firstOrNull() ?: return TimeHit(null, remaining, false)
         if (hit.hourRaw !in 0..23 || hit.minute !in 0..59) {
             return TimeHit(null, remaining.replace(hit.match.value, " "), true)
@@ -425,10 +494,31 @@ class LocalTaskParser(
         remaining = remaining.replace(consumed, " ")
         return TimeHit(
             LocalTime.of(hour % 24, minute),
-            remaining,
+            consumirEmPonto(remaining),
             ambiguous = noPeriod && hit.hourRaw in 1..6,
             note = "“$consumed” pode ser de manhã ou de tarde. Confirme o horário.",
+            hadPeriod = period.isNotBlank(),
         )
+    }
+
+    /**
+     * O "em ponto" é QUALIFICADOR da hora, nunca fonte dela.
+     *
+     * O ramo antigo (`EM_PONTO_CLOCK`) procurava a hora por conta própria: casava um número antes do
+     * "em ponto" e o transformava em hora, antes de `extractDate` rodar. Como `extractTime` vem
+     * primeiro, ele engolia números que pertenciam a outra coisa — o dia do mês ("dia 12 em ponto"),
+     * o primeiro número de uma data `NN/MM` ("05/12 em ponto" virava 05:12 de setembro) e a segunda
+     * hora de uma frase ("oito em ponto e 9"). Cada rodada de review fechou uma dessas formas e
+     * deixou a vizinha aberta, porque o defeito não era a lista de guardas: era o ramo ter opinião
+     * própria sobre qual número é hora.
+     *
+     * Aqui ele não tem. Só age sobre uma hora que os ramos normais JÁ reconheceram, e o trabalho dele
+     * é um só: tirar o "em ponto" do texto que sobra para o título. Sem hora reconhecida, não faz
+     * nada — o "em ponto" fica onde está e não inventa horário nenhum.
+     */
+    private fun consumirEmPonto(remaining: String): String {
+        val m = EM_PONTO_TAIL.find(remaining) ?: return remaining
+        return TextNormalizer.compactSpaces(remaining.replaceRange(m.range.first, m.range.last + 1, " "))
     }
 
     /**
@@ -492,7 +582,12 @@ class LocalTaskParser(
         return null
     }
 
-    private data class DateHit(val date: LocalDate?, val remaining: String, val ambiguous: Boolean)
+    private data class DateHit(
+        val date: LocalDate?,
+        val remaining: String,
+        val ambiguous: Boolean,
+        val note: String? = null,
+    )
 
     private fun extractDate(text: String, recurrence: RecurrenceRule): DateHit {
         var remaining = text
@@ -516,42 +611,42 @@ class LocalTaskParser(
             val day = m.groupValues[1].toInt()
             val month = m.groupValues[2].toInt()
             val yearRaw = m.groupValues[3]
-            val year = when {
-                yearRaw.isBlank() -> inferYear(today, month, day)
-                yearRaw.length == 2 -> 2000 + yearRaw.toInt()
-                else -> yearRaw.toInt()
-            }
             remaining = remaining.replace(m.value, " ")
             if (month !in 1..12 || day !in 1..31) {
                 return DateHit(null, remaining, true)
             }
-            val date = RecurrenceEngine.clampToValidDate(year, month, day)
-            return DateHit(date, remaining, false)
+            val year = when {
+                yearRaw.isBlank() -> null
+                yearRaw.length == 2 -> 2000 + yearRaw.toInt()
+                else -> yearRaw.toInt()
+            }
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
+        // O "dia"/"no dia" antes do dia do mês faz parte da data, não do título: "dia 15 de
+        // novembro missa" é a missa, não "Dia missa".
         val extenso = Regex(
-            """\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
+            """\b(?:(?:no\s+)?dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
         )
         extenso.find(remaining)?.let { m ->
             val day = m.groupValues[1].toInt()
             val month = monthFromName(m.groupValues[2])
-            val year = m.groupValues[3].ifBlank { inferYear(today, month, day).toString() }.toInt()
+            val year = m.groupValues[3].ifBlank { null }?.toInt()
             remaining = remaining.replace(m.value, " ")
-            val date = RecurrenceEngine.clampToValidDate(year, month, day)
-            return DateHit(date, remaining, false)
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
         // "dois de maio": o dia por extenso. A regex acima exige dígito, então a frase ficava sem
         // data e o "dois de maio" sobrava no título.
         val extensoPalavra = Regex(
-            """\b($WORD_DAY_ALT)\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
+            """\b(?:(?:no\s+)?dia\s+)?($WORD_DAY_ALT)\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b""",
         )
         extensoPalavra.find(remaining)?.let { m ->
             val day = WORD_DAYS[TextNormalizer.compactSpaces(m.groupValues[1])] ?: return@let
             val month = monthFromName(m.groupValues[2])
-            val year = m.groupValues[3].ifBlank { inferYear(today, month, day).toString() }.toInt()
+            val year = m.groupValues[3].ifBlank { null }?.toInt()
             remaining = remaining.replace(m.value, " ")
-            return DateHit(RecurrenceEngine.clampToValidDate(year, month, day), remaining, false)
+            return resolveDate(today, year, month, day, m.value, remaining)
         }
 
         // "no dia 25": dia do mês avulso. Sem mês dito, o próximo 25 (este mês se ainda não passou,
@@ -569,7 +664,22 @@ class LocalTaskParser(
             if (day !in 1..31) return DateHit(null, remaining, true)
             val month = if (day >= today.dayOfMonth) today.monthValue else today.monthValue % 12 + 1
             val year = if (month >= today.monthValue) today.year else today.year + 1
-            return DateHit(RecurrenceEngine.clampToValidDate(year, month, day), remaining, false)
+            // O mês aqui é deduzido, e o mês deduzido pode não ter o dia dito: "no dia 31" ouvido
+            // em fevereiro não é 28/02. O `clampToValidDate` arredondava para o último dia do mês
+            // com `ambiguous = false` e a caixa rápida confirmava a data que ela não falou. É a
+            // mesma recusa do `resolveDate`, no terceiro caminho de data avulsa deste método.
+            val date = try {
+                LocalDate.of(year, month, day)
+            } catch (_: DateTimeException) {
+                val mes = Month.of(month).getDisplayName(TextStyle.FULL, locale)
+                return DateHit(
+                    null,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_IMPOSSIVEL}: o dia $day não existe em $mes. Confirme a data.",
+                )
+            }
+            return DateHit(date, remaining, false)
         }
 
         MONTH_START.find(remaining)?.let { m ->
@@ -619,16 +729,34 @@ class LocalTaskParser(
         almoco.find(text)?.let {
             return PeriodHit("vague", "depois do almoço", text.replace(it.value, " "))
         }
-        // "à noitinha"/"à noitezinha" são uma palavra só: \bnoite\b não casa dentro delas.
-        val night = Regex("""\b(?:a|da|de|na)\s+(?:noite|noitinha|noitezinha)\b""")
+        // "jantar" é o marco da noite (≈20:00), não um período vago como o almoço: "depois do jantar
+        // às oito" saía 08:00 com faltam=[] e confiança alta — a caixa rápida confirmava sem consultar
+        // a IA e a tarefa era agendada de manhã em silêncio. Sozinho ("depois do jantar"), também
+        // precisa marcar ambíguo em vez de deixar a palavra no título.
+        val jantar = Regex("""\b(depois|antes|apos)\s+do\s+jantar\b""")
+        jantar.find(text)?.let { m ->
+            // O rótulo segue o que ela disse: a nota de "antes do jantar" não pode dizer "depois do
+            // jantar" e contradizer a própria frase.
+            val antes = m.groupValues[1] == "antes"
+            return PeriodHit("jantar", if (antes) "antes do jantar" else "depois do jantar", text.replace(m.value, " "))
+        }
+        // "meio da tarde"/"começo da manhã"/"fim de tarde": faixa do dia, não hora exata. Vinha
+        // virando título ("Meio", "Começo", "Fim") com faltam=[] e confiança alta.
+        val faixa = Regex("""\b(meio|comeco|fim)\s+d[aeo]\s+(manha|tarde|noite|madrugada)\b""")
+        faixa.find(text)?.let { m ->
+            return PeriodHit("${m.groupValues[1]}-${m.groupValues[2]}", m.value, text.replace(m.value, " "))
+        }
+        // "à noitinha"/"à noitezinha" são uma palavra só: \bnoite\b não casa dentro delas. "pela" é o
+        // mesmo que "de": sem ele "pela manhã" vazava para o título ("Tomar remédio pela").
+        val night = Regex("""\b(?:a|da|de|na|pela)\s+(?:noite|noitinha|noitezinha)\b""")
         night.find(text)?.let {
             return PeriodHit("noite", "à noite", text.replace(it.value, " "))
         }
-        val afternoon = Regex("""\b(?:a|da|de|na)\s+tarde\b""")
+        val afternoon = Regex("""\b(?:a|da|de|na|pela)\s+tarde\b""")
         afternoon.find(text)?.let {
             return PeriodHit("tarde", "à tarde", text.replace(it.value, " "))
         }
-        val morning = Regex("""\b(?:a|da|de|na)\s+manha\b""")
+        val morning = Regex("""\b(?:a|da|de|na|pela)\s+manha\b""")
         morning.find(text)?.let {
             return PeriodHit("manha", "de manhã", text.replace(it.value, " "))
         }
@@ -640,8 +768,28 @@ class LocalTaskParser(
         return LocalTime.of(applyPeriodHour(time.hour, "da $hint"), time.minute)
     }
 
+    /** Faixa de horas plausível de "meio/começo/fim de <período>" — a hora dita fora dela é corrigida. */
+    private fun faixaHourRange(hint: String): IntRange = when (hint) {
+        "comeco-manha" -> 7..9
+        "meio-manha" -> 8..10
+        "fim-manha" -> 10..11
+        "comeco-tarde" -> 13..14
+        "meio-tarde" -> 14..16
+        "fim-tarde" -> 17..19
+        "comeco-noite" -> 19..20
+        "meio-noite" -> 20..22
+        "fim-noite" -> 22..23
+        "comeco-madrugada" -> 0..1
+        "meio-madrugada" -> 1..3
+        "fim-madrugada" -> 3..5
+        else -> 0..23
+    }
+
     private fun applyPeriodHour(hourRaw: Int, period: String): Int = when {
         period.contains("tarde") && hourRaw in 1..11 -> hourRaw + 12
+        // "depois/antes do jantar às oito" é a noite (20h). O "antes do jantar às seis" (18h) já
+        // resolvido no extractTime não é tocado aqui.
+        period.contains("jantar") && hourRaw in 1..11 -> hourRaw + 12
         // "da noite" só soma 12 de 7h em diante ("às 8 da noite" = 20h). Com 1–6 a madrugada é a
         // leitura natural — "às 3 e meia da noite" é 03:30, não 15:30.
         period.contains("noite") && hourRaw in 7..11 -> hourRaw + 12
@@ -660,13 +808,70 @@ class LocalTaskParser(
         a.get(WeekFields.ISO.weekOfWeekBasedYear()) == b.get(WeekFields.ISO.weekOfWeekBasedYear()) &&
             a.get(WeekFields.ISO.weekBasedYear()) == b.get(WeekFields.ISO.weekBasedYear())
 
-    private fun inferYear(today: LocalDate, month: Int, day: Int): Int {
-        val candidate = try {
-            YearMonth.of(today.year, month).atDay(day.coerceAtMost(YearMonth.of(today.year, month).lengthOfMonth()))
-        } catch (_: Exception) {
-            today
+    /**
+     * A data que o texto aponta, com o ano que ela não disse resolvido aqui.
+     *
+     * O ano ausente é um palpite, e um palpite não pode virar certeza calada: "reunião 05/08"
+     * dita em 20/08/2026 rolava para 05/08/2027 com `ambiguous = false` e a caixa rápida
+     * confirmava quase um ano à frente sem avisar. A data continua a mais próxima no futuro —
+     * rolar para o ano seguinte é a leitura certa, e é o que mantém "25/12" no Natal deste ano —
+     * mas agora ela chega ambígua, para a tela confirmar em vez de a caixa rápida decidir.
+     *
+     * E data que não existe é recusa, não arredondamento: "31/02" virava 28/02 com cara de
+     * certeza. `RecurrenceEngine.clampToValidDate` continua valendo para as regras que repetem
+     * ("todo dia 31"), onde o ajuste é a semântica; aqui, na data avulsa, o dia não existe e o
+     * rascunho fica sem data.
+     */
+    private fun resolveDate(
+        today: LocalDate,
+        year: Int?,
+        month: Int,
+        day: Int,
+        raw: String,
+        remaining: String,
+    ): DateHit {
+        if (year != null) {
+            val date = try {
+                LocalDate.of(year, month, day)
+            } catch (_: DateTimeException) {
+                return DateHit(
+                    null,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_IMPOSSIVEL}: “$raw” não existe no calendário.",
+                )
+            }
+            return DateHit(date, remaining, false)
         }
-        return if (candidate.isBefore(today)) today.year + 1 else today.year
+        val thisYear = try {
+            LocalDate.of(today.year, month, day)
+        } catch (_: DateTimeException) {
+            null
+        }
+        if (thisYear != null && !thisYear.isBefore(today)) {
+            return DateHit(thisYear, remaining, false)
+        }
+        // O próximo ano em que a data existe — 29/02 não vale em ano comum, e pular para o
+        // bissexto seguinte é a data que ela disse, não o 28/02 que nunca foi dito.
+        val nextYear = (today.year + 1..today.year + 8).firstOrNull { y ->
+            try {
+                LocalDate.of(y, month, day)
+                true
+            } catch (_: DateTimeException) {
+                false
+            }
+        } ?: return DateHit(
+            null,
+            remaining,
+            true,
+            "${NotasDoRascunho.DATA_IMPOSSIVEL}: “$raw” não existe no calendário.",
+        )
+        val note = if (thisYear == null) {
+            "${NotasDoRascunho.DATA_A_CONFIRMAR}: “$raw” não existe este ano; ficou em $nextYear."
+        } else {
+            "${NotasDoRascunho.DATA_A_CONFIRMAR}: “$raw” já passou este ano; ficou em $nextYear."
+        }
+        return DateHit(LocalDate.of(nextYear, month, day), remaining, true, note)
     }
 
     /**
@@ -783,7 +988,16 @@ class LocalTaskParser(
         private val CLOCK_BARE = Regex(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
-
+        /**
+         * "em ponto" como sufixo de uma hora que os relógios normais já reconheceram.
+         *
+         * É só o qualificador: não captura hora, minuto nem período — quem faz isso é `CLOCK_*`. O
+         * ramo que capturava a hora por conta própria consumia o dia do mês ("dia 12 em ponto"), o
+         * primeiro número de uma data `NN/MM` ("05/12 em ponto" → 05:12 de setembro) e a segunda hora
+         * em dígito da frase ("oito em ponto e 9"), todos com `ambiguous = false`. Ver
+         * `consumirEmPonto`.
+         */
+        private val EM_PONTO_TAIL = Regex("""\bem\s+ponto\b""")
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
         )
@@ -876,7 +1090,9 @@ class LocalTaskParser(
                 "quinze|dezesseis|dezessete|dezoito|dezenove|vinte(?:\\s+e\\s+(?:uma|um|duas|dois|tres))?"
 
         /** Período dito em qualquer ponto ("hoje à noite às nove"): desfaz a ambiguidade de hora 1–6. */
-        private val PERIOD_PHRASE = Regex("""\b(?:a|da|de|na)\s+(?:manha|tarde|noite|noitinha|noitezinha|madrugada)\b""")
+        private val PERIOD_PHRASE = Regex(
+            """\b(?:a|da|de|na|pela)\s+(?:manha|tarde|noite|noitinha|noitezinha|madrugada)\b|\b(?:depois|antes|apos)\s+do\s+jantar\b""",
+        )
 
         /** "semana que vem" sozinha (sem dia da semana): a data é a próxima semana, no mesmo dia. */
         private val WEEK_PHRASE = Regex("""\b(?:na\s+|da\s+)?semana\s+que\s+vem\b""")
@@ -1012,7 +1228,7 @@ class LocalTaskParser(
             "lembrete", "agendar", "agenda", "por", "favor", "preciso", "tenho",
             "marcar", "anota", "anotar", "tarefa", "compromisso", "e", "eh",
             "daqui", "hora", "horas", "minuto", "minutos", "meia",
-            "noite", "manha", "tarde", "madrugada", "almoco", "depois",
+            "noite", "manha", "tarde", "madrugada", "depois",
             "cada", "mes", "ano", "nos", "nas",
         )
     }

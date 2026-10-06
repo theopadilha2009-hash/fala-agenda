@@ -99,6 +99,39 @@ class ReminderLadderTest {
         assertThat(plano.fireAt).isNull()
     }
 
+    /**
+     * A dose do fim da noite não pode ficar com um tiro só.
+     *
+     * O último passo do dia pode ser empurrado para as 08:00 do dia seguinte pelo silêncio —
+     * é o que 22:30 e 23:00 já fazem. Mas o passo seguinte é medido pelo instante **cru**:
+     * das 23:45 em diante o `+15` já cai depois da meia-noite, e ali a escada terminava antes
+     * de o silêncio ter chance de empurrar nada. Um "remédio às 23:50" ficava sem nenhuma
+     * insistência: se o primeiro toque se perdesse (Doze, som, ela dormindo), não havia
+     * segundo.
+     */
+    @Test
+    fun doseDasVinteETresECinquentaTemInsistencia() {
+        val dia = LocalDate.of(2026, 8, 20)
+        val plano = passo(instant(2026, 8, 20, 23, 50), ReminderPolicy.STEP_FIRST, dia)
+        assertThat(plano.fireAt).isEqualTo(instant(2026, 8, 21, 8, 0))
+        assertThat(plano.skippedQuietHours).isTrue()
+    }
+
+    /** O mesmo degrau do outro lado da fronteira: 23:44 ainda cai no dia e já funcionava. */
+    @Test
+    fun doseDasVinteETresECinquentaECincoTemOmesmoDegrau() {
+        val dia = LocalDate.of(2026, 8, 20)
+        val plano = passo(instant(2026, 8, 20, 23, 55), ReminderPolicy.STEP_FIRST, dia)
+        assertThat(plano.fireAt).isEqualTo(instant(2026, 8, 21, 8, 0))
+    }
+
+    @Test
+    fun doseDasVinteETresEQuarentaEQuatroJaTemODegrau() {
+        val dia = LocalDate.of(2026, 8, 20)
+        val plano = passo(instant(2026, 8, 20, 23, 44), ReminderPolicy.STEP_FIRST, dia)
+        assertThat(plano.fireAt).isEqualTo(instant(2026, 8, 21, 8, 0))
+    }
+
     @Test
     fun passosSeguemAvancandoDepoisDoHorario() {
         assertThat(ReminderPolicy.nextStep(ReminderPolicy.STEP_PLUS_30))

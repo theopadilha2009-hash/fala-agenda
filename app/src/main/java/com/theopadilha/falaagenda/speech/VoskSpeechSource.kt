@@ -20,9 +20,12 @@ import org.vosk.Recognizer
  * rede e sem a conta do fabricante.
  *
  * O AudioRecord bloqueia, então a escuta roda em thread própria; os avisos voltam
- * na thread principal, que é onde o controller e a tela vivem. `acceptWaveForm`
- * devolve `true` quando o Vosk entendeu que a fala acabou (silêncio no fim), e é
- * aí que o recado fecha — não há um "parar" da nossa parte.
+ * na thread principal, que é onde o controller e a tela vivem.
+ *
+ * `acceptWaveForm` devolve `true` quando o endpointer do Vosk acha silêncio no fim — mas
+ * isso é um aviso, não uma ordem: o recognizer continua decodificando, e quem fecha o
+ * recado é o [EndOfSpeechPause]. Fechar no primeiro aviso era o truncamento silencioso —
+ * a pausa no meio da frase entregava "tomar" como se fosse o recado inteiro.
  */
 class VoskSpeechSource(
     context: Context,
@@ -94,18 +97,23 @@ class VoskSpeechSource(
             emit { it.onReady() }
 
             val buffer = ByteArray(BUFFER_BYTES)
+            val utterance = VoskUtterance()
             while (running) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read < 0) break // microfone caiu (ou foi liberado por baixo)
                 if (read == 0) continue
-                if (recognizer.acceptWaveForm(buffer, read)) {
+                val atTheEnd = recognizer.acceptWaveForm(buffer, read)
+                utterance.onPartial(VoskOutcome.partial(recognizer.partialResult))?.let { fresh ->
+                    emit { it.onPartial(fresh) }
+                }
+                // O endpointer avisou, e o recado só fecha quando a pausa já dura o mínimo:
+                // o que ela disser em seguida continua entrando nesta mesma escuta.
+                if (atTheEnd && utterance.mayClose()) {
                     val text = VoskOutcome.text(recognizer.result)
                     emit { it.onEndOfSpeech() }
                     emit { it.onFinal(text) }
                     return
                 }
-                val partial = VoskOutcome.partial(recognizer.partialResult)
-                if (partial.isNotBlank()) emit { it.onPartial(partial) }
             }
         } catch (_: Exception) {
             // Modelo pela metade, microfone ocupado: quem decide o próximo motor é o

@@ -21,6 +21,13 @@ data class VoiceUiState(
     val finalText: String? = null,
     val error: String? = null,
     val needSystem: Boolean = false,
+    /**
+     * O recado foi cortado pelo app: o texto entregue veio de um parcial (ou do prazo
+     * vencido), não do fim normal da fala dela. Sem esta marca, "tomar" — o primeiro
+     * pedaço de "tomar… remédio… de pressão" — chega à tela como se fosse o recado
+     * inteiro, e ela confirma uma tarefa que não disse.
+     */
+    val truncated: Boolean = false,
 )
 
 /**
@@ -72,7 +79,9 @@ class VoiceCaptureController(
      */
     private fun giveUpOnTimeout(error: Int) {
         val heard = _ui.value.partial.trim()
-        if (heard.isEmpty()) failWith(error) else finishWith(heard)
+        // O prazo venceu no meio do recado: o que veio vem marcado, porque a escuta parou
+        // de ouvir por conta do app.
+        if (heard.isEmpty()) failWith(error) else finishWith(heard, truncated = true)
     }
 
     fun start(host: Context = context) {
@@ -110,7 +119,10 @@ class VoiceCaptureController(
     }
 
     fun consumeFinal() {
-        _ui.value = VoiceUiState()
+        // A marca de corte FICA: o texto já virou rascunho e o microfone volta a IDLE, mas
+        // é na espera e na confirmação — depois daqui — que ela precisa saber que a escuta
+        // parou antes do fim. Quem apaga é a escuta seguinte (ver `start`).
+        _ui.value = VoiceUiState(truncated = _ui.value.truncated)
     }
 
     fun consumeSystemRequest() {
@@ -165,7 +177,7 @@ class VoiceCaptureController(
         stopSourceOnly()
     }
 
-    private fun finishWith(text: String) {
+    private fun finishWith(text: String, truncated: Boolean = false) {
         session = false
         stopSourceOnly()
         val clean = text.trim()
@@ -173,7 +185,7 @@ class VoiceCaptureController(
             // Erro com estado IDLE some da tela: a mensagem precisa do estado ERROR para aparecer.
             VoiceUiState(state = VoiceState.ERROR, error = "Não entendi o que foi dito.")
         } else {
-            VoiceUiState(state = VoiceState.IDLE, finalText = clean)
+            VoiceUiState(state = VoiceState.IDLE, finalText = clean, truncated = truncated)
         }
     }
 
@@ -255,7 +267,9 @@ class VoiceCaptureController(
             if (!session) return
             val elapsed = SystemClock.elapsedRealtime() - startedAt
             when (VoiceRetry.decide(code, _ui.value.partial, retries, elapsed)) {
-                VoiceRetry.Action.USE_PARTIAL -> finishWith(_ui.value.partial.trim())
+                // O parcial venceu o erro: o que ela disse até aqui é salvo, mas é um recado
+                // cortado — o motor parou no meio, não ela.
+                VoiceRetry.Action.USE_PARTIAL -> finishWith(_ui.value.partial.trim(), truncated = true)
                 VoiceRetry.Action.RETRY -> {
                     retries += 1
                     destroySource()
@@ -272,7 +286,9 @@ class VoiceCaptureController(
         override fun onFinal(text: String) {
             if (!session) return
             val used = text.ifBlank { _ui.value.partial }
-            finishWith(used.trim())
+            // Final vazio é o motor fechando sem resultado: o que sobra é o parcial, e um
+            // parcial é sempre um recado cortado.
+            finishWith(used.trim(), truncated = text.isBlank() && _ui.value.partial.isNotBlank())
         }
     }
 

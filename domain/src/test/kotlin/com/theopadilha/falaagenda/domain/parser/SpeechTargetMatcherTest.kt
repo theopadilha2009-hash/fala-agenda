@@ -160,4 +160,107 @@ class SpeechTargetMatcherTest {
         assertThat(SpeechTargetMatcher.resolve("remedio", candidates("Remédio do cachorro")))
             .isEqualTo(SpeechTargetResolution.One("id0"))
     }
+
+    // --- alvo de VÁRIAS palavras: a maioria estrita tem de casar ----------------------
+    //
+    // Com UMA tarefa só na agenda, um alvo que compartilhava uma única palavra genérica
+    // virava `One` e a ação acontecia calada — apagava ou concluía a tarefa errada. "cancela
+    // o remédio do cachorro" apagava "Passear com o cachorro"; "já tomei o remédio do
+    // cachorro" concluía o passeio. O alvo tem de casar com a TAREFA, não com uma palavra
+    // solta dela. Uma palavra só continua casando como sempre (o caso mais comum).
+
+    @Test
+    fun alvoDeUmaPalavraContinuaCasando() {
+        assertThat(SpeechTargetMatcher.resolve("medico", candidates("Consulta médica")))
+            .isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun alvoDeTresPalavrasComUmaTemporalCasa() {
+        // 2 de 3 significativas casam ("de" não conta): é a maioria, e o nome composto está
+        // lá dentro. É o que o parser entrega em "cancela a consulta médica de amanhã".
+        assertThat(
+            SpeechTargetMatcher.resolve("consulta medica de amanha", candidates("Consulta médica")),
+        ).isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun remedioDoCachorroNaoApagaOPasseio() {
+        // "remedio do cachorro": 1 de 2 significativas casa (só "cachorro"). NÃO é a tarefa.
+        assertThat(
+            SpeechTargetMatcher.resolve(
+                "remedio do cachorro",
+                candidates("Passear com o cachorro"),
+            ),
+        ).isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun consultaDoDentistaNaoApagaAConsultaMedica() {
+        // "consulta do dentista": 1 de 2 significativas casa (só "consulta"). NÃO é a médica.
+        assertThat(
+            SpeechTargetMatcher.resolve("consulta do dentista", candidates("Consulta médica")),
+        ).isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun alvoDeDuasPalavrasComSoUmaCasandoNaoCasa() {
+        // Mesmo com a segunda palavra sendo do mesmo campo ("medico do coracao"), 1 de 2 não
+        // é maioria — na dúvida, `None` é o desfecho seguro.
+        assertThat(
+            SpeechTargetMatcher.resolve("medico do coracao", candidates("Consulta médica")),
+        ).isEqualTo(SpeechTargetResolution.None)
+    }
+
+    @Test
+    fun alvoDeTresPalavrasComSoUmaCasandoNaoCasa() {
+        assertThat(
+            SpeechTargetMatcher.resolve(
+                "remedio do cachorro amanha",
+                candidates("Passear com o cachorro"),
+            ),
+        ).isEqualTo(SpeechTargetResolution.None)
+    }
+
+    // --- o que continua casando com várias palavras ----------------------------------
+
+    @Test
+    fun alvoComOTituloInteiroCasa() {
+        assertThat(
+            SpeechTargetMatcher.resolve("remedio do cachorro", candidates("Remédio do cachorro")),
+        ).isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun alvoDeDuasPalavrasAsDuasCasandoCasa() {
+        assertThat(
+            SpeechTargetMatcher.resolve("tomar remedio", candidates("Tomar remédio em jejum")),
+        ).isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun pluralEGeneroNoAlvoInteiroCasa() {
+        // "consultas medicas" (falado) casa "Consulta médica": as duas palavras flexionam.
+        assertThat(
+            SpeechTargetMatcher.resolve("consultas medicas", candidates("Consulta médica")),
+        ).isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun alvoDeTresPalavrasComTemporalNoFimCasa() {
+        assertThat(
+            SpeechTargetMatcher.resolve("tomar remedio hoje", candidates("Tomar remédio")),
+        ).isEqualTo(SpeechTargetResolution.One("id0"))
+    }
+
+    @Test
+    fun tituloInteiroComTemporalNoAlvoCasa() {
+        // O título inteiro está no alvo; a palavra a mais (tempo) não pode derrubar o casamento.
+        assertThat(
+            SpeechTargetMatcher.resolve(
+                "remedio do cachorro amanha",
+                candidates("Remédio do cachorro"),
+            ),
+        ).isEqualTo(SpeechTargetResolution.One("id0"))
+    }
 }

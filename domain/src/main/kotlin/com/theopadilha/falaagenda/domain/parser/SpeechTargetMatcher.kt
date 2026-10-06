@@ -61,13 +61,38 @@ object SpeechTargetMatcher {
     private fun matches(alvo: String, title: String): Boolean {
         val alvoWords = alvo.split(' ').filter { it.isNotBlank() }
         val tituloWords = TextNormalizer.fold(title).split(' ').filter { it.isNotBlank() }
-        // Palavra INTEIRA igual: é o casamento exato e o que cobre o nome composto
-        // ("consulta medica" no alvo "cancela a consulta medica de amanha"). Comparar palavra
-        // com palavra — e não substrings — é o que impede "luz" de casar "Luzia".
-        if (alvoWords.any { a -> a.length >= MIN_WORD && tituloWords.any { it == a } }) return true
-        // Fora isso, raiz flexiva: a MESMA palavra com terminação diferente ("medico"/"medica").
-        return alvoWords.any { a -> tituloWords.any { t -> shareStem(a, t) } }
+
+        // Alvo de UMA palavra: o caso mais comum ("cancela o médico" → a consulta médica) e o
+        // que a fala produz na maioria das vezes. Continua casando como sempre — palavra
+        // inteira ou raiz flexiva — e não pode endurecer.
+        val significativas = alvoWords.filter { it.length >= MIN_WORD }
+        if (significativas.size <= 1) {
+            return significativas.any { a -> tituloWords.any { t -> wordMatches(a, t) } }
+        }
+
+        // O título INTEIRO dentro do alvo é o nome composto: "consulta medica" no alvo
+        // "cancela a consulta medica de amanha". Todas as palavras significativas do título
+        // estão lá — é o casamento mais forte que existe, mesmo com palavra a mais no alvo.
+        val tituloSignificativas = tituloWords.filter { it.length >= MIN_WORD }
+        if (tituloSignificativas.isNotEmpty() &&
+            tituloSignificativas.all { t -> alvoWords.any { a -> wordMatches(a, t) } }
+        ) return true
+
+        // Alvo de VÁRIAS palavras: exige a MAIORIA ESTRITA das significativas. Uma única
+        // palavra genérica em comum não basta — era isso que, com uma tarefa só na agenda,
+        // virava `One` e agia calado: "cancela o remédio do cachorro" apagava "Passear com o
+        // cachorro" (1 de 2) e "já tomei o remédio do cachorro" concluía o passeio.
+        val casadas = significativas.count { a -> tituloWords.any { t -> wordMatches(a, t) } }
+        return casadas * 2 > significativas.size
     }
+
+    /**
+     * Uma palavra do alvo casa uma do título: inteira e igual, ou a MESMA palavra flexionada
+     * ("medico"/"medica"). Comparar palavra com palavra — e não substrings — é o que impede
+     * "luz" de casar "Luzia".
+     */
+    private fun wordMatches(a: String, t: String): Boolean =
+        (a.length >= MIN_WORD && a == t) || shareStem(a, t)
 
     /**
      * A raiz comum tem de começar a palavra (nunca no meio: "dia" e "medio" compartilham "dio"

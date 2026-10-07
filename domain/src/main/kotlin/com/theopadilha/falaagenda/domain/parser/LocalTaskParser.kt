@@ -672,17 +672,34 @@ class LocalTaskParser(
             // expressões DISCORDAM, o dia dito (a específica) manda E o rascunho escala. Quando
             // concordam ("sexta-feira santa" já sai como data nomeada, sem sobrar dia), nada muda.
             val diasDitos = extractWeekDays(rest)
-            if (diasDitos.size == 1 && hit.date != null && hit.date.dayOfWeek !in diasDitos) {
-                val dia = RecurrenceEngine.firstOnOrAfter(
-                    RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = diasDitos),
-                    today,
-                    today,
-                )
+            // A mesma regra do ramo relativo, e agora num lugar só (`dataEDiasDitosDiscordam`):
+            // quando a data nomeada e os dias ditos DISCORDAM, o rascunho escala. Com DOIS dias
+            // ditos nunca há "a" data — o guard antigo só olhava `size == 1`, então o gêmeo da
+            // doutrina ficou de fora e a data nomeada saía completa e confirmável de um toque,
+            // descartando os dois dias calados ("natal no sábado e domingo" → 25/12, uma sexta,
+            // `qc=true`). A duplicação da regra foi o que deixou o caso de fora; a função única
+            // fecha a classe para os dois ramos.
+            if (dataEDiasDitosDiscordam(hit.date, diasDitos)) {
+                // Com UM dia dito vale a primeira ocorrência dele (a expressão específica manda);
+                // com DOIS não existe uma data que os honre, e a nomeada fica como referência.
+                val dia = if (diasDitos.size == 1) {
+                    RecurrenceEngine.firstOnOrAfter(
+                        RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = diasDitos),
+                        today,
+                        today,
+                    )
+                } else {
+                    hit.date
+                }
                 return DateHit(
                     dia,
                     stripWeekDays(rest),
                     true,
-                    "${NotasDoRascunho.DATA_AMBIGUA} a data nomeada e o dia da semana dito não caem no mesmo dia.",
+                    if (diasDitos.size == 1) {
+                        "${NotasDoRascunho.DATA_AMBIGUA} a data nomeada e o dia da semana dito não caem no mesmo dia."
+                    } else {
+                        "${NotasDoRascunho.DATA_AMBIGUA} a data nomeada e os dias ditos não caem no mesmo dia."
+                    },
                 )
             }
             return DateHit(hit.date, rest, false)
@@ -745,10 +762,10 @@ class LocalTaskParser(
                 // A conta crua caindo NO dia dito: as duas expressões concordam, existe UMA data que
                 // satisfaz as duas, e não há dúvida a escalar. Sem este ramo, "quinta daqui a duas
                 // semanas" (com hoje numa quinta) escalava e devolvia a PRIMEIRA quinta — hoje —
-                // descartando o "duas semanas" em silêncio: o `onNamedDay != date` marcava
-                // "discordam" toda vez que o deslocamento de semanas inteiras caía no próprio dia da
-                // semana dito, que é justamente quando os dois coincidem.
-                if (date.dayOfWeek == namedDay.first()) {
+                // descartando o "duas semanas" em silêncio. A pergunta "as duas expressões
+                // discordam?" mora na função única (`dataEDiasDitosDiscordam`), que o ramo da data
+                // nomeada também usa: a duplicação foi o que deixou o gêmeo de fora.
+                if (!dataEDiasDitosDiscordam(date, namedDay)) {
                     return DateHit(date, remaining, false)
                 }
                 val onNamedDay = RecurrenceEngine.firstOnOrAfter(
@@ -756,30 +773,22 @@ class LocalTaskParser(
                     today,
                     today,
                 )
-                if (onNamedDay != null && onNamedDay != date) {
-                    return DateHit(
-                        onNamedDay,
-                        remaining,
-                        true,
-                        "${NotasDoRascunho.DATA_AMBIGUA} “${m.value}” e o dia dito não caem no mesmo dia.",
-                    )
-                }
-                return DateHit(onNamedDay ?: date, remaining, false)
+                return DateHit(
+                    onNamedDay ?: date,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_AMBIGUA} “${m.value}” e o dia dito não caem no mesmo dia.",
+                )
             }
             // Dois dias ditos com um deslocamento: com DOIS candidatos legítimos na frase, não existe
-            // "a" data — o rascunho escala SEMPRE, mesmo quando a conta crua coincide com um deles.
-            // O guard antigo só escalava quando a conta crua não caía em NENHUM dos dois dias ditos
-            // (`date.dayOfWeek !in namedDay`): quando ela caía em UM deles, o OUTRO era descartado
-            // calado, e a caixa rápida confirmava de um toque a data de um dia só. "sábado e domingo
-            // daqui a 2 dias" (hoje numa quinta) devolvia SÁBADO completo e não-ambíguo, e o domingo
-            // que ela disse sumia sem aviso — o `main` escalava os 168 casos desse eixo; o delta
-            // regrediu. A coincidência da conta com um dos dois dias não é confirmação: o outro dia
-            // dito continua sendo um candidato legítimo.
+            // "a" data — o rascunho escala SEMPRE. A função responde por construção (nenhuma conta cai
+            // em dois dias distintos), e chamá-la aqui mantém a regra num lugar só também neste ramo:
+            // se a doutrina mudar, os três pontos acompanham.
             if (namedDay.size > 1) {
                 return DateHit(
                     date,
                     remaining,
-                    true,
+                    dataEDiasDitosDiscordam(date, namedDay),
                     "${NotasDoRascunho.DATA_AMBIGUA} “${m.value}” e os dias ditos não caem no mesmo dia.",
                 )
             }
@@ -1388,6 +1397,22 @@ class LocalTaskParser(
         return ""
     }
 
+    /**
+     * A doutrina deste lote, num lugar só: as duas expressões de data DISCORDAM quando a data já
+     * resolvida (a conta crua do relativo, ou a data nomeada) não é nenhum dos dias ditos. Nesse
+     * caso o rascunho escala em vez de cravar um dos dois calado — o defeito é escolher calado.
+     *
+     * Com DOIS dias ditos distintos a resposta é sempre `true`: nenhuma data cai em dois dias da
+     * semana diferentes. É o gêmeo que ficou de fora quando a regra estava duplicada no ramo do
+     * relativo (só `size == 1`): a data nomeada devolvia a data completa e confirmável de um toque,
+     * descartando os dois dias calados.
+     */
+    private fun dataEDiasDitosDiscordam(date: LocalDate?, diasDitos: Set<DayOfWeek>): Boolean {
+        if (date == null || diasDitos.isEmpty()) return false
+        if (diasDitos.size > 1) return true
+        return date.dayOfWeek !in diasDitos
+    }
+
     private fun extractWeekDays(text: String): Set<DayOfWeek> {
         val found = linkedSetOf<DayOfWeek>()
         WEEKDAY_PATTERNS.forEach { (regex, day) ->
@@ -1593,39 +1618,30 @@ class LocalTaskParser(
          * o título virava "Feira dentista" (P0-3). Consumindo o " feira" junto com o dia, não sobra
          * nada para o guard ver.
          *
-         * A forma com ESPAÇO não come o "feira" só quando ele encabeça o sintagma nominal com o
-         * "de" do complemento ("feira DE ciências"): ali o "feira" é o substantivo, não o sufixo do
-         * dia. A forma com hífen continua inteira — o hífen é sinal forte do dia (P2-3).
+         * A forma com ESPAÇO consome o " feira" INCONDICIONALMENTE — igual à forma com hífen. O guard
+         * de substantivo que existia aqui (`FEIRA_NOUN`, poupando o "feira" seguido de
+         * `de|do|da|dos|das`) partia de uma premissa falsa: `"de"` é justamente como se encadeia a
+         * TAREFA depois do dia ("sexta feira de natação"), não só o complemento nominal ("feira de
+         * ciências"). Como o dia com espaço então consumia só "sexta", o " feira" sobrava órfão no
+         * início do resto e o guard o poupava: `"<dia> feira de <tarefa>"` gravava "Feira natação"
+         * (75/75 casos; o `main` dá 0/75). "feira" após um dia da semana ditado com espaço é SEMPRE
+         * ruído de fala — nos dois casos ele sai do título, e a ambiguidade do "de" não existe.
          *
-         * O guard olha SÓ o "de", não o resto dos determinantes: em "sexta feira DO dentista" o
-         * "feira" é o sufixo do dia, e poupá-lo devolvia o "Feira" ao título. O determinante que
-         * denuncia o substantivo é o "de" do complemento ("feira de ciências"), não o que abre o
-         * sintagma seguinte.
-         *
-         * O "de" do complemento nominal NÃO é todo "de": "de manhã"/"de tarde"/"de noite" é
-         * advérbio de tempo, e ali o "feira" continua sendo o sufixo do dia. Tratar todo "de" como
-         * complemento deixava "sexta feira de manhã dentista" com o título "Feira dentista",
-         * não-ambíguo e confirmável. A classe inteira ("<dia> feira de <advérbio>") fecha com a
-         * negação do advérbio dentro do lookahead.
-         *
-         * A classe é a dos advérbios de período, não a das quatro palavras exatas: o `\b` depois de
-         * `manha` cortava "manhãzinha"/"tardezinha" e o "dia" de "de dia" não estava na lista, então
-         * "sexta feira de manhãzinha" e "sexta feira de dia" seguiam devolvendo o "Feira" ao título.
-         * O prefixo cobre as variantes; o "de ciências"/"do livro" (substantivo) continua poupado.
+         * O substantivo que NÃO segue um dia da semana continua poupado em `stripFeiraSuffix`
+         * ("na feira do bairro", "sábado feira"): ali o guard é o que olha a preposição antes, e não
+         * uma lista de determinantes depois.
          */
         private const val FEIRA_NOUN_TAIL_SRC = """(?:de|do|da|dos|das)\b"""
-        private const val TIME_ADVERB_SRC = """(?:manh|tard|noit|madrug|dia)\w*"""
-        private const val FEIRA_NOUN = """\s+feira(?!\s+de\s+(?!$TIME_ADVERB_SRC))"""
         private val FEIRA_NOUN_TAIL = Regex("""^\s+$FEIRA_NOUN_TAIL_SRC""")
         private val WEEKDAY_PATTERNS = listOf(
             // "sábado"/"domingo" NÃO levam o sufixo "-feira" (só segunda a sexta): o "feira" depois
             // deles é o mercado, e consumi-lo apagava o nome da tarefa (P2-3).
             Regex("""\bdomingos?(?:-?feira)?\b""") to DayOfWeek.SUNDAY,
-            Regex("""\bsegundas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.MONDAY,
-            Regex("""\btercas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.TUESDAY,
-            Regex("""\bquartas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.WEDNESDAY,
-            Regex("""\bquintas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.THURSDAY,
-            Regex("""\bsextas?(?:-?feira|$FEIRA_NOUN)?\b""") to DayOfWeek.FRIDAY,
+            Regex("""\bsegundas?(?:-?feira|\s+feira)?\b""") to DayOfWeek.MONDAY,
+            Regex("""\btercas?(?:-?feira|\s+feira)?\b""") to DayOfWeek.TUESDAY,
+            Regex("""\bquartas?(?:-?feira|\s+feira)?\b""") to DayOfWeek.WEDNESDAY,
+            Regex("""\bquintas?(?:-?feira|\s+feira)?\b""") to DayOfWeek.THURSDAY,
+            Regex("""\bsextas?(?:-?feira|\s+feira)?\b""") to DayOfWeek.FRIDAY,
             Regex("""\bsabados?(?:-?feira)?\b""") to DayOfWeek.SATURDAY,
         )
 

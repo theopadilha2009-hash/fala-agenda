@@ -1816,12 +1816,20 @@ class LocalTaskParserTest {
     @Test
     fun feiraComoSubstantivoNaoSomeDoTitulo() {
         // P2-3: o `[-\s]?feira` das WEEKDAY_PATTERNS engolia o substantivo colado ao dia — o guard
-        // `stripFeiraSuffix` nunca via o token que ele existe para proteger. "sexta feira de
-        // ciências" perdia o "feira"; "sábado feira às 8h" ficava com título vazio.
+        // `stripFeiraSuffix` nunca via o token que ele existe para proteger. "sábado feira às 8h"
+        // ficava com título vazio.
+        //
+        // P1(b) de 07/10 corrigiu a outra metade: depois de um dia ditado com ESPAÇO o "feira" é
+        // ruído de fala e sai ("sexta feira de ciências" → "Ciências"), enquanto o substantivo que
+        // NÃO segue um dia continua no título ("feira de ciências" sozinha não tem data para
+        // consumir nada). Os dois asserts convivem porque a regra distingue os dois contextos.
         val ciencias = parser.parse("sexta feira de ciências às 8h")
         assertThat(ciencias.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
-        assertThat(ciencias.title.lowercase()).contains("feira")
+        assertThat(ciencias.title.lowercase()).doesNotContain("feira")
         assertThat(ciencias.title.lowercase()).contains("ciências".lowercase().take(5))
+
+        // Sem o dia ditado, o "feira" é o substantivo e fica.
+        assertThat(parser.parse("feira de ciências às 8h").title.lowercase()).contains("feira")
 
         val sabadoFeira = parser.parse("sábado feira às 8h")
         assertThat(sabadoFeira.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
@@ -1894,11 +1902,11 @@ class LocalTaskParserTest {
     @Test
     fun feiraComoDiaNaoVoltaAoTituloComDeterminante() {
         // P1-A (3ª revisão): o guard do substantivo poupava o "feira" de QUALQUER "feira" seguido
-        // de de/do/da/dos/das. Como o dia com ESPAÇO só consome o " feira" quando o próximo token
-        // não é um desses, o sufixo do dia sobrava órfão e o guard o poupava: "sexta feira do
+        // de de/do/da/dos/das. Como o dia com ESPAÇO só consumia o " feira" quando o próximo token
+        // não era um desses, o sufixo do dia sobrava órfão e o guard o poupava: "sexta feira do
         // dentista" virava título "Feira dentista" — regressão contra o main ("Dentista").
-        // A classe inteira fecha: o guard só poupa o "feira" quando ele ENCABEÇA o sintagma
-        // nominal ("feira de ciências"), onde o determinante vem depois do próprio substantivo.
+        // A 4ª revisão (07/10) fechou a classe de vez: o dia com espaço consome o " feira" SEMPRE
+        // ("sexta feira de natação" → "Natação", igual ao main), e o guard de determinantes saiu.
         val sexta = parser.parse("sexta feira do dentista às 8h")
         assertThat(sexta.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
         assertThat(sexta.title).isEqualTo("Dentista")
@@ -1911,8 +1919,8 @@ class LocalTaskParserTest {
         assertThat(parser.parse("ir na feira do bairro sábado às 10h").title.lowercase())
             .contains("feira")
 
-        // O substantivo encabeçando o sintagma (P2-3) não pode regredir.
-        assertThat(parser.parse("sexta feira de ciências às 8h").title.lowercase()).contains("feira")
+        // O "feira" depois do dia (mesmo com "de" de complemento nominal) sai: é ruído de fala.
+        assertThat(parser.parse("sexta feira de ciências às 8h").title.lowercase()).doesNotContain("feira")
         assertThat(parser.parse("sábado feira às 8h").title).isEqualTo("Feira")
         assertThat(parser.parse("sexta-feira do dentista às 8h").title).isEqualTo("Dentista")
         assertThat(parser.parse("na sexta feira dentista às 8h").title).isEqualTo("Dentista")
@@ -2194,6 +2202,10 @@ class LocalTaskParserTest {
         // O guard do "feira" (FEIRA_NOUN) tratava todo "de" como complemento nominal, mas
         // "de manhã"/"de tarde"/"de noite" é ADVÉRBIO de tempo: ali o "feira" é o sufixo do dia,
         // e sobrava no título ("Feira dentista") com a caixa rápida confirmando.
+        //
+        // A 4ª revisão (07/10) tornou a regra mais simples: depois de um dia dito com ESPAÇO o
+        // "feira" é SEMPRE ruído e sai, com advérbio ou com complemento nominal ("de natação").
+        // Os casos abaixo continuam valendo — o que mudou é que a distinção de "de" deixou de existir.
         listOf(
             "sexta feira de manhã dentista às 8h",
             "na segunda feira de tarde dentista às 8h",
@@ -2205,8 +2217,7 @@ class LocalTaskParserTest {
         // O hífen já funcionava e não regride.
         assertThat(parser.parse("sexta-feira de manhã dentista às 8h").title).isEqualTo("Dentista")
 
-        // O SUBSTANTIVO continua poupado: "feira de <complemento>" e "na feira do bairro".
-        assertThat(parser.parse("sexta feira de ciências às 8h").title.lowercase()).contains("feira")
+        // O SUBSTANTIVO fora do dia dito continua no título: "na feira do bairro" (o mercado).
         assertThat(parser.parse("ir na feira do bairro sábado às 8h").title.lowercase()).contains("feira")
     }
 
@@ -2229,8 +2240,8 @@ class LocalTaskParserTest {
             assertThat(d.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
         }
 
-        // O substantivo continua poupado: "feira de <complemento>".
-        assertThat(parser.parse("sexta feira de ciências às 8h").title.lowercase()).contains("feira")
+        // O substantivo só fica quando NÃO há dia ditado para consumir o "feira" como sufixo.
+        assertThat(parser.parse("feira de ciências às 8h").title.lowercase()).contains("feira")
     }
 
     @Test
@@ -2403,5 +2414,125 @@ class LocalTaskParserTest {
         assertThat(soData.localDate).isEqualTo(LocalDate.of(2027, 5, 9))
         assertThat(soData.ambiguous).isFalse()
         assertThat(soData.canQuickConfirm(clock.instant(), zone)).isTrue()
+    }
+
+    @Test
+    fun oraculoDataNomeadaComDoisDiasDitosNuncaConfirmaCalado() {
+        // P1(a) da revisão de 07/10: a doutrina "duas expressões de tempo discordam => escala" foi
+        // aplicada só ao ramo de UM dia dito (`diasDitos.size == 1`, `LocalTaskParser.kt:675`), e o
+        // gêmeo — data nomeada + DOIS dias ditos — ficou de fora. Com dois dias ditos o guard não
+        // entrava e o `return DateHit(hit.date, rest, false)` devolvia a data nomeada completa e
+        // não-ambígua, descartando os dois dias ditos calados. Medido no grid do revisor (8 datas
+        // nomeadas × 7×6 pares ordenados = 336): head silencioso = 336/336; main = 0/336.
+        //
+        // O invariante é independente da implementação e vale sem olhar o parser:
+        //   uma frase que nomeia DOIS dias da semana DISTINTOS não pode ser salva de um toque
+        //   (`canQuickConfirm`) — a data nomeada é uma SEGUNDA expressão de data na frase, e não
+        //   existe UMA data que satisfaça as duas quando elas não caem no mesmo dia.
+        val nomeadas = listOf(
+            "natal", "finados", "dia dos namorados", "dia das mães", "dia dos pais",
+            "quarta-feira de cinzas", "sexta-feira santa", "corpus christi",
+        )
+        val nomes = mapOf(
+            DayOfWeek.MONDAY to "segunda",
+            DayOfWeek.TUESDAY to "terça",
+            DayOfWeek.WEDNESDAY to "quarta",
+            DayOfWeek.THURSDAY to "quinta",
+            DayOfWeek.FRIDAY to "sexta",
+            DayOfWeek.SATURDAY to "sábado",
+            DayOfWeek.SUNDAY to "domingo",
+        )
+        var casos = 0
+        var confirmacaoCalada = 0
+        val amostra = mutableListOf<String>()
+        for (nome in nomeadas) {
+            for ((diaA, nomeA) in nomes) {
+                for ((diaB, nomeB) in nomes) {
+                    if (diaA == diaB) continue
+                    casos++
+                    val frase = "$nome no $nomeA e $nomeB almoço às 12h"
+                    val d = parser.parse(frase)
+                    if (d.canQuickConfirm(clock.instant(), zone)) {
+                        confirmacaoCalada++
+                        if (amostra.size < 12) {
+                            amostra += "$frase -> ${d.localDate}/amb=${d.ambiguous} title=[${d.title}]"
+                        }
+                    }
+                }
+            }
+        }
+        println("ORACULO_NOMEADA_DOIS_DIAS confirmacao_calada=$confirmacaoCalada de $casos")
+        amostra.forEach { println("ORACULO_NOMEADA_DOIS_DIAS $it") }
+        assertThat(casos).isEqualTo(336)
+        assertThat(confirmacaoCalada).isEqualTo(0)
+
+        // O cenário do relatório: o Natal/2026 é uma SEXTA, não cai em nenhum dos dois dias ditos,
+        // e mesmo assim o rascunho era confirmável de um toque.
+        val natal = parser.parse("natal no sábado e domingo almoço às 12h")
+        assertThat(natal.ambiguous).isTrue()
+        assertThat(natal.canQuickConfirm(clock.instant(), zone)).isFalse()
+
+        // A contrapartida que NÃO pode regredir (regra 6 do lote): UM dia dito + data nomeada segue
+        // a doutrina de sempre — escala só quando as duas expressões discordam. O Natal não é
+        // sábado, então aqui escala; e "dia dos namorados" (12/06/2027) É um sábado, então
+        // concorda e não escala.
+        val umDia = parser.parse("natal no sábado almoço às 12h")
+        assertThat(umDia.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+        assertThat(umDia.ambiguous).isTrue()
+        assertThat(umDia.canQuickConfirm(clock.instant(), zone)).isFalse()
+
+        val concordam = parser.parse("dia dos namorados no sábado jantar às 20h")
+        assertThat(concordam.localDate).isEqualTo(LocalDate.of(2027, 6, 12))
+        assertThat(concordam.ambiguous).isFalse()
+        assertThat(concordam.canQuickConfirm(clock.instant(), zone)).isTrue()
+
+        // E o caso de UM dia dito sem data nomeada continua confirmando (o que o review mediu).
+        val sabado = parser.parse("sábado daqui a dois dias pagar conta às 10h")
+        assertThat(sabado.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+        assertThat(sabado.ambiguous).isFalse()
+        assertThat(sabado.canQuickConfirm(clock.instant(), zone)).isTrue()
+    }
+
+    @Test
+    fun oraculoFeiraDepoisDoDiaSaiDoTituloComATarefa() {
+        // P1(b) da revisão de 07/10: "<dia-da-semana> feira de <tarefa>" punha "Feira" no título. O
+        // guard do substantivo (`FEIRA_NOUN`) poupava o "feira" sempre que o próximo token era
+        // `de|do|da|dos|das` — mas "de" é justamente como se encadeia a tarefa depois do dia. Grid
+        // do revisor (5 dias × 15 tarefas = 75): head "feira" no título = 75/75; main = 0/75.
+        //
+        // O invariante é independente da implementação: o "feira" que segue um dia da semana DITO
+        // COM ESPAÇO é ruído de fala, e o título não pode carregá-lo — o nome da tarefa é o que
+        // ela ditou. Vale igual para "de manhã" (advérbio) e para "de natação" (tarefa).
+        val dias = listOf("segunda feira", "terça feira", "quarta feira", "quinta feira", "sexta feira")
+        val tarefas = listOf(
+            "natação", "dentista", "inglês", "reunião", "almoço", "mercado", "academia", "cabelo",
+            "fisioterapia", "consulta", "trabalho", "aniversário", "prova", "banco", "médico",
+        )
+        var casos = 0
+        var feiraNoTitulo = 0
+        val amostra = mutableListOf<String>()
+        for (dia in dias) {
+            for (tarefa in tarefas) {
+                casos++
+                val frase = "$dia de $tarefa às 8h"
+                val d = parser.parse(frase)
+                if (d.title.lowercase().contains("feira")) {
+                    feiraNoTitulo++
+                    if (amostra.size < 12) amostra += "$frase -> title=[${d.title}]"
+                }
+            }
+        }
+        println("ORACULO_FEIRA feira_no_titulo=$feiraNoTitulo de $casos")
+        amostra.forEach { println("ORACULO_FEIRA $it") }
+        assertThat(casos).isEqualTo(75)
+        assertThat(feiraNoTitulo).isEqualTo(0)
+
+        // O "feira" que é o mercado continua no título: ali ele NÃO segue um dia da semana ditado
+        // com espaço (vem depois de artigo/preposição).
+        assertThat(parser.parse("ir na feira do bairro sábado às 10h").title.lowercase()).contains("feira")
+        assertThat(parser.parse("sábado feira às 8h").title).isEqualTo("Feira")
+
+        // A forma com hífen já estava certa e não regride.
+        assertThat(parser.parse("sexta-feira de natação às 18h").title).isEqualTo("Natação")
     }
 }

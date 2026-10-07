@@ -78,6 +78,14 @@ internal class AvisoFalado(
     private val voz: SintetizadorDeVoz,
     private val agendar: (Long, () -> Unit) -> Unit,
     /**
+     * A primeira fala deste aviso saiu de fato. Quem constrói o serviço usa isto para a barra só
+     * afirmar "avisando em voz alta" depois de a voz sair: um motor que não subiu deixava a
+     * notificação afirmando a fala durante todo o prazo, sem uma palavra.
+     *
+     * O padrão vazio é para os testes da política, que não têm barra nenhuma para atualizar.
+     */
+    private val aoFalar: () -> Unit = {},
+    /**
      * Recebe este aviso, e não nada: um disparo novo do mesmo lembrete substitui o antigo, e o
      * encerramento atrasado do velho não pode derrubar a voz que está falando agora.
      */
@@ -145,6 +153,9 @@ internal class AvisoFalado(
         idDaVez = id
         falas++
         voz.falar(frase, id, ::terminou)
+        // A fala saiu: é daqui para baixo que "avisando em voz alta" é verdade. Vem depois do
+        // `falar`, e não antes, porque é o motor que acabou de receber a frase.
+        aoFalar()
         // A última fala não conta com o `onDone` dela para fechar a conta: o motor pode não avisar,
         // e um serviço que fica de pé esperando um aviso que não vem segura o processo à toa.
         if (falas >= FALAS_POR_AVISO) agendar(duracaoFaladaMs(frase)) { encerrar() }

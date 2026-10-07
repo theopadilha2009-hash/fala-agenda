@@ -78,6 +78,12 @@ class LembreteFaladoService : Service() {
     /** O disparo que está sendo atendido agora, para a notificação abrir a tarefa certa. */
     private var ocorrenciaEmCurso: String? = null
 
+    /**
+     * A voz deste disparo já saiu de fato? A notificação do primeiro plano só pode dizer que está
+     * falando depois disto — antes, ela é só a voz do lembrete sendo preparada.
+     */
+    private var vozFalando = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -90,16 +96,30 @@ class LembreteFaladoService : Service() {
             sairSeNaoHavoz()
             return START_NOT_STICKY
         }
+        // O disparo em curso vem ANTES do primeiro plano: é o `notificacao()` que monta o
+        // `PendingIntent` do toque dela, e ele é montado lá dentro do `startForeground`. Atribuído
+        // depois, o primeiro disparo saía com o id vazio, e o toque dela caía num id que não
+        // existe — a home respondia "Esta tarefa não está mais na agenda" para a tarefa que estava
+        // tocando naquele momento.
+        ocorrenciaEmCurso = occurrenceId
+        // E a afirmação de que está falando não atravessa disparos: quem a levanta é
+        // [anunciarQueEstaFalando], quando a fala sai. Sem este zero aqui, o segundo disparo
+        // nascia dizendo que estava falando por conta do primeiro.
+        vozFalando = false
         if (!subirEmPrimeiroPlano()) {
             sairSeNaoHavoz()
             return START_NOT_STICKY
         }
-        ocorrenciaEmCurso = occurrenceId
+        abandonarOAnterior()
         val novo = AvisoFalado(
             voz = criarVoz(this),
             // O relógio é o da thread principal, a mesma em que o `TextToSpeech` avisa que
             // terminou: sem isso a política seria mexida de duas threads ao mesmo tempo.
             agendar = { ms, bloco -> handler.postDelayed(bloco, ms) },
+            // A barra passa a dizer que está falando quando a primeira fala sai, e não quando ela
+            // é pedida: motor que nunca sobe deixava a notificação afirmando "Avisando em voz
+            // alta" durante todo o prazo, sem uma fala sequer.
+            aoFalar = { anunciarQueEstaFalando() },
             // Só o encerramento do aviso que ainda está no ar derruba o serviço: um disparo novo
             // substitui o anterior, e a conta atrasada do velho não pode calar a voz nova.
             aoEncerrar = { encerrado -> if (aviso === encerrado) encerrar() },
@@ -108,6 +128,36 @@ class LembreteFaladoService : Service() {
         VozDoLembrete.registrar(novo)
         novo.falar(occurrenceId, getString(R.string.reminder_spoken, titulo))
         return START_NOT_STICKY
+    }
+
+    /**
+     * O disparo anterior sai de cena por inteiro antes de o novo assumir.
+     *
+     * `abandonar` cala e solta o motor dele — é o mesmo caminho do `onDestroy` —, e a limpeza do
+     * `Handler` apaga os `postDelayed` que ele ainda tinha na fila. Sem isso o aviso antigo ficava
+     * de pé com o motor aberto e a escada de repetições viva, e a segunda metade da frase dele
+     * saía por cima da voz nova. Trocar só a referência global ([VozDoLembrete.registrar]) não
+     * bastava: ela deixa o aviso velho sem ninguém que o alcance, e ele continua falando.
+     */
+    private fun abandonarOAnterior() {
+        handler.removeCallbacksAndMessages(null)
+        aviso?.abandonar()
+        aviso = null
+    }
+
+    /**
+     * A primeira fala saiu: a barra agora pode dizer que o celular está falando. A atualização é
+     * um `startForeground` de novo, com o mesmo id — é assim que se troca a notificação de um
+     * serviço em primeiro plano.
+     */
+    private fun anunciarQueEstaFalando() {
+        if (vozFalando) return
+        vozFalando = true
+        try {
+            startForeground(ID_DA_NOTIFICACAO_DA_VOZ, notificacao())
+        } catch (e: Exception) {
+            Log.w(TAG, "Não foi possível anunciar a voz na notificação", e)
+        }
     }
 
     override fun onDestroy() {
@@ -170,7 +220,21 @@ class LembreteFaladoService : Service() {
     private fun notificacao(): Notification =
         NotificationCompat.Builder(this, NotificationHelper.CHANNEL_VOZ_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.reminder_speaking_title))
+            // A frase depende do que está acontecendo de verdade. "Avisando em voz alta" só depois
+            // de a fala sair: com o motor que não subiu — aparelho sem voz em português do Brasil,
+            // `onInit` que nunca chega — a notificação ficava os 6,5 s do prazo afirmando que
+            // estava falando, sem ter falado nada. Era a queixa dela ("o áudio nunca funciona")
+            // com o aplicativo dizendo na cara dela que o áudio estava funcionando.
+            //
+            // Enquanto a fala não sai, o título é o nome do canal — neutro, e o mesmo que ela vê
+            // nos Ajustes. Um texto próprio ("Tentei falar, mas o aparelho não tem voz") diria
+            // melhor o que houve, mas mora no `strings.xml`, que está fora do escopo deste lote.
+            .setContentTitle(
+                getString(
+                    if (vozFalando) R.string.reminder_speaking_title
+                    else R.string.notification_channel_voice,
+                ),
+            )
             .setContentText(getString(R.string.reminder_speaking_text))
             .setContentIntent(NotificationHelper.openPending(this, ocorrenciaEmCurso.orEmpty()))
             .setPriority(NotificationCompat.PRIORITY_LOW)

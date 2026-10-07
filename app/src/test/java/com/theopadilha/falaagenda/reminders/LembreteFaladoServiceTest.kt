@@ -1,6 +1,7 @@
 package com.theopadilha.falaagenda.reminders
 
 import android.app.Application
+import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Looper
@@ -52,7 +53,8 @@ class LembreteFaladoServiceTest {
             esperando = bloco
         }
 
-        fun ficouPronto() = esperando!!.invoke(true)
+        /** O `onInit` do aparelho chegou, com a resposta que o teste escolheu. */
+        fun ficouPronto(sabeFalar: Boolean = true) = esperando!!.invoke(sabeFalar)
 
         override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit) {
             falas += texto
@@ -242,5 +244,133 @@ class LembreteFaladoServiceTest {
         assertThat(vozes).isEmpty()
         assertThat(shadowOf(servico.get()).lastForegroundNotification).isNull()
         assertThat(shadowOf(servico.get()).isStoppedBySelf).isTrue()
+    }
+
+    // --- O toque na notificação abre a tarefa do disparo ATUAL --------------------------------
+
+    /**
+     * O toque na notificação da voz abre a tarefa que está sendo falada agora.
+     *
+     * O `PendingIntent` é montado durante o `startForeground`, e é por isso que o disparo em
+     * curso precisa estar gravado **antes** dele: com a atribuição depois, o primeiro disparo
+     * montava o intent com `occurrence_id = ""`, e o toque dela caía num id que não existe —
+     * a home respondia "Esta tarefa não está mais na agenda" para a tarefa que estava tocando.
+     */
+    @Test
+    fun aNotificacaoDaVozAbreATarefaDoDisparoAtual() {
+        val servico = subirOServico()
+
+        val notificacao = shadowOf(servico.get()).lastForegroundNotification
+        assertThat(notificacao).isNotNull()
+        val alvo = shadowOf(notificacao.contentIntent).savedIntent
+        assertThat(alvo.getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID)).isEqualTo(ocorrencia)
+    }
+
+    // --- Um disparo novo não vaza o motor nem deixa a voz velha falando ------------------------
+
+    /**
+     * Dois lembretes que se cruzam — dois remédios no mesmo horário, ou um "Adiar" que cai perto
+     * do outro. O disparo novo **abandona** o aviso anterior: sem isso o motor velho fica de pé
+     * com a escada de repetições viva, e a segunda metade da frase antiga sai por cima da voz
+     * nova. É o defeito que este PR existe para evitar, na única situação em que dois lembretes
+     * se encontram.
+     */
+    @Test
+    fun oDisparoNovoAbandonaOMotorEAEscadaDoAnterior() {
+        LembreteFaladoService.criarVoz = { VozDeMentira().also { vozes += it } }
+        val anterior = "remedioA:2026-10-07"
+        val seguinte = "remedioB:2026-10-07"
+        val servico = Robolectric.buildService(LembreteFaladoService::class.java, intentDo(anterior))
+            .create()
+        servico.get().onStartCommand(intentDo(anterior), 0, 1)
+        val vozVelha = voz
+        vozVelha.ficouPronto()
+        assertThat(vozVelha.falas).hasSize(1)
+
+        servico.get().onStartCommand(intentDo(seguinte), 0, 2)
+        val vozNova = voz
+        assertThat(vozNova).isNotSameInstanceAs(vozVelha)
+
+        // O motor do aviso velho foi solto: ele não continua de pé falando sozinho.
+        assertThat(vozVelha.paradas).isAtLeast(1)
+        assertThat(vozVelha.soltadas).isAtLeast(1)
+        // E a escada dele morreu junto: o fim da fala velha não faz o aviso velho repetir por
+        // cima da voz nova.
+        vozVelha.terminouA(0)
+        avancarOrelogio(PAUSA_ENTRE_AS_FALAS_MS + 1)
+        assertThat(vozVelha.falas).hasSize(1)
+
+        // A voz nova fala normalmente, e não foi derrubada pelo encerramento do aviso velho.
+        vozNova.ficouPronto()
+        assertThat(vozNova.falas).hasSize(1)
+        assertThat(vozNova.soltadas).isEqualTo(0)
+        assertThat(shadowOf(servico.get()).isStoppedBySelf).isFalse()
+    }
+
+    // --- A barra não afirma que está falando quando não está ----------------------------------
+
+    /**
+     * A notificação do primeiro plano diz que o celular está **avisando em voz alta**. Ela só pode
+     * dizer isso depois de a voz realmente sair.
+     *
+     * O cenário é o que o próprio PR chama de real: aparelho sem voz em português do Brasil, ou o
+     * `onInit` que nunca chega. O motor não sobe, nenhuma fala sai, e a notificação ficava no ar
+     * durante os 6,5 s do prazo afirmando que estava falando. Para ela isso é indistinguível de
+     * "o áudio nunca funciona" — com o agravante de o aplicativo dizer na cara dela que falou.
+     *
+     * O oráculo é do ponto de vista dela: **a tela disse que falou ⇒ alguma fala saiu**. A
+     * amostragem cobre a janela inteira do prazo, e não um instante escolhido a dedo.
+     */
+    @Test
+    fun aBarraNuncaDizQueEstaFalandoSemAVozTerFalado() {
+        subirOServico()
+        // O motor nunca fica pronto: nem `onInit`, nem uma fala.
+
+        val violacoes = amostrarOBarraco()
+
+        assertThat(voz.falas).isEmpty()
+        assertThat(violacoes).isEmpty()
+    }
+
+    /**
+     * A outra metade, e é ela que impede o conserto fácil: quando a voz **sai**, a barra diz que
+     * está falando. Apagar a afirmação de vez passaria no teste de cima e deixaria a notificação
+     * sem dizer nada do que está acontecendo.
+     */
+    @Test
+    fun aBarraDizQueEstaFalandoQuandoAVozSai() {
+        subirOServico()
+        voz.ficouPronto()
+        assertThat(voz.falas).hasSize(1)
+
+        assertThat(afirmaQueEstaFalando()).isTrue()
+    }
+
+    private fun intentDo(occurrenceId: String) =
+        LembreteFaladoService.intentPara(contexto, occurrenceId, titulo)
+
+    /** O título que está de fato na barra, e não o que o serviço guardou por último. */
+    private fun titulosNaBarra(): List<String> =
+        shadowOf(contexto.getSystemService(NotificationManager::class.java))
+            .allNotifications
+            .mapNotNull { it.extras?.getString(Notification.EXTRA_TITLE) }
+
+    private fun afirmaQueEstaFalando(): Boolean =
+        titulosNaBarra().contains(contexto.getString(R.string.reminder_speaking_title))
+
+    /**
+     * Amostra a barra ao longo do prazo inteiro do aviso e devolve os instantes em que ela
+     * afirmou que estava falando sem nenhuma fala ter saído.
+     */
+    private fun amostrarOBarraco(): List<Long> {
+        val violacoes = mutableListOf<Long>()
+        var decorrido = 0L
+        val prazo = prazoTotalDaFalaMs(contexto.getString(R.string.reminder_spoken, titulo))
+        for (instante in listOf(0L, 1_000L, 3_000L, prazo - 500, prazo + 500)) {
+            avancarOrelogio(instante - decorrido)
+            decorrido = instante
+            if (afirmaQueEstaFalando() && voz.falas.isEmpty()) violacoes += instante
+        }
+        return violacoes
     }
 }

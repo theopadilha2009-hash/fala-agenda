@@ -531,11 +531,13 @@ class LocalTaskParserValoresEFaixasTest {
         assertThat(parser.parse("pagar 999.999.999.999.999.999.999 reais amanhã às 10h").amountCents)
             .isNull()
 
-        // A fronteira do teto: 15 dígitos ainda são lidos (e não estouram o `Long`).
+        // A fronteira é a do `Long` em CENTAVOS, não uma contagem de dígitos: o valor é lido
+        // enquanto os centavos couberem, e o texto fica no título quando não cabem.
         assertThat(parser.parse("pagar 999.999.999.999.999 reais amanhã às 10h").amountCents)
             .isEqualTo(99999999999999900L)
-        // Um dígito além do teto: nulo, e o texto fica no título.
-        assertThat(parser.parse("pagar 1.999.999.999.999.999 reais amanhã às 10h").amountCents).isNull()
+        // 16 dígitos em reais ainda cabem em centavos (é o que o teto por dígitos recusava).
+        assertThat(parser.parse("pagar 1.999.999.999.999.999 reais amanhã às 10h").amountCents)
+            .isEqualTo(199999999999999900L)
 
         // Sem separador, o padrão do número só aceita até 4 dígitos: o inteiro longo é ambíguo.
         assertThat(parser.parse("pagar 999999999 reais amanhã às 10h").amountCents).isNull()
@@ -691,7 +693,7 @@ class LocalTaskParserValoresEFaixasTest {
         casos += Caso("pagar 99999999999999999 reais amanhã às 10h", null, listOf("99999999999999999"), true)
         casos += Caso("pagar 999.999.999.999.999.999 reais amanhã às 10h", null, listOf("999"), true)
         casos += Caso("pagar 999.999.999.999.999 reais amanhã às 10h", 99999999999999900L, listOf("reais"), true)
-        casos += Caso("pagar 1.999.999.999.999.999 reais amanhã às 10h", null, listOf("999"), true)
+        casos += Caso("pagar 1.999.999.999.999.999 reais amanhã às 10h", 199999999999999900L, listOf("reais"), true)
         // O extenso não resgata um dígito que o próprio valor recusou.
         casos += Caso("pagar 12.3456 mil reais amanhã às 10h", null, listOf("12.3456"), true)
         casos += Caso("pagar 1.23 mil reais amanhã às 10h", null, listOf("1.23"), true)
@@ -722,5 +724,147 @@ class LocalTaskParserValoresEFaixasTest {
         }
         println("ORACULO|total=${casos.size}|violacoes=${violacoes.size}")
         assertThat(violacoes).isEmpty()
+    }
+
+    // ---- Quarto review (P1): o conector de centavos no caminho do cifrão ----
+
+    @Test
+    fun conectorDeCentavosValeTambemDepoisDoCifrao() {
+        // O ramo do cifrão terminava o casamento no ESPAÇO depois do número (o `\s*` do fim, com o
+        // "reais" opcional), então o casamento era "r$ 120 " e a cauda que o guard lia começava em
+        // "e cinquenta...", sem o espaço que o conector exige. O guard devolvia false e o valor
+        // saía só o principal — 12000 em vez de 12050, com o "cinquenta centavos" ainda no título e
+        // a caixa rápida confirmando em um toque. "pagar R$ 120 e cinquenta centavos" é a mesma
+        // intenção de "pagar 120 reais e cinquenta centavos", que sempre deu 12050.
+        val cifrao = parser.parse("pagar R$ 120 e cinquenta centavos amanhã às 10h")
+        assertThat(cifrao.amountCents).isEqualTo(12050L)
+        assertThat(cifrao.title).isEqualTo("Pagar")
+        // O desfecho inteiro na tela dela: o valor certo, sem ambiguidade e sem nota, com o
+        // botão que salva em um toque — era aqui que o 12000 passava em silêncio.
+        assertThat(cifrao.localTime).isEqualTo(LocalTime.of(10, 0))
+        assertThat(cifrao.ambiguous).isFalse()
+        assertThat(cifrao.notes).isEmpty()
+        assertThat(cifrao.canQuickConfirm(clock.instant(), zone)).isTrue()
+
+        assertThat(parser.parse("pagar R$ 120 e 50 centavos amanhã às 10h").amountCents).isEqualTo(12050L)
+        assertThat(parser.parse("pagar rs 120 e cinquenta centavos amanhã às 10h").amountCents).isEqualTo(12050L)
+
+        // O valor no FIM da frase: o corte que sai do título é por índice, e o fim do casamento
+        // tem que bater com o fim dos "centavos" — nem um caractere a mais, nem a menos.
+        val semData = parser.parse("pagar R$ 120 e cinquenta centavos")
+        assertThat(semData.amountCents).isEqualTo(12050L)
+        assertThat(semData.title).isEqualTo("Pagar")
+        assertThat(parser.parse("pagar R$ 1.234,56 e cinquenta centavos").amountCents).isEqualTo(123506L)
+
+        // Sem a palavra "centavos" o conector não fecha — com o cifrão, igual à versão com "reais":
+        // nenhum valor sai e a palavra dela fica no título.
+        val semCentavos = parser.parse("pagar R$ 120 e vinte amanhã às 10h")
+        assertThat(semCentavos.amountCents).isNull()
+        assertThat(semCentavos.title).contains("vinte")
+        assertThat(parser.parse("pagar rs 120 e vinte amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar R$ 1.234,56 e cinquenta amanhã às 10h").amountCents).isNull()
+    }
+
+    @Test
+    fun escalarDepoisDoCifraoTambemRespeitaOConector() {
+        // O mesmo defeito de cauda no ramo do escalar: o "mil " terminava o casamento no espaço, o
+        // conector não era visto e o valor saía sem os centavos — ou saía inteiro quando o conector
+        // devia recusar. O "R$ 5 mil" é o caminho declarado do valor, não um canto da regex.
+        assertThat(parser.parse("pagar R$ 5 mil e cinquenta centavos amanhã às 10h").amountCents)
+            .isEqualTo(500050L)
+        assertThat(parser.parse("pagar rs 12 mil e 50 centavos amanhã às 10h").amountCents)
+            .isEqualTo(1200050L)
+
+        val recusado = parser.parse("pagar R$ 5 mil e vinte amanhã às 10h")
+        assertThat(recusado.amountCents).isNull()
+        assertThat(recusado.title).contains("mil")
+        assertThat(parser.parse("pagar rs 5 mil e vinte amanhã às 10h").amountCents).isNull()
+
+        // Com "reais" o mesmo conector já era respeitado — a diferença era o cifrão.
+        assertThat(parser.parse("pagar 5 mil reais e cinquenta centavos amanhã às 10h").amountCents)
+            .isEqualTo(500050L)
+        assertThat(parser.parse("pagar 5 mil reais e vinte amanhã às 10h").amountCents).isNull()
+    }
+
+    @Test
+    fun tetoDoValorEmReaisVemDoLong() {
+        // O teto era um número mágico de 15 dígitos, e o que precisa caber no `Long` são os
+        // CENTAVOS: "9.223.372.036.854.775 reais" são 922.337.203.685.477.500 centavos e cabem
+        // folgado, mas a contagem de dígitos recusava. O teto agora é o do tipo.
+        assertThat(parser.parse("pagar 9.223.372.036.854.775 reais amanhã às 10h").amountCents)
+            .isEqualTo(922337203685477500L)
+        // A fronteira exata: 92.233.720.368.547.758 reais são 9.223.372.036.854.775.800 centavos,
+        // o maior valor que cabe. Um centavo de real a mais não cabe e o texto fica no título.
+        assertThat(parser.parse("pagar 92.233.720.368.547.758 reais amanhã às 10h").amountCents)
+            .isEqualTo(9223372036854775800L)
+        assertThat(parser.parse("pagar 92.233.720.368.547.759 reais amanhã às 10h").amountCents).isNull()
+
+        // O teto do `Long` não muda a ambiguidade do inteiro sem separador: com cinco dígitos ou
+        // mais ele pode ser um milhar malformado e continua sem leitura (o mesmo número escrito com
+        // os pontos de milhar é lido).
+        assertThat(parser.parse("pagar 500000000000000 reais amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar 500.000.000.000.000 reais amanhã às 10h").amountCents)
+            .isEqualTo(50000000000000000L)
+    }
+
+    // ---- O eixo que o oráculo do PR não cruzava: dígito × cifrão × conector ----
+
+    @Test
+    fun oraculoDoConectorDeCentavosNoCifrao() {
+        // O valor em DÍGITO × com/sem cifrão ("R$", "rs") × com/sem "reais" × com/sem a palavra
+        // "centavos". O esperado sai da aritmética sobre o número que gerou a frase (n * 100 + m),
+        // nunca do parser — quem nunca viu este código escreveria a mesma tabela. O conjunto de
+        // frases do oráculo do PR era estreito justamente neste eixo, e por isso dava 0.
+        class Caso(val frase: String, val esperado: Long?)
+
+        val casos = mutableListOf<Caso>()
+        for (n in 1..999) {
+            for (m in listOf(1, 5, 50, 99)) {
+                val esperado = n * 100L + m
+                casos += Caso("pagar $n reais e $m centavos amanhã às 10h", esperado)
+                casos += Caso("pagar R$ $n e $m centavos amanhã às 10h", esperado)
+                casos += Caso("pagar rs $n e $m centavos amanhã às 10h", esperado)
+                // Sem a palavra "centavos", o conector não fecha: nenhum valor pode sair.
+                casos += Caso("pagar $n reais e $m amanhã às 10h", null)
+                casos += Caso("pagar R$ $n e $m amanhã às 10h", null)
+                casos += Caso("pagar rs $n e $m amanhã às 10h", null)
+            }
+        }
+        // O escalar depois do cifrão e o milhar por ponto com o conector.
+        for (n in listOf(1, 2, 5, 12, 999)) {
+            val mil = n * 100000L
+            casos += Caso("pagar $n mil reais e 50 centavos amanhã às 10h", mil + 50)
+            casos += Caso("pagar R$ $n mil e 50 centavos amanhã às 10h", mil + 50)
+            casos += Caso("pagar rs $n mil e 50 centavos amanhã às 10h", mil + 50)
+            casos += Caso("pagar R$ $n mil e vinte amanhã às 10h", null)
+            casos += Caso("pagar rs $n mil e vinte amanhã às 10h", null)
+            casos += Caso("pagar $n mil reais e vinte amanhã às 10h", null)
+        }
+        casos += Caso("pagar R$ 1.234,56 e cinquenta amanhã às 10h", null)
+        casos += Caso("pagar R$ 1.234,56 e cinquenta centavos amanhã às 10h", 123506L)
+        casos += Caso("pagar rs 1.500 e cinquenta centavos amanhã às 10h", 150050L)
+        // O valor no FIM da frase: o corte do título é por índice na frase, e o fim do casamento
+        // tem que bater exatamente com o fim dos "centavos" — um caractere a mais some com o "s".
+        for (n in listOf(1, 15, 120, 999)) {
+            for (m in listOf(1, 5, 50, 99)) {
+                casos += Caso("pagar R$ $n e $m centavos", n * 100L + m)
+                casos += Caso("pagar $n reais e $m centavos", n * 100L + m)
+            }
+        }
+
+        var violacoes = 0
+        val amostra = mutableListOf<String>()
+        casos.forEach { caso ->
+            val obtido = parser.parse(caso.frase).amountCents
+            if (obtido != caso.esperado) {
+                violacoes++
+                if (amostra.size < 5) {
+                    amostra += "${caso.frase}|obtido=$obtido|esperado=${caso.esperado}"
+                }
+            }
+        }
+        println("ORACULO_CONECTOR|total=${casos.size}|violacoes=$violacoes")
+        amostra.forEach { println("VIOLACAO|$it") }
+        assertThat(violacoes).isEqualTo(0)
     }
 }

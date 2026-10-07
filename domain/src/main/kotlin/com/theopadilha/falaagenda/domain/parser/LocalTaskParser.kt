@@ -7,6 +7,7 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import com.theopadilha.falaagenda.domain.time.AppClock
+import java.math.BigDecimal
 import java.time.DayOfWeek
 import java.time.DateTimeException
 import java.time.LocalDate
@@ -254,8 +255,10 @@ class LocalTaskParser(
             // "30.50 mil reais": o extenso re-ancorava no "mil reais" depois de um número em
             // dígito que o ramo numérico já recusou (o ponto não é milhar) e gravava R$1.000,00.
             if (precedidoDeDigito(text, m)) return null
-            // "meio milhão de reais" é R$500 mil, e tem ramo próprio acima; aqui o "meio" valeria
-            // zero e o valor sairia errado.
+            // "pagar meio reais": o "meio" vale zero no léxico e o extenso gravaria R$0,00 — dinheiro
+            // inventado, confirmável em um toque. "meio milhão de reais" NÃO cai aqui: ele casa o
+            // [MEIO_MIL_ESCALA], que é testado antes. O "meio real" dela são R$0,50, e vem do
+            // [MEIO_REAL] — este guard só recusa o "meio" colado no plural, sem escala.
             if (m.value.trimStart().startsWith("meio ")) return null
             val cents = (numberFromWords(m.groupValues[1]) ?: return@let) * 100
             return withCentavos(cents, text, m)
@@ -283,7 +286,7 @@ class LocalTaskParser(
      */
     private fun unidadeDita(text: String, hit: MatchResult): Boolean =
         REAIS_TAIL.containsMatchIn(hit.value) ||
-            REAIS_TAIL.containsMatchIn(text.substring(hit.range.last + 1).take(UNIDADE_ALCANCE))
+            REAIS_TAIL.containsMatchIn(caudaDoValor(text, hit).take(UNIDADE_ALCANCE))
 
     /**
      * O extenso com um número em DÍGITO imediatamente antes: "30.50 mil reais" casa só o
@@ -301,9 +304,27 @@ class LocalTaskParser(
      * Sem a palavra "centavos" fechando o casamento, não extrai.
      */
     private fun conectorSemCentavos(text: String, reais: MatchResult): Boolean {
-        val tail = text.substring(reais.range.last + 1)
+        val tail = caudaDoValor(text, reais)
         if (CENTAVOS.containsMatchIn(tail)) return false
         return CONECTOR_NUMERO.containsMatchIn(tail)
+    }
+
+    /**
+     * A cauda logo depois do valor, começando na ÚLTIMA letra do casamento.
+     *
+     * O casamento pode terminar no espaço depois do número — o `\s*` do ramo do cifrão (`"r$ 120 "`)
+     * e o do escalar (`"R$ 5 mil "`) consomem o espaço porque o `(?:reais|real)?` do fim é opcional.
+     * Tirando a cauda de `range.last + 1`, ela começava em "e cinquenta..." e o conector não era
+     * visto: o valor saía só o principal (12000 em vez de 12050) e a caixa rápida confirmava em um
+     * toque. A âncora é o último CARACTERE do casamento, e `CONECTOR_NUMERO` já exige o espaço
+     * antes do "e" — por isso o guard vale igual para `"120 reais"`, `"r$ 120 "` e `"R$ 5 mil "`.
+     */
+    private fun caudaDoValor(text: String, hit: MatchResult): String = text.substring(inicioDaCauda(hit))
+
+    /** O índice em que a cauda do valor começa: o fim do casamento menos o espaço que ele comeu. */
+    private fun inicioDaCauda(hit: MatchResult): Int {
+        val espacosNoFim = hit.value.length - hit.value.trimEnd().length
+        return hit.range.last + 1 - espacosNoFim
     }
 
     /**
@@ -315,15 +336,18 @@ class LocalTaskParser(
      */
     private fun withCentavos(cents: Long, text: String, reais: MatchResult): AmountHit {
         var total = cents
-        val removido = StringBuilder(reais.value)
-        CENTAVOS.find(text.substring(reais.range.last + 1))?.let { tail ->
+        var fim = reais.range.last + 1
+        CENTAVOS.find(caudaDoValor(text, reais))?.let { tail ->
             val extra = centsFromSpoken(tail.groupValues[1])
             if (extra != null && extra in 0..99) {
                 total += extra
-                removido.append(tail.value)
+                // O corte é por ÍNDICE na frase, e não pela concatenação do casamento com a cauda:
+                // o casamento do cifrão já termina no espaço, e a string remontada teria dois
+                // espaços onde a frase tem um — o `replace` não casaria e nada sairia do título.
+                fim = inicioDaCauda(reais) + tail.range.last + 1
             }
         }
-        return AmountHit(total, TextNormalizer.compactSpaces(text.replace(removido.toString(), " ")))
+        return AmountHit(total, TextNormalizer.compactSpaces(text.replaceRange(reais.range.first, fim, " ")))
     }
 
     /** Os centavos ditos em dígito ("50") ou por extenso ("cinquenta e cinco"). */
@@ -346,9 +370,15 @@ class LocalTaskParser(
         val ultimoGrupo = inteiro.substringAfterLast('.', "")
         if (ultimoGrupo.isNotEmpty() && ultimoGrupo.length != 3) return null
         if (!inteiro.matches(Regex("""\d{1,3}(?:\.\d{3})*|\d{1,$MAX_DIGITOS_INTEIRO}"""))) return null
-        if (inteiro.replace(".", "").length > MAX_DIGITOS_INTERPRETAVEIS) return null
         val normalizado = raw.replace(".", "").replace(',', '.')
-        return normalizado.toBigDecimalOrNull()?.movePointRight(2)?.toLong()
+        val emReais = normalizado.toBigDecimalOrNull() ?: return null
+        // O que precisa caber no `Long` são os CENTAVOS, não os dígitos do inteiro em reais: o teto
+        // sai do próprio tipo. O `toLong()` do `BigDecimal` estoura (exceção, não nulo) acima dele e
+        // derrubava a interpretação inteira da frase; aqui o valor fica nulo e o texto vai para o
+        // título. O mesmo número escrito com os pontos de milhar é lido — o teto é o do tipo, e não
+        // a forma como ela separou os grupos.
+        if (emReais > MAX_REAIS_INTERPRETAVEIS) return null
+        return emReais.movePointRight(2).toLong()
     }
 
     /** "milhão"/"mil" por extenso depois do número em dígito: "15 mil" são 15.000. */
@@ -1468,11 +1498,13 @@ class LocalTaskParser(
         private const val MAX_DIGITOS_INTEIRO = 4
 
         /**
-         * Teto de dígitos do inteiro: "99999999999999999 reais" estourava o `Long` dentro do
-         * `toLong()` do `BigDecimal` (exceção, não nulo) e derrubava o parse inteiro. Acima do
-         * teto o valor fica nulo e a palavra vai para o título.
+         * O maior valor em reais que ainda cabe no `Long` em centavos — o teto é o do TIPO, e não
+         * uma contagem de dígitos: "92.233.720.368.547.758 reais" são 9.223.372.036.854.775.800
+         * centavos, e um centavo de real a mais estoura. Contar dígitos recusava valores que cabiam
+         * e aceitava outros que estouravam, com o mesmo número dando desfechos opostos só por causa
+         * do separador de milhar.
          */
-        private const val MAX_DIGITOS_INTERPRETAVEIS = 15
+        private val MAX_REAIS_INTERPRETAVEIS = BigDecimal(Long.MAX_VALUE).movePointLeft(2)
 
         /** O "e <número>" logo depois do valor: centavos que ela não nomeou (ver `conectorSemCentavos`). */
         private val CONECTOR_NUMERO = Regex("""\s+e\s+(?:$NUMBER_WORD_ALT)\b|\s+e\s+\d{1,2}\b""")

@@ -296,4 +296,77 @@ class NotaDeDataIlegivelNoMergeTest {
         assertThat(notasFalsas).isEmpty()
         assertThat(perdasMudas).isEmpty()
     }
+
+    /** A resposta com a recorrência também preenchida, para cruzar os dois juízes na mesma frase. */
+    private fun respostaComRecorrencia(dataRaw: String?, kind: String, dia: String): String = """
+        {
+          "title": "",
+          "local_date": ${literal(dataRaw)},
+          "local_time": "10:00",
+          "recurrence": {
+            "kind": "$kind",
+            "week_days": [],
+            "day_of_month": $dia,
+            "month_of_year": null
+          },
+          "confidence": 0.9,
+          "ambiguous": false,
+          "missing_fields": [],
+          "notes": []
+        }
+    """.trimIndent()
+
+    private fun parseComRecorrencia(fala: String, dataRaw: String?, kind: String, dia: String): ParsedTaskDraft {
+        server.enqueue(
+            MockResponse()
+                .setBody(respostaComRecorrencia(dataRaw, kind, dia))
+                .setHeader("Content-Type", "application/json"),
+        )
+        val remote = ParseReminderClient(
+            config = SupabaseConfig(url = server.url("/").toString(), anonKey = "k"),
+            tokenProvider = { "t" },
+            http = OkHttpClient(),
+        )
+        val hybrid = HybridParser(
+            local = local,
+            clock = clock,
+            remote = remote,
+            network = NetworkStatus { true },
+            isAiEnabled = { true },
+        )
+        return runBlocking { hybrid.parse(fala) }
+    }
+
+    /**
+     * Os dois juízes no mesmo `filterNot` — o da recorrência (do #75) e o da data/hora (deste PR).
+     *
+     * A fala `"todo dia 5 do mês"` tem as duas coisas que o merge pode restaurar: a regra `MONTHLY`
+     * dia=5 do local **e** a data `2026-11-05` do local. A IA devolve, na mesma resposta, a data
+     * ilegível (`2026-02-30` → nota de data) e a regra incoerente (`MONTHLY` sem dia → nota de
+     * recorrência). O merge restaura as duas, então as duas notas são falsas e as duas têm de cair.
+     *
+     * Se o juiz da recorrência engolisse o da data (ou o contrário), uma das duas sobreviveria — e
+     * é exatamente essa colisão que este teste prende.
+     */
+    @Test
+    fun osDoisJuizesNaoSeAtropelamNaMesmaResposta() {
+        val final = parseComRecorrencia(
+            fala = "todo dia 5 do mês",
+            dataRaw = "2026-02-30",
+            kind = "MONTHLY",
+            dia = "null",
+        )
+
+        // As duas partes foram restauradas do local: a regra repete e a data existe.
+        assertThat(final.recurrence.kind).isEqualTo(com.theopadilha.falaagenda.domain.model.RecurrenceKind.MONTHLY)
+        assertThat(final.recurrence.dayOfMonth).isEqualTo(5)
+        assertThat(final.localDate).isEqualTo(LocalDate.of(2026, 11, 5))
+
+        assertWithMessage("a regra repete, então a nota de recorrência é falsa: ${final.notes}")
+            .that(final.notes.any { it.contains("Ficou sem repetir") })
+            .isFalse()
+        assertWithMessage("a data existe, então a nota de data é falsa: ${final.notes}")
+            .that(final.temNotaDaData())
+            .isFalse()
+    }
 }

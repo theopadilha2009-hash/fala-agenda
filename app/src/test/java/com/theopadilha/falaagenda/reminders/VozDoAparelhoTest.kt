@@ -2,11 +2,13 @@ package com.theopadilha.falaagenda.reminders
 
 import android.app.Application
 import android.content.Context
+import android.media.AudioManager
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import org.junit.After
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -38,6 +40,22 @@ class VozDoAparelhoTest {
     private val contexto: Context = ApplicationProvider.getApplicationContext()
 
     private val frase = "Está na hora. Tomar remédio."
+
+    /**
+     * O aparelho audível é o pressuposto destes casos, agora explícito: o Robolectric nasce com o
+     * `STREAM_ALARM` em **zero**, e o aviso de saída — que é o que este arquivo mede — só sai quando
+     * a fala tem por onde soar (ver `VozDoAparelho.streamDaVozAudivel`). Sem isto os casos de saída
+     * estariam medindo o eixo errado: um aparelho mudo, e não o motor.
+     */
+    @Before
+    fun aparelhoAudivel() {
+        val audio = contexto.getSystemService(AudioManager::class.java)
+        audio.setStreamVolume(
+            AudioManager.STREAM_ALARM,
+            audio.getStreamMaxVolume(AudioManager.STREAM_ALARM),
+            0,
+        )
+    }
 
     @After
     fun devolverOMotor() {
@@ -282,6 +300,20 @@ class VozDoAparelhoQueRecusaTest {
     private val contexto: Context = ApplicationProvider.getApplicationContext()
 
     private val frase = "Está na hora. Tomar remédio."
+
+    /**
+     * O aparelho audível, pelo mesmo motivo da classe de cima: sem isto o `saidas == 0` deste caso
+     * passaria pelo volume em zero, e não pela recusa do motor — o eixo errado.
+     */
+    @Before
+    fun aparelhoAudivel() {
+        val audio = contexto.getSystemService(AudioManager::class.java)
+        audio.setStreamVolume(
+            AudioManager.STREAM_ALARM,
+            audio.getStreamMaxVolume(AudioManager.STREAM_ALARM),
+            0,
+        )
+    }
 
     @After
     fun devolverOMotor() {

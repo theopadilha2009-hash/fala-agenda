@@ -166,4 +166,97 @@ class SpeechIntentCorrecaoTest {
         assertThat(intent("cancela o médico, ao invés disso, o dentista"))
             .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
     }
+
+    // --- o custo do "não": a cláusula de RAZÃO não é correção --------------------------
+    //
+    // O review do PR #83 mediu a regressão: com o "não" tratado como conector sempre, 2400 de
+    // 3360 frases que NÃO tinham correção nenhuma deixavam de agir. O caso clínico é o pior —
+    // "já tomei o remédio de pressão, não preciso mais" deixava de registrar a dose. O que separa
+    // a razão da correção é o que vem depois do "não": uma oração, não um sintagma nominal.
+
+    @Test
+    fun clausulaDeRazaoNaoBloqueiaOComando() {
+        assertThat(intent("cancela o médico, não vou poder ir"))
+            .isEqualTo(SpeechIntent.Cancel("medico"))
+        assertThat(intent("cancela o médico, não deu tempo"))
+            .isEqualTo(SpeechIntent.Cancel("medico"))
+        assertThat(intent("já tomei o remédio de pressão, não preciso mais"))
+            .isEqualTo(SpeechIntent.Complete("remedio de pressao"))
+        assertThat(intent("apaga o remédio, não quero mais"))
+            .isEqualTo(SpeechIntent.EraseNamed("remedio"))
+        assertThat(intent("cancela a consulta, não posso agora"))
+            .isEqualTo(SpeechIntent.Cancel("consulta"))
+        assertThat(intent("já tomei o remédio, não esqueci"))
+            .isEqualTo(SpeechIntent.Complete("remedio"))
+    }
+
+    /**
+     * O RESIDUAL declarado de "melhor": ele fica no gatilho largo (o review o listou como
+     * conector de conteúdo, sem a ambiguidade do "não"), e por isso `"cancela o médico, melhor
+     * semana que vem"` continua bloqueando. É medido e preso aqui para a troca ser explícita.
+     *
+     * A direção é a segura, e o desfecho é defensável: ela disse "melhor semana que vem", ou
+     * seja, NÃO cancele agora — a pergunta do app ("Não entendi qual é a tarefa") deixa o comando
+     * sem efeito em vez de apagar o médico. O que fica registrado é que é o gatilho, e não a
+     * intenção dela, que decide — e que separar "melhor, o dentista" de "melhor semana que vem"
+     * pediria a mesma análise nominal-vs-oração que o "não" já faz (e "semana" é substantivo, de
+     * modo que a análise sozinha não bastaria).
+     */
+    @Test
+    fun melhorComCaudaDeTempoContinuaBloqueado() {
+        assertThat(intent("cancela o médico, melhor semana que vem"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+        assertThat(intent("cancela o médico, melhor, o dentista"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+    }
+
+    /**
+     * A correção por CONTEÚDO depois de uma cópula continua bloqueando: é o que um gatilho só de
+     * "oração" deixaria passar. `"não é o de pressão"` — o que segue nomeia a tarefa.
+     */
+    @Test
+    fun correcaoPorConteudoDepoisDaCopulaContinuaBloqueada() {
+        assertThat(intent("já tomei o remédio de pressão, não é o de diabetes"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+        assertThat(intent("cancela o médico, não é o dentista"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+    }
+
+    /**
+     * O "não" SEM a segunda vírgula — `"cancela o medico, nao o dentista"` — é a fala mais
+     * provável dela e continua bloqueando. Era exatamente o caso que a variante do review
+     * (exigir a vírgula de fechamento, `\s*,`) deixava voltar a agir sobre o alvo descartado:
+     * a dose errada que este PR existe para matar.
+     */
+    @Test
+    fun correcaoSemASegundaVirgulaContinuaBloqueada() {
+        assertThat(intent("cancela o médico, não o dentista"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+        assertThat(intent("já tomei o remédio de pressão, não o de diabetes"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+        assertThat(intent("apaga o remédio, não a vitamina"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+    }
+
+    /**
+     * Os conectores de correção que o catálogo não media e o review apontou como faltantes. São
+     * ela voltando atrás no que acabou de dizer — vocabulário plausível de quem fala.
+     */
+    @Test
+    fun conectoresNaturaisQueFaltavamTambemBloqueiam() {
+        listOf(
+            "cancela o médico, esquece, o dentista",
+            "cancela o médico, peraí, o dentista",
+            "cancela o médico, deixa pra lá, o dentista",
+            "cancela o médico, mentira, o dentista",
+            "cancela o médico, tá errado, o dentista",
+            "cancela o médico, corrigindo, o dentista",
+            "cancela o médico, quis dizer, o dentista",
+            "cancela o médico, me enganei, o dentista",
+            "cancela o médico, aliás, o dentista",
+            "cancela o médico, desculpa, o dentista",
+        ).forEach { frase ->
+            assertThat(intent(frase)).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+        }
+    }
 }

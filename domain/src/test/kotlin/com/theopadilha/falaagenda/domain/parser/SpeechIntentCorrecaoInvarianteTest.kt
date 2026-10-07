@@ -16,10 +16,11 @@ import org.junit.Test
  * nas capturas legítimas). Por isso o mesmo espaço é percorrido com o conector vazio — é o
  * controle.
  *
- * O oráculo mede também a viabilidade da outra saída possível do fix (usar o alvo CORRIGIDO, o
- * que vem depois do conector): quantos casos do espaço têm, depois do conector, um alvo de
- * tarefa de verdade, e quantos têm um dia, uma hora ou nada. É esse número que decide entre as
- * duas saídas — não a preferência de quem escreve.
+ * Há um SEGUNDO corpus aqui, e ele existe por causa do review do PR #83: o de CONTINUAÇÃO. O
+ * "não" é a palavra mais comum do português numa continuação ("não vou poder ir", "não deu
+ * tempo"), e tratá-lo como conector de correção sempre custava **2400 de 3360** frases — o
+ * comando certo deixava de agir. Os dois números juntos são o que prende o fix: o corpus de
+ * correção prende o benefício, o de continuação prende o custo.
  *
  * O alvo esperado de cada caso é ESCRITO À MÃO aqui, e não calculado com o raciocínio do código
  * (um oráculo que recalcula a doutrina só concorda consigo mesmo).
@@ -108,6 +109,159 @@ class SpeechIntentCorrecaoInvarianteTest {
         assertThat(agiuComCorrecao).isEqualTo(0)
     }
 
+    // --- o corpus de CONTINUAÇÃO: o custo, preso em teste -----------------------------
+    //
+    // O review do PR #83 mediu que o gatilho largo do "não" bloqueava 2400 de 3360 frases que
+    // NÃO tinham correção nenhuma. O caso clínico é o pior: "já tomei o remédio de pressão, não
+    // preciso mais" deixava de registrar a dose. Este é o corpus que prende a regressão — sem
+    // ele, trocar o gatilho de volta para o largo não derruba teste nenhum.
+
+    /** As caudas de RAZÃO: depois do "não" vem uma oração, não um alvo. */
+    private val caudasDeContinuacao = listOf(
+        "não vou poder ir",
+        "não preciso mais",
+        "não deu tempo",
+        "não quero mais",
+        "não consigo de manhã",
+        "não tenho como",
+        "não posso agora",
+        "não sei se dá",
+        "não deixa",
+        "não esqueci",
+        "não lembro",
+        "não vale a pena",
+        "não adianta",
+        "não funciona assim",
+        "não fui ainda",
+        "não foi possível",
+        "não é possível",
+        "não tem como",
+        "não vou",
+        "não queria",
+        "não precisa",
+        "não perdi",
+    )
+
+    /** Os alvos do corpus de continuação, com o alvo que o app age hoje (sem correção nenhuma). */
+    private val alvosDeContinuacao = listOf(
+        "o médico" to "medico",
+        "o remédio de pressão" to "remedio de pressao",
+        "a consulta" to "consulta",
+        "o aluguel" to "aluguel",
+        "o óleo" to "oleo",
+        "a missa" to "missa",
+        "o dentista" to "dentista",
+        "a vitamina" to "vitamina",
+        "o carro" to "carro",
+        "a conta de luz" to "conta de luz",
+        "o cabelo" to "cabelo",
+        "a fisioterapia" to "fisioterapia",
+        "o pão" to "pao",
+        "a roupa" to "roupa",
+        "o cachorro" to "cachorro",
+        "a feira" to "feira",
+        "o remédio" to "remedio",
+        "a pressão" to "pressao",
+        "o ônibus" to "onibus",
+        "a neta" to "neta",
+        "o café" to "cafe",
+        "a janela" to "janela",
+        "o sapato" to "sapato",
+        "a unha" to "unha",
+        "o telefone" to "telefone",
+        "a água" to "agua",
+        "o gás" to "gas",
+        "a luz" to "luz",
+        "o bolo" to "bolo",
+        "a roupa de cama" to "roupa de cama",
+        "o jardim" to "jardim",
+        "a farmácia" to "farmacia",
+    )
+
+    /** O espaço do review: 5 verbos × 32 alvos × 21 caudas = 3360. */
+    private val verbosDeContinuacao = verbos + listOf("exclui ", "tira ")
+
+    @Test
+    fun clausulaDeRazaoNaoBloqueiaOComandoCerto() {
+        var casos = 0
+        var bloqueados = 0
+        val exemplos = mutableListOf<String>()
+
+        verbosDeContinuacao.forEach { verbo ->
+            alvosDeContinuacao.forEach { (alvo, alvoDobrado) ->
+                caudasDeContinuacao.forEach { cauda ->
+                    casos++
+                    val intent = SpeechIntentClassifier.classify("$verbo$alvo, $cauda")
+                    val bloqueado = intent is SpeechIntent.Unknown &&
+                        intent.kind == UnsupportedKind.CORRECTION
+                    if (bloqueado) {
+                        bloqueados++
+                        if (exemplos.size < 3) exemplos += "$verbo$alvo, $cauda"
+                    } else if (alvoDe(intent) != alvoDobrado) {
+                        // Não é bloqueio: ou age sobre o alvo (o certo), ou é outro desfecho.
+                        bloqueados++
+                        if (exemplos.size < 3) exemplos += "OUTRO: $verbo$alvo, $cauda → $intent"
+                    }
+                }
+            }
+        }
+
+        println("PROBE-RESUMO|corpusDeContinuacao|casos=$casos|bloqueados=$bloqueados|exemplos=$exemplos")
+        assertThat(bloqueados).isEqualTo(0)
+    }
+
+    /**
+     * O outro lado da mesma balança: a correção por CONTEÚDO depois de uma cópula continua
+     * bloqueando. `"já tomei o remédio, não é o de pressão"` é correção — o que segue nomeia a
+     * tarefa —, e é o caso que um gatilho só de "oração" deixaria passar.
+     */
+    @Test
+    fun correcaoPorConteudoDepoisDaCopulaContinuaBloqueada() {
+        val frases = listOf(
+            "já tomei o remédio de pressão, não é o de diabetes",
+            "cancela o médico, não é o dentista",
+            "apaga o remédio, não é o de pressão",
+            "já tomei o remédio, não é amanhã",
+        )
+        var liberadas = 0
+        frases.forEach { frase ->
+            val intent = SpeechIntentClassifier.classify(frase)
+            val bloqueada = intent is SpeechIntent.Unknown &&
+                intent.kind == UnsupportedKind.CORRECTION
+            if (!bloqueada) {
+                liberadas++
+                println("PROBE-FALSO-NEGATIVO|«$frase» → $intent")
+            }
+        }
+        println("PROBE-RESUMO|correcaoDepoisDaCopula|casos=${frases.size}|liberadas=$liberadas")
+        assertThat(liberadas).isEqualTo(0)
+    }
+
+    /**
+     * O custo declarado do lado seguro, medido e preso em teste: as caudas cujo primeiro token é
+     * AMBÍGUO — a contração "de+a" ("não, da fisioterapia"), o demonstrativo "esta" ("não, esta
+     * consulta") e a cortesia "tá" ("não, tá bom") — são lidas como correção, e o app pergunta em
+     * vez de agir. É o lado seguro (deixa de agir, não age sobre o errado) e o custo fica
+     * EXPLÍCITO aqui, para a troca ser visível em vez de silenciosa.
+     */
+    @Test
+    fun asCaudasQueSeConfundemComDeterminanteContinuamBloqueadas() {
+        val ambiguas = listOf(
+            "cancela o médico, não da fisioterapia",
+            "cancela o médico, não esta consulta",
+            "já tomei o remédio, não ta bom",
+        )
+        var bloqueadas = 0
+        ambiguas.forEach { frase ->
+            val intent = SpeechIntentClassifier.classify(frase)
+            if (intent is SpeechIntent.Unknown && intent.kind == UnsupportedKind.CORRECTION) {
+                bloqueadas++
+            }
+        }
+        println("PROBE-RESUMO|caudasAmbiguas|casos=${ambiguas.size}|bloqueadas=$bloqueadas")
+        assertThat(bloqueadas).isEqualTo(ambiguas.size)
+    }
+
     @Test
     fun semConectorOComandoContinuaExatamenteComoHoje() {
         var casos = 0
@@ -130,13 +284,8 @@ class SpeechIntentCorrecaoInvarianteTest {
     }
 
     /**
-     * O CUSTO do lado seguro, medido em vez de suposto.
-     *
-     * O gatilho é o conector de correção, e ele é procurado no alvo INTEIRO. Se o nome de uma
-     * tarefa de verdade contiver uma dessas palavras como palavra própria ("Remédio, não é o de
-     * pressão"), a fala deixa de agir e vira a pergunta — deixa de concluir ou apagar, o que é o
-     * lado seguro. O que não pode acontecer é a captura legítima com radical de edição virar
-     * pergunta: por isso o controle abaixo é asserção, e não um número no log.
+     * A captura legítima com radical de edição não pode virar pergunta: este é o controle do
+     * outro lado do custo. É asserção, e não um número no log.
      */
     @Test
     fun capturasLegitimasNaoSaoConfundidasComCorrecao() {
@@ -162,28 +311,5 @@ class SpeechIntentCorrecaoInvarianteTest {
         }
         println("PROBE-RESUMO|capturasLegitimas|casos=${capturas.size}|viramPerguntaDeCorrecao=$confundidas")
         assertThat(confundidas).isEqualTo(0)
-    }
-
-    /**
-     * O outro lado do custo: uma fala que ERA comando e cujo nome de tarefa contém uma das
-     * palavras do conector ("Remédio, não é o de pressão") deixa de agir e vira pergunta. É
-     * medido, não escondido: o desfecho é o lado seguro (não conclui nem apaga a tarefa errada),
-     * e a contagem fica no log para quem for revisar.
-     */
-    @Test
-    fun comandoCujoNomeContemAPalavraDoConectorViraPergunta() {
-        val frases = listOf(
-            "já tomei o remédio, não é o de pressão",
-            "cancela o médico, melhor não",
-        )
-        var viraramPergunta = 0
-        frases.forEach { frase ->
-            val intent = SpeechIntentClassifier.classify(frase)
-            if (intent is SpeechIntent.Unknown && intent.kind == UnsupportedKind.CORRECTION) {
-                viraramPergunta++
-            }
-        }
-        println("PROBE-RESUMO|comandoComPalavraDoConector|casos=${frases.size}|viraramPergunta=$viraramPergunta")
-        assertThat(viraramPergunta).isEqualTo(frases.size)
     }
 }

@@ -21,6 +21,13 @@ data class VoiceUiState(
     val finalText: String? = null,
     val error: String? = null,
     val needSystem: Boolean = false,
+    /**
+     * O recado foi cortado pelo app: o texto entregue veio de um parcial (ou do prazo
+     * vencido), não do fim normal da fala dela. Sem esta marca, "tomar" — o primeiro
+     * pedaço de "tomar… remédio… de pressão" — chega à tela como se fosse o recado
+     * inteiro, e ela confirma uma tarefa que não disse.
+     */
+    val truncated: Boolean = false,
 )
 
 /**
@@ -49,10 +56,31 @@ class VoiceCaptureController(
     private var offlineSpeech: OfflineSpeech? = null
 
     private val watchdog = Runnable { onWatchdog() }
+    private val hardLimit = Runnable { onHardLimit() }
 
     private fun armWatchdog(millis: Long) {
         handler.removeCallbacks(watchdog)
         handler.postDelayed(watchdog, millis)
+    }
+
+    /**
+     * O teto duro da escuta: armado **uma vez** por escuta, e nunca rearmado.
+     *
+     * O `LISTENING_TIMEOUT_MS` sozinho não é teto. Ele é rearmado a cada `onPartial` — de
+     * propósito, para não cortar quem dita por mais de 20 s —, e `onPartial` emite sempre que a
+     * string muda. O parcial do Vosk pode **oscilar** durante a pausa (uma revisão do mesmo
+     * enunciado: "tomar" → "tomar remédio" → "tomar"); se oscilar, cada revisão rearma o prazo
+     * de 20 s e o endpointer nunca fecha, porque cada revisão também reinicia a espera da pausa
+     * ([VoskUtterance]). A escuta ficaria aberta enquanto a oscilação durasse.
+     *
+     * Este teto é a resposta: um limite absoluto, contado de `onReady`, que nenhuma revisão
+     * consegue empurrar. Ele **não** fecha o recado em silêncio — passa por `giveUpOnTimeout`,
+     * então o texto que ficou chega marcado como cortado e ela vê o aviso. Cortar calado seria
+     * o defeito original de volta, com outra causa.
+     */
+    private fun armHardLimit() {
+        handler.removeCallbacks(hardLimit)
+        handler.postDelayed(hardLimit, HARD_LIMIT_MS)
     }
 
     /** Nenhum estado de escuta pode durar para sempre: se o motor não responde, sai daqui. */
@@ -66,13 +94,37 @@ class VoiceCaptureController(
         }
     }
 
+    private fun onHardLimit() {
+        if (!session) return
+        if (_ui.value.state == VoiceState.LISTENING) {
+            giveUpOnTimeout(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+        }
+    }
+
     /**
      * O prazo venceu. O que já veio reconhecido não se joga fora: perder a fala no meio do
      * recado é pior que ouvir de novo. Sem parcial, aí sim é o erro de sempre.
+     *
+     * O prazo vencido marca **todo** parcial como cortado, e é possível que o recado estivesse
+     * inteiro: o endpointer do Kaldi não avisou dentro dos 20 s (`LISTENING_TIMEOUT_MS`), e o
+     * texto que ficou é o último parcial. Ela é então convidada a "falar de novo se faltou
+     * algo" sem ter faltado nada.
+     *
+     * Não dá para distinguir os dois casos com o que existe aqui. "O parcial está completo" não
+     * tem sinal: o `partialResult` do Vosk devolve o mesmo texto durante a pausa e depois dela,
+     * e um resultado final que não chegou é, por definição, um resultado que não temos. A única
+     * testemunha seria o próprio endpointer — que é justamente quem calou.
+     *
+     * E as duas leituras erradas não custam o mesmo. Marcar um recado íntegro manda ela conferir
+     * um texto que já está certo: um convite a mais, que o aviso deixa claro que é opcional.
+     * Não marcar um recado cortado é o defeito medido: o parcial "tomar" passa por recado
+     * inteiro e vira uma tarefa que ela não disse. Fica o custo menor.
      */
     private fun giveUpOnTimeout(error: Int) {
         val heard = _ui.value.partial.trim()
-        if (heard.isEmpty()) failWith(error) else finishWith(heard)
+        // O prazo venceu no meio do recado: o que veio vem marcado, porque a escuta parou
+        // de ouvir por conta do app.
+        if (heard.isEmpty()) failWith(error) else finishWith(heard, truncated = true)
     }
 
     fun start(host: Context = context) {
@@ -110,7 +162,10 @@ class VoiceCaptureController(
     }
 
     fun consumeFinal() {
-        _ui.value = VoiceUiState()
+        // A marca de corte FICA: o texto já virou rascunho e o microfone volta a IDLE, mas
+        // é na espera e na confirmação — depois daqui — que ela precisa saber que a escuta
+        // parou antes do fim. Quem apaga é a escuta seguinte (ver `start`).
+        _ui.value = VoiceUiState(truncated = _ui.value.truncated)
     }
 
     fun consumeSystemRequest() {
@@ -165,7 +220,7 @@ class VoiceCaptureController(
         stopSourceOnly()
     }
 
-    private fun finishWith(text: String) {
+    private fun finishWith(text: String, truncated: Boolean = false) {
         session = false
         stopSourceOnly()
         val clean = text.trim()
@@ -173,7 +228,7 @@ class VoiceCaptureController(
             // Erro com estado IDLE some da tela: a mensagem precisa do estado ERROR para aparecer.
             VoiceUiState(state = VoiceState.ERROR, error = "Não entendi o que foi dito.")
         } else {
-            VoiceUiState(state = VoiceState.IDLE, finalText = clean)
+            VoiceUiState(state = VoiceState.IDLE, finalText = clean, truncated = truncated)
         }
     }
 
@@ -227,6 +282,7 @@ class VoiceCaptureController(
             if (!session) return
             heardReady = true
             armWatchdog(LISTENING_TIMEOUT_MS)
+            armHardLimit()
             _ui.value = _ui.value.copy(state = VoiceState.LISTENING, error = null)
         }
 
@@ -255,7 +311,9 @@ class VoiceCaptureController(
             if (!session) return
             val elapsed = SystemClock.elapsedRealtime() - startedAt
             when (VoiceRetry.decide(code, _ui.value.partial, retries, elapsed)) {
-                VoiceRetry.Action.USE_PARTIAL -> finishWith(_ui.value.partial.trim())
+                // O parcial venceu o erro: o que ela disse até aqui é salvo, mas é um recado
+                // cortado — o motor parou no meio, não ela.
+                VoiceRetry.Action.USE_PARTIAL -> finishWith(_ui.value.partial.trim(), truncated = true)
                 VoiceRetry.Action.RETRY -> {
                     retries += 1
                     destroySource()
@@ -272,7 +330,9 @@ class VoiceCaptureController(
         override fun onFinal(text: String) {
             if (!session) return
             val used = text.ifBlank { _ui.value.partial }
-            finishWith(used.trim())
+            // Final vazio é o motor fechando sem resultado: o que sobra é o parcial, e um
+            // parcial é sempre um recado cortado.
+            finishWith(used.trim(), truncated = text.isBlank() && _ui.value.partial.isNotBlank())
         }
     }
 
@@ -280,6 +340,14 @@ class VoiceCaptureController(
         const val PREPARING_TIMEOUT_MS = 10_000L
         const val LISTENING_TIMEOUT_MS = 20_000L
         const val UNDERSTANDING_TIMEOUT_MS = 8_000L
+
+        /**
+         * O teto absoluto da escuta, contado do `onReady` e nunca rearmado. Generoso de
+         * propósito: quem dita um recado longo passa dos 20 s do [LISTENING_TIMEOUT_MS] sem
+         * problema, e este teto não existe para apressar ninguém — existe para que a escuta não
+         * fique aberta para sempre quando o parcial oscila (ver [armHardLimit]).
+         */
+        const val HARD_LIMIT_MS = 60_000L
     }
 }
 

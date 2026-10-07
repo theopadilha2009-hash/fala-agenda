@@ -88,6 +88,7 @@ import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.speech.unwrapActivity
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.DraftSaver
+import com.theopadilha.falaagenda.ui.TRUNCATED_NOTICE
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
@@ -256,7 +257,7 @@ fun HomeScreen(
         mutableStateOf<ParsedTaskDraft?>(null)
     }
     val handleDraft: (ParsedTaskDraft) -> Unit = { draft ->
-        if (draft.canQuickConfirm(Instant.now(), ZoneId.systemDefault())) {
+        if (mayQuickConfirm(draft, voice.ui.value.truncated, Instant.now(), ZoneId.systemDefault())) {
             quickDraft = draft
         } else {
             onDraftReady(draft)
@@ -487,6 +488,8 @@ fun HomeScreen(
                 state = if (understanding) VoiceState.UNDERSTANDING else voiceUi.state,
                 partial = voiceUi.partial,
                 error = voiceUi.error,
+                // O recado que o app cortou continua dito no microfone enquanto ela espera.
+                truncated = voiceUi.truncated,
                 // Entendendo o recado o botão sai da mão dela: um toque aqui não pode
                 // cancelar a fala que ainda está virando tarefa.
                 onMic = if (understanding) null else onMic,
@@ -611,6 +614,12 @@ fun HomeScreen(
                                             AlertFix.OPEN_CHANNEL_SETTINGS -> openOrReport(
                                                 channelNotificationSettings(context),
                                                 "Não consegui abrir os ajustes de aviso deste celular.",
+                                            )
+                                            // O canal está certo e o volume do aparelho não: a tela
+                                            // de som é onde se sobe o volume do alarme.
+                                            AlertFix.OPEN_SOUND_SETTINGS -> openOrReport(
+                                                soundSettings(),
+                                                "Não consegui abrir os ajustes de som deste celular.",
                                             )
                                             null -> Unit
                                         }
@@ -988,6 +997,30 @@ private fun channelNotificationSettings(context: Context): Intent =
         .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
         .putExtra(Settings.EXTRA_CHANNEL_ID, NotificationHelper.CHANNEL_ID)
 
+/**
+ * Os Ajustes de SOM do aparelho: é onde mora o volume que o lembrete usa. O canal do lembrete
+ * está alto, com som de alarme e vibrando — o que falta é o volume do celular, e a tela do canal
+ * não tem esse controle. Aqui ela sobe o volume do alarme, que é o mesmo do despertador que ela
+ * já conhece.
+ */
+private fun soundSettings(): Intent =
+    Intent(Settings.ACTION_SOUND_SETTINGS)
+
+/**
+ * Se o rascunho pode ser fechado na caixa rápida, sem passar pela confirmação.
+ *
+ * O recado que o app cortou **não pode**: a caixa não tem onde dizer que a escuta parou no
+ * meio, e um toque em "Salvar" fecharia uma tarefa pela metade. Ele vai para a confirmação,
+ * onde ela vê o que foi entendido antes de salvar. `canQuickConfirm` continua decidindo o
+ * caso normal — o corte é um portão na frente dele, não uma segunda regra de completude.
+ */
+internal fun mayQuickConfirm(
+    draft: ParsedTaskDraft,
+    truncated: Boolean,
+    now: Instant,
+    zone: ZoneId,
+): Boolean = !truncated && draft.canQuickConfirm(now, zone)
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 internal fun MicDock(
@@ -997,6 +1030,7 @@ internal fun MicDock(
     onMic: (() -> Unit)?,
     onWrite: () -> Unit,
     onQuick: (Long) -> Unit,
+    truncated: Boolean = false,
 ) {
     val label = when (state) {
         VoiceState.PREPARING -> "Espera um instante…"
@@ -1031,8 +1065,21 @@ internal fun MicDock(
             // descrição é a mesma string, e o "Pode falar agora" ficava mudo no momento em
             // que ela precisa falar. Só a troca deste texto gera o anúncio, e ele muda nos
             // três estados que interessam.
-            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            //
+            // Com o recado cortado, o anúncio passa para a linha do corte: dois anúncios no
+            // mesmo instante é pior que o silêncio, e o do corte é o que ela precisa ouvir.
+            modifier = Modifier.semantics {
+                if (!truncated) liveRegion = LiveRegionMode.Polite
+            },
         )
+        if (truncated) {
+            Text(
+                TRUNCATED_NOTICE,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        }
         if (state == VoiceState.ERROR) {
             Text("Toque de novo, ou escreva o recado.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
         }

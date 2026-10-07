@@ -75,27 +75,43 @@ class LocalTaskParser(
             remaining = hit.remaining
         }
 
-        val timeHit = extractTime(remaining)
-        remaining = timeHit.remaining
-        var localTime = timeHit.time
-        if (timeHit.ambiguous) {
+        // A correção na própria fala ("amanhã às oito, não, hoje") é uma FRONTEIRA: o trecho antes
+        // do conector foi descartado por ela. O valor que vale é o do ÚLTIMO trecho que falou
+        // daquele campo — ela pode trocar só o dia, só a hora, ou os dois, e o campo que ela NÃO
+        // trocou continua vindo do trecho descartado ("amanhã às oito, não, hoje" mantém as 08:00).
+        // Antes desta fronteira o parser lia a primeira expressão da fala inteira e jogava o resto
+        // fora: o app gravava "amanhã" com o título dizendo "hoje", sem ambiguidade nenhuma, e a
+        // caixa rápida confirmava a dose do dia errado com um toque.
+        val leituras = leiturasTemporais(remaining, recurrence)
+        // O campo vale pelo ÚLTIMO trecho que falou dele — falar é trazer valor ou trazer dúvida.
+        // A dúvida entra na conta porque uma data recusada ("31 de fevereiro") não tem valor, e
+        // olhar só o valor a faria sumir do rascunho: o app salvaria sem data, calado, em vez de
+        // escalar. Dúvida de um trecho ANTERIOR não volta: ela era sobre o valor que ela descartou.
+        val idxHora = leituras.indexOfLast { it.time != null || it.timeAmbiguous }
+        val idxData = leituras.indexOfLast { it.date != null || it.dateAmbiguous }
+        val comHora = leituras.getOrNull(idxHora)
+        val comData = leituras.getOrNull(idxData)
+        var localTime = comHora?.time
+        var localDate = comData?.date
+        // O período dito acompanha a hora: vale o último a partir de onde a hora valeu ("amanhã às
+        // oito, não, de tarde" → 20:00). Um período ANTERIOR à hora corrigida não volta — ele
+        // pertencia à hora que ela descartou.
+        val periodHit = (if (idxHora >= 0) leituras.drop(idxHora) else leituras)
+            .mapNotNull { it.periodHit }
+            .firstOrNull()
+        val periodHint = periodHit?.hint
+        val timeHadPeriod = comHora?.hadPeriod == true
+        if (comHora?.timeAmbiguous == true) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += timeHit.note ?: "O horário ficou ambíguo."
+            notes += comHora.timeNote ?: "O horário ficou ambíguo."
         }
-
-        val dateHit = extractDate(remaining, recurrence)
-        remaining = dateHit.remaining
-        var localDate = dateHit.date
-        if (dateHit.ambiguous) {
+        if (comData?.dateAmbiguous == true) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += dateHit.note ?: NotasDoRascunho.DATA_AMBIGUA
+            notes += comData.dateNote ?: NotasDoRascunho.DATA_AMBIGUA
         }
-
-        val periodHit = extractPeriodHint(remaining)
-        remaining = periodHit.remaining
-        val periodHint = periodHit.hint
+        remaining = TextNormalizer.compactSpaces(leituras.joinToString(" ") { it.remaining })
         if (periodHint != null && periodHint.contains("-")) {
             // Faixa do dia ("meio da tarde às quatro"): é um horário aproximado, não a hora que ela
             // disse. Sem hora, fica ambíguo (nunca inventa). Com hora, o período da faixa resolve o
@@ -118,7 +134,7 @@ class LocalTaskParser(
         } else if (periodHint != null) {
             // O PERÍODO EXPLÍCITO vence o marco: "antes do jantar às seis da manhã" é 06:00 — o "da
             // manhã" que ela disse não pode ser sobrescrito pelo jantar (≈20h).
-            if (timeHit.hadPeriod) {
+            if (timeHadPeriod) {
                 // Horário já resolvido pelo período dito; nada a fazer.
             } else if (periodHint == "jantar") {
                 // "jantar" é ≈20h. No "depois", a hora 1–6 somada dá 13–18h — a tarde, que é ANTES
@@ -776,6 +792,131 @@ class LocalTaskParser(
         }
 
         return extractClock(remaining) ?: TimeHit(null, remaining, false)
+    }
+
+    /**
+     * A correção na própria fala: ela dita, percebe que errou e se corrige sem parar de falar.
+     *
+     * É o mesmo fenômeno que o `SpeechIntentClassifier` já trata para o ALVO ("cancela o médico,
+     * não, o dentista"), aqui aplicado aos campos de data e hora: o conector é uma **fronteira**,
+     * e o que vem depois dele é o que ela quis dizer. A leitura da frase é feita por trecho, e o
+     * parser fica com o último valor dito de cada campo — não com o primeiro da fala inteira.
+     *
+     * Um conector só é fronteira quando a fala **continua** depois dele: "não vou poder ir" é uma
+     * continuação, não uma correção, e um "não" que termina a frase ("me lembra amanhã, não") não
+     * corrige nada — ele descarta, e o app precisa perguntar em vez de cravar. Por isso o trecho
+     * seguinte vazio desfaz a fronteira e a leitura volta a ser a da fala inteira.
+     */
+    private data class LeituraTemporal(
+        val date: LocalDate?,
+        val time: LocalTime?,
+        val periodHit: PeriodHit?,
+        val hadPeriod: Boolean,
+        val remaining: String,
+        val dateAmbiguous: Boolean,
+        val dateNote: String?,
+        val timeAmbiguous: Boolean,
+        val timeNote: String?,
+    )
+
+    /**
+     * Os trechos em que a fala se divide: um antes de cada conector de correção e um depois do
+     * último. Cada trecho é lido por inteiro (`extractTime` + `extractDate`) e as leituras voltam
+     * na ordem da fala, para o `parse` escolher o último valor dito de cada campo.
+     */
+    private fun leiturasTemporais(text: String, recurrence: RecurrenceRule): List<LeituraTemporal> {
+        val trechos = trechosDeCorrecao(text)
+        if (trechos.size == 1) return listOf(leituraTemporal(text, recurrence))
+        return trechos.map { leituraTemporal(it, recurrence) }
+    }
+
+    private fun leituraTemporal(text: String, recurrence: RecurrenceRule): LeituraTemporal {
+        val timeHit = extractTime(text)
+        val dateHit = extractDate(timeHit.remaining, recurrence)
+        val periodHit = extractPeriodHint(dateHit.remaining)
+        return LeituraTemporal(
+            date = dateHit.date,
+            time = timeHit.time,
+            periodHit = periodHit,
+            hadPeriod = timeHit.hadPeriod,
+            remaining = periodHit.remaining,
+            dateAmbiguous = dateHit.ambiguous,
+            dateNote = dateHit.note,
+            timeAmbiguous = timeHit.ambiguous,
+            timeNote = timeHit.note,
+        )
+    }
+
+    /**
+     * Onde a fala se parte. Só os trechos INTERIORES (entre dois conectores, ou entre um conector
+     * e o fim) podem ser descartados: o primeiro é a fala inteira, e é ele que carrega o que ela
+     * não corrigiu — o título e o campo que ela não trocou. Sem conector não há corte, e a leitura
+     * é exatamente a de antes.
+     */
+    private fun trechosDeCorrecao(text: String): List<String> {
+        val marcadores = correcaoMarcadores(text)
+        if (marcadores.isEmpty()) return listOf(text)
+        val partes = mutableListOf<String>()
+        var inicio = 0
+        marcadores.forEach { marcador ->
+            partes += text.substring(inicio, marcador.first)
+            inicio = marcador.second
+        }
+        partes += text.substring(inicio)
+        return partes
+    }
+
+    /**
+     * As fronteiras de correção na fala já normalizada: o par (começo do conector, fim do
+     * conector). As duas listas de conectores vêm do vocabulário que a correção falada usa, e o
+     * `não` é o único que precisa do teste da vírgula — "não, hoje" volta atrás do que foi dito;
+     * "não vou poder ir" nega o que vem depois e não descarta nada.
+     */
+    private fun correcaoMarcadores(text: String): List<Pair<Int, Int>> {
+        val fortes = mutableListOf<Pair<Int, Int>>()
+        CORRECAO_FRASE.findAll(text).forEach { m -> fortes += m.range.first to m.range.last + 1 }
+        NAO_VIRGULA.findAll(text).forEach { m -> fortes += m.range.first to m.range.last + 1 }
+        val candidatos = fortes + naoFraco(text).map { it.first to it.last + 1 }
+        val ordenados = candidatos.sortedBy { it.first }
+        // Um conector não pode começar dentro do outro ("não, quer dizer"): vale o que começa
+        // antes, e o conector que morre dentro dele é descartado em vez de partir a fala duas vezes
+        // no mesmo ponto.
+        val semSobreposicao = mutableListOf<Pair<Int, Int>>()
+        ordenados.forEach { m ->
+            if (semSobreposicao.isEmpty() || m.first >= semSobreposicao.last().second) semSobreposicao += m
+        }
+        return semSobreposicao
+    }
+
+    /**
+     * O `não` com a vírgula ANTES ("amanhã, não hoje") — a forma mais comum da correção falada, e
+     * a que escapou da primeira versão desta fronteira, que exigia a vírgula depois.
+     *
+     * Ela não vale pela presença: a vírgula antes do "não" também abre uma continuação ("amanhã,
+     * não vou poder ir"), e ali o "não" nega o que vem depois em vez de descartar o que veio
+     * antes. Quem separa as duas é a gramática do trecho seguinte: a correção segue com um
+     * VALOR ("hoje", "às nove"), e a continuação segue com uma ORAÇÃO — o verbo é o que denuncia
+     * que ela está explicando, não corrigindo. Um token sozinho não carrega essa informação; a
+     * forma da oração carrega.
+     *
+     * O trecho vazio também não é fronteira ("me lembra amanhã, não"): ela começou a se corrigir
+     * e parou, e ali não há valor novo nenhum para o app usar — a leitura volta a ser a da fala
+     * inteira, que é o desfecho de antes desta mudança.
+     */
+    private fun naoFraco(text: String): List<IntRange> {
+        val hits = NAO_ANTES.findAll(text).toList()
+        return hits.mapNotNull { m ->
+            val fim = m.range.last + 1
+            val proximo = hits.firstOrNull { it.range.first > m.range.first }?.range?.first
+                ?: CORRECAO_FRASE.find(text, fim)?.range?.first
+                ?: text.length
+            val cauda = text.substring(fim, proximo)
+            when {
+                cauda.isBlank() -> null
+                TASK_VERB.containsMatchIn(cauda) -> null
+                else -> m.range.first until fim
+            }
+        }
     }
 
     /**
@@ -2547,6 +2688,35 @@ class LocalTaskParser(
         private val TIME_SIGNAL = Regex(
             """\bas\s+(?:\d{1,2}|[a-z])|\bmeio[-\s]?dia\b|\bmeia[-\s]?noite\b|\bdaqui\b""",
         )
+
+        /**
+         * Os conectores de correção que voltam atrás do que ela acabou de dizer, com a fronteira
+         * de palavra dos dois lados — a fala chega pontuada de formas diferentes (", errei.", ",
+         * mentira", ", melhor,") e um conector que escapasse deixaria o valor descartado valendo,
+         * calado. O `não` não está aqui: ele é o único com ambiguidade de continuação ("não vou
+         * poder ir"), e por isso vive em [NAO_VIRGULA], onde a vírgula é quem decide.
+         *
+         * O vocabulário é o mesmo que o `SpeechIntentClassifier` já usa para o alvo, mais as
+         * formas de correção falada que só fazem sentido para data/hora ("hoje não, amanhã").
+         */
+        private val CORRECAO_FRASE = Regex(
+            """\b(?:quer dizer|quis dizer|na verdade|ao inves disso|em vez disso|ta errado|""" +
+                """deixa pra la|me enganei|corrigindo|mentira|alias|esquece|perai|desculpa|""" +
+                """digo|errei)\b|,\s*melhor\b""",
+        )
+
+        /**
+         * O `não` como fronteira: só quando ele vem seguido de vírgula. A vírgula é a quebra
+         * prosódica da correção — ela parou, e o que vem depois é o que ela quis dizer. Sem ela o
+         * "não" nega o que segue ("não vou poder ir") e não descarta nada.
+         */
+        private val NAO_VIRGULA = Regex("""\bnao\s*,""")
+
+        /**
+         * O `não` precedido de vírgula. Só é fronteira quando o trecho seguinte traz um VALOR em
+         * vez de uma oração — ver [naoFraco], que é quem decide.
+         */
+        private val NAO_ANTES = Regex(""",\s*\bnao\b""")
 
         private val FILLERS = setOf(
             "me", "lembrar", "lembre", "lembra", "de", "que", "pra", "para", "o", "a", "os", "as",

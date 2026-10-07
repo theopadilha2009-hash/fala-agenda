@@ -104,7 +104,7 @@ private val JSON = "application/json; charset=utf-8".toMediaType()
  * PT-BR e sem culpar ela.
  */
 private const val NOTA_FAIXA_INVALIDA =
-    "A ajuda extra devolveu uma data fora do calendário. Ficou sem essa parte."
+    HybridParser.NOTA_FAIXA_DESCARTADA + ". Ficou sem essa parte."
 
 /** A mesma ideia, para os dois campos que a IA devolve como texto: `local_date` e `local_time`. */
 private const val NOTA_DATA_ILEGIVEL =

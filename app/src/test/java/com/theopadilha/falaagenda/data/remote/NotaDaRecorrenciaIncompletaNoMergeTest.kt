@@ -153,6 +153,32 @@ class NotaDaRecorrenciaIncompletaNoMergeTest {
             .isFalse()
     }
 
+    /**
+     * A mesma mentira pela porta da **faixa**: a IA devolve `MONTHLY dia=5 mes=13` (o mês 13 não
+     * existe no calendário), a fronteira descarta o 13 e escreve "fora do calendário". O desfecho,
+     * porém, é a regra do **local** — `MONTHLY dia=5`, que repete — e nada se perdeu: para o
+     * `MONTHLY` o `month_of_year` nem entra na regra. A nota fica ao lado de uma regra completa e
+     * verdadeira, descrevendo um descarte que o desfecho desfez.
+     *
+     * O invariante acima não pega este caso: ele aceita "fora do calendário" como explicação válida
+     * da perda sem checar se ela é verdadeira quando a regra sobreviveu ao merge.
+     */
+    @Test
+    fun aNotaDeFaixaTambemNaoPodeFalarDeDescarteQueOMergeDesfez() {
+        val final = parsePelaProducao(
+            fala = "todo dia 5 do mês",
+            json = respostaJson(kind = "MONTHLY", dia = "5", mes = "13"),
+        )
+
+        assertThat(final.recurrence.kind).isEqualTo(RecurrenceKind.MONTHLY)
+        assertThat(final.recurrence.dayOfMonth).isEqualTo(5)
+        assertThat(final.isComplete).isTrue()
+        assertThat(final.canQuickConfirm(clock.instant(), zone)).isTrue()
+        assertWithMessage("a regra repete (dia 5), então o descarte do mês 13 não custou nada: ${final.notes}")
+            .that(final.notes.any { it.contains("fora do calendário") })
+            .isFalse()
+    }
+
     /** A variante `YEARLY` reproduz igual: a regra incoerente cai e o local a restaura. */
     @Test
     fun aVarianteAnualTambemNaoPodeFalarDePerda() {

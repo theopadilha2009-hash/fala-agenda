@@ -41,6 +41,17 @@ class HybridParser(
          * escreve/desmente não pode divergir sem que o compilador veja.
          */
         const val NOTA_RECORRENCIA_PERDIDA = "A ajuda extra disse que repete"
+
+        /**
+         * O prefixo da nota que a fronteira da IA escreve quando o campo da recorrência veio **fora
+         * da faixa** do calendário (`day_of_month = 32`, `month_of_year = 13`).
+         *
+         * Vale o mesmo raciocínio da [NOTA_RECORRENCIA_PERDIDA], e é por isso que ela mora aqui: a
+         * nota afirma que a repetição se perdeu, mas quem decide se a perda houve é o merge — o
+         * local pode ter a regra certa e restaurá-la. Quando o desfecho repete, "Ficou sem essa
+         * parte" é falso: a parte está lá, e o descarte do campo inválido não custou nada.
+         */
+        const val NOTA_FAIXA_DESCARTADA = "A ajuda extra devolveu uma data fora do calendário"
     }
 
     suspend fun parse(transcript: String): ParsedTaskDraft {
@@ -211,7 +222,13 @@ class HybridParser(
         // recorrência": quando o local também não reconheceu nada, o final é `NONE` e a nota fica —
         // e aí ela é verdadeira, e sem ela a perda seria silenciosa.
         val doRemoto = if (recorrenciaFinalRepete) {
-            remotas.filterNot { it.startsWith(NOTA_RECORRENCIA_PERDIDA) }
+            // As duas notas falam da mesma coisa — a repetição se perdeu — e caem juntas quando o
+            // desfecho mostra que ela não se perdeu. A de faixa entra aqui pelo mesmo motivo: com o
+            // campo inválido descartado e o local restaurando a regra, "Ficou sem essa parte" é
+            // falso, porque a parte está lá.
+            remotas.filterNot {
+                it.startsWith(NOTA_RECORRENCIA_PERDIDA) || it.startsWith(NOTA_FAIXA_DESCARTADA)
+            }
         } else {
             remotas
         }

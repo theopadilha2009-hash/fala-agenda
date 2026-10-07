@@ -721,6 +721,15 @@ class LocalTaskParser(
             val namedDay = extractWeekDays(remaining)
             if (namedDay.size == 1) {
                 remaining = stripWeekDays(remaining)
+                // A conta crua caindo NO dia dito: as duas expressões concordam, existe UMA data que
+                // satisfaz as duas, e não há dúvida a escalar. Sem este ramo, "quinta daqui a duas
+                // semanas" (com hoje numa quinta) escalava e devolvia a PRIMEIRA quinta — hoje —
+                // descartando o "duas semanas" em silêncio: o `onNamedDay != date` marcava
+                // "discordam" toda vez que o deslocamento de semanas inteiras caía no próprio dia da
+                // semana dito, que é justamente quando os dois coincidem.
+                if (date.dayOfWeek == namedDay.first()) {
+                    return DateHit(date, remaining, false)
+                }
                 val onNamedDay = RecurrenceEngine.firstOnOrAfter(
                     RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = namedDay),
                     today,
@@ -735,6 +744,19 @@ class LocalTaskParser(
                     )
                 }
                 return DateHit(onNamedDay ?: date, remaining, false)
+            }
+            // Dois dias ditos com um deslocamento: quando a conta crua não cai em NENHUM dos dois,
+            // nenhum deles foi honrado e cravar a conta crua calado é o mesmo defeito do caso de um
+            // dia. O `main` escalava aqui (o ramo de dia da semana sem relativo devolve nulo +
+            // ambíguo); o delta regrediu ao só olhar `size == 1`, e a caixa rápida oferecia
+            // "Quinta-feira, 3 de setembro" para uma frase que diz sábado e domingo.
+            if (namedDay.size > 1 && date.dayOfWeek !in namedDay) {
+                return DateHit(
+                    date,
+                    remaining,
+                    true,
+                    "${NotasDoRascunho.DATA_AMBIGUA} “${m.value}” e os dias ditos não caem no mesmo dia.",
+                )
             }
             return DateHit(date, remaining, false)
         }
@@ -1560,9 +1582,14 @@ class LocalTaskParser(
          * complemento deixava "sexta feira de manhã dentista" com o título "Feira dentista",
          * não-ambíguo e confirmável. A classe inteira ("<dia> feira de <advérbio>") fecha com a
          * negação do advérbio dentro do lookahead.
+         *
+         * A classe é a dos advérbios de período, não a das quatro palavras exatas: o `\b` depois de
+         * `manha` cortava "manhãzinha"/"tardezinha" e o "dia" de "de dia" não estava na lista, então
+         * "sexta feira de manhãzinha" e "sexta feira de dia" seguiam devolvendo o "Feira" ao título.
+         * O prefixo cobre as variantes; o "de ciências"/"do livro" (substantivo) continua poupado.
          */
         private const val FEIRA_NOUN_TAIL_SRC = """(?:de|do|da|dos|das)\b"""
-        private const val TIME_ADVERB_SRC = """(?:manha|tarde|noite|madrugada)\b"""
+        private const val TIME_ADVERB_SRC = """(?:manh|tard|noit|madrug|dia)\w*"""
         private const val FEIRA_NOUN = """\s+feira(?!\s+de\s+(?!$TIME_ADVERB_SRC))"""
         private val FEIRA_NOUN_TAIL = Regex("""^\s+$FEIRA_NOUN_TAIL_SRC""")
         private val WEEKDAY_PATTERNS = listOf(

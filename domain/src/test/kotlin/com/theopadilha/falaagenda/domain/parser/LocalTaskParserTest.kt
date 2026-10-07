@@ -2211,19 +2211,152 @@ class LocalTaskParserTest {
     }
 
     @Test
+    fun feiraComAdverbioDeTempoCobreAsVariantesDoPeriodo() {
+        // F3 da revisão de 06/10: o guard do "feira" declarou fechada a classe
+        // "<dia> feira de <advérbio>", mas `TIME_ADVERB_SRC` só tinha as quatro palavras exatas e o
+        // `\b` cortava as variantes: "de manhãzinha", "de noitinha", "de tardezinha" e "de dia"
+        // devolviam o "Feira" ao título, não-ambíguas e confirmáveis na caixa rápida. O `main` não
+        // tem esse "Feira" — o prefixo do advérbio fecha a classe de verdade.
+        listOf(
+            "sexta feira de manhãzinha dentista às 8h",
+            "sexta feira de noitinha dentista às 8h",
+            "sexta feira de tardezinha dentista às 8h",
+            "sexta feira de dia dentista às 8h",
+        ).forEach { frase ->
+            val d = parser.parse(frase)
+            assertThat(d.title.lowercase()).doesNotContain("feira")
+            assertThat(d.title.lowercase()).contains("dentista")
+            assertThat(d.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        }
+
+        // O substantivo continua poupado: "feira de <complemento>".
+        assertThat(parser.parse("sexta feira de ciências às 8h").title.lowercase()).contains("feira")
+    }
+
+    @Test
+    fun oraculoDiaDitoComRelativoNaoEscalaQuandoAsContasConcordam() {
+        // F1 da revisão de 06/10, como oráculo de invariante (não exemplos soltos): cruza os 7 dias
+        // × N=1..7 × {dias, semanas} = 98 casos e conta as violações. A regra:
+        //   - conta crua caindo NO dia dito -> as duas expressões concordam, existe UMA data (a conta
+        //     crua) e o rascunho NÃO escala;
+        //   - caso contrário -> vale a primeira ocorrência do dia dito e o rascunho ESCALA.
+        // O predicado `onNamedDay != date` tratava o offset de semana inteira sobre o dia da semana
+        // de hoje (onde os dois concordam) como discordância e devolvia HOJE.
+        val nomes = mapOf(
+            DayOfWeek.MONDAY to "segunda",
+            DayOfWeek.TUESDAY to "terça",
+            DayOfWeek.WEDNESDAY to "quarta",
+            DayOfWeek.THURSDAY to "quinta",
+            DayOfWeek.FRIDAY to "sexta",
+            DayOfWeek.SATURDAY to "sábado",
+            DayOfWeek.SUNDAY to "domingo",
+        )
+        val hoje = clock.today()
+        var violacoes = 0
+        val amostra = mutableListOf<String>()
+        for ((dia, nome) in nomes) {
+            for (n in 1..7) {
+                for (unidade in listOf("dias", "semanas")) {
+                    val frase = "$nome daqui a $n $unidade pagar conta às 10h"
+                    val crua = if (unidade == "semanas") hoje.plusWeeks(n.toLong()) else hoje.plusDays(n.toLong())
+                    val esperadoData: LocalDate
+                    val esperadoAmbiguo: Boolean
+                    if (crua.dayOfWeek == dia) {
+                        esperadoData = crua
+                        esperadoAmbiguo = false
+                    } else {
+                        esperadoData = primeiraOcorrenciaDe(dia, hoje)
+                        esperadoAmbiguo = true
+                    }
+                    val d = parser.parse(frase)
+                    if (d.localDate != esperadoData || d.ambiguous != esperadoAmbiguo) {
+                        violacoes++
+                        if (amostra.size < 12) {
+                            amostra += "$frase -> ${d.localDate}/amb=${d.ambiguous} (esperado $esperadoData/amb=$esperadoAmbiguo)"
+                        }
+                    }
+                }
+            }
+        }
+        println("ORACULO_F1 violacoes=$violacoes de ${nomes.size * 7 * 2}")
+        amostra.forEach { println("ORACULO_F1 $it") }
+        assertThat(violacoes).isEqualTo(0)
+    }
+
+    @Test
+    fun oraculoDoisDiasDitosComRelativoEscalam() {
+        // F2 da revisão de 06/10: pares ordenados de dias (7×6=42) × N=1..7 × {dias, semanas} = 588
+        // casos. Com DOIS dias ditos e um deslocamento, o guard do delta só olhava `size == 1` e o
+        // ramo caía em "conta crua, não-ambíguo" — a caixa rápida confirmava uma quinta para uma
+        // frase que diz sábado e domingo. O `main` escalava todos os discordantes; o delta regrediu.
+        // Regra: se a conta crua não cai em NENHUM dos dias ditos, nenhum foi honrado -> escala.
+        val nomes = mapOf(
+            DayOfWeek.MONDAY to "segunda",
+            DayOfWeek.TUESDAY to "terça",
+            DayOfWeek.WEDNESDAY to "quarta",
+            DayOfWeek.THURSDAY to "quinta",
+            DayOfWeek.FRIDAY to "sexta",
+            DayOfWeek.SATURDAY to "sábado",
+            DayOfWeek.SUNDAY to "domingo",
+        )
+        val hoje = clock.today()
+        var violacoes = 0
+        var casos = 0
+        val amostra = mutableListOf<String>()
+        for ((diaA, nomeA) in nomes) {
+            for ((diaB, nomeB) in nomes) {
+                if (diaA == diaB) continue
+                for (n in 1..7) {
+                    for (unidade in listOf("dias", "semanas")) {
+                        casos++
+                        val frase = "$nomeA e $nomeB daqui a $n $unidade pagar conta às 10h"
+                        val crua = if (unidade == "semanas") hoje.plusWeeks(n.toLong()) else hoje.plusDays(n.toLong())
+                        val esperadoAmbiguo = crua.dayOfWeek != diaA && crua.dayOfWeek != diaB
+                        val d = parser.parse(frase)
+                        if (d.ambiguous != esperadoAmbiguo) {
+                            violacoes++
+                            if (amostra.size < 12) {
+                                amostra += "$frase -> ${d.localDate}/amb=${d.ambiguous} (esperado amb=$esperadoAmbiguo)"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println("ORACULO_F2 violacoes=$violacoes de $casos")
+        amostra.forEach { println("ORACULO_F2 $it") }
+        assertThat(violacoes).isEqualTo(0)
+
+        // O exemplo medido: sábado e domingo + duas semanas caem na QUINTA 03/09, nenhum dos dois.
+        val medido = parser.parse("sábado e domingo daqui a duas semanas pagar conta às 10h")
+        assertThat(medido.localDate).isEqualTo(LocalDate.of(2026, 9, 3))
+        assertThat(medido.ambiguous).isTrue()
+        assertThat(medido.canQuickConfirm(clock.instant(), zone)).isFalse()
+    }
+
+    private fun primeiraOcorrenciaDe(dia: DayOfWeek, de: LocalDate): LocalDate {
+        var cursor = de
+        while (cursor.dayOfWeek != dia) cursor = cursor.plusDays(1)
+        return cursor
+    }
+
+    @Test
     fun diaDitoComRelativoDivergenteEscala() {
         // P1 deste lote: o dia nomeado vencia SEMPRE e descartava o N em silêncio — "quinta daqui a
         // duas semanas" caía em HOJE (20/08), completa e não-ambígua. Quando o dia dito e o
         // deslocamento cru discordam, o dia dito continua (é a expressão específica), mas o
         // rascunho escala — cravar um dos dois calado é o defeito.
+        // A conta crua CAI no dia dito (hoje + 2 semanas é uma quinta): as duas expressões
+        // concordam, a data é 03/09 e não há dúvida a escalar. O teste antigo prendia 20/08 (HOJE)
+        // — o próprio exemplo que o PR usava para descrever o defeito que dizia ter consertado.
         val quintaDuasSemanas = parser.parse("quinta daqui a duas semanas pagar conta às 10h")
-        assertThat(quintaDuasSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
-        assertThat(quintaDuasSemanas.ambiguous).isTrue()
-        assertThat(quintaDuasSemanas.canQuickConfirm(clock.instant(), zone)).isFalse()
+        assertThat(quintaDuasSemanas.localDate).isEqualTo(LocalDate.of(2026, 9, 3))
+        assertThat(quintaDuasSemanas.ambiguous).isFalse()
+        assertThat(quintaDuasSemanas.canQuickConfirm(clock.instant(), zone)).isTrue()
 
         val quintaSeteSemanas = parser.parse("quinta daqui a 7 semanas pagar conta às 10h")
-        assertThat(quintaSeteSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
-        assertThat(quintaSeteSemanas.ambiguous).isTrue()
+        assertThat(quintaSeteSemanas.localDate).isEqualTo(LocalDate.of(2026, 10, 8))
+        assertThat(quintaSeteSemanas.ambiguous).isFalse()
 
         val sextaDuasSemanas = parser.parse("sexta daqui a duas semanas pagar conta às 10h")
         assertThat(sextaDuasSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 21))

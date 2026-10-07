@@ -7,19 +7,20 @@ que ninguém mediu: o **produto cartesiano dos sete elos**.
 ## Manchete
 
 **De 128 estados do produto cartesiano dos sete elos, 14 violam o invariante — e os sete elos nunca
-foram medidos juntos.** São dois defeitos distintos:
+foram medidos juntos.** A contagem separa o que é defeito do que é discordância com decisão de
+produto já tomada, e a distinção importa mais do que o número:
 
-- **2 estados dizem "avisos OK" com o alarme mudo.** É a **combinação** de dois elos meio-quebrados
-  que nenhum guard olha junto: um **canal alto com o som em "Nenhum" mas ainda vibrando** (elo 5 — o
-  `channelSilenced` só conta o canal como mudo quando `sound == null && !shouldVibrate`) mais um
-  **aparelho sem voz em português** (elo 7 — **zero** verificação de TTS no caminho). O cartão da
-  home não aparece, a notificação não tem som, a voz não sai.
-- **12 estados pedem a voz com o stream de alarme em zero.** O aplicativo *sabe* que o volume está
-  zerado (o veredito é `APARELHO_MUDO`/`QUIET`) e manda falar assim mesmo, no mesmo stream mudo.
+- **12 estados pedem a voz com o stream de alarme em zero (defeito real).** O aplicativo *sabe* que
+  o volume está zerado (o veredito é `APARELHO_MUDO`/`QUIET`) e manda falar assim mesmo, no mesmo
+  stream mudo: gasta a síntese e não sai nada.
+- **2 estados dizem "avisos OK" com o canal sem som mas vibrando (decisão de produto, não defeito).**
+  Ver a seção *Correção* abaixo — a premissa deste invariante não bate com o código.
 
-O elo 7 é o único **sem guarda nenhuma** em toda a cadeia. E o resíduo assíncrono dele mente na
-barra em **2 de 2** estados: a notificação afirma "Avisando em voz alta" quando a síntese falha
-depois de o motor aceitar a frase.
+O elo 7 é o único **sem guarda nenhuma** em toda a cadeia: **zero** verificação de TTS no caminho,
+nem de disponibilidade de voz nem de resultado. E o resíduo assíncrono dele mentia na barra em
+**2 de 2** estados (a notificação afirmava "Avisando em voz alta" quando a síntese falhava depois de
+o motor aceitar) — **fechado no `8699b43` do #80**, por redesenho da costura (`aoSair` separado do
+`aoTerminar`); ver a nota no fim.
 
 ## Método
 
@@ -74,6 +75,38 @@ Contagem: **invariante A = 2 violações**, **invariante B = 12 violações**. A
 `perm=false` (notificação bloqueada ⇒ o app não diz OK e a voz não é pedida) passam todas — é o
 **caso de controle** do eixo: a medição distingue os dois mundos. A violação A só aparece no
 degrau `vol=1` (audível) porque no `vol=0` o veredito cai em `APARELHO_MUDO`, que já não é OK.
+
+## Correção — a violação A não é defeito, é decisão de produto
+
+O executor do #80 contestou a premissa do invariante A e a contestação **confere**, verificada no
+código:
+
+```
+NotificationHelper.kt:191   if (channelSilenced(canal)) return ReminderAlerts.QUIET   ← ANTES do volume
+NotificationHelper.kt:258   private fun channelSilenced(canal) = canal.sound == null && !canal.shouldVibrate()
+NotificationHelper.kt:256   "Um canal que ainda vibra não está mudo, mesmo sem som."
+```
+
+O veredito **não** ignora o canal: ele o avalia antes do volume, e o caso `som=false vibra=true` é
+`OK` **de propósito**, documentado pelo #81. O invariante A definiu "soa" como "canal com som" e por
+isso contou como violação o que o produto decidiu considerar saudável — um canal que vibra avisa por
+outro canal sensorial, e o app não deve dizer que está mudo quando o celular ainda chama atenção.
+
+**O que isso custa:** os 2 estados da família A saem da conta de defeitos. Sobram **12 violações
+reais**, todas da família B. O número medido (14) está certo; a **interpretação** de 2 delas era
+minha, e estava errada. Fica registrado porque a lição é o próprio erro: um invariante é tão bom
+quanto a definição que ele adota, e "o alarme soa" admite mais de uma — a do produto (vibra ou
+soa) e a minha (só som). Medir com a definição errada produz violação que não é defeito.
+
+**Sobre a família B, a objeção do executor é parcialmente procedente:** `deveFalarOlembrete`
+(`AvisoFalado.kt:228`) é um guard de **entrega** (`entrega == POSTED`), e condicionar a voz ao
+volume mistura dois concerns — quem sabe o volume é o `NotificationHelper`. A economia da síntese
+é defensável, mas a decisão é de produto. Continua em aberto como PENDENTE, e não como bug.
+
+**O resíduo assíncrono do elo 7 está fechado** no `8699b43` do #80 (`onStart` chamando
+`anunciarSaida`, com guarda de id e "uma vez por fala"), medido por prova de mutação: neutralizar o
+sinal de saída derruba 4 testes, e anunciar na recusa síncrona derruba o `VozDoAparelhoQueRecusaTest`.
+
 
 `CadeiaDeAudioAsyncTest` (resíduo assíncrono): **2 de 2 falham** —
 

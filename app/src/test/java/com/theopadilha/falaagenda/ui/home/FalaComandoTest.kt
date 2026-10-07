@@ -4,23 +4,20 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.TestViewModelScopeRule
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.OccurrenceIds
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
-import org.junit.After
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -37,7 +34,6 @@ import java.time.LocalTime
  * continua criando. A tela (o aviso sair legível, a caixa rápida abrir) é da composição, e
  * esta suíte não roda Compose.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [34],
@@ -47,20 +43,23 @@ import java.time.LocalTime
 )
 class FalaComandoTest {
 
+    /**
+     * Dona do `Dispatchers.Main` e do escopo do `HomeViewModel`: sem o cancelamento no fim do
+     * caso, o `stateIn(…, WhileSubscribed(5_000))` da home, a sessão de fala e o `withContext(IO)`
+     * do `init` seguem armados num timer de verdade e cruzam a fronteira do teste. Ver
+     * [TestViewModelScopeRule].
+     */
+    @get:Rule
+    val escopo = TestViewModelScopeRule()
+
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var container: AppContainer
     private lateinit var viewModel: HomeViewModel
 
     @Before
     fun setUp() {
-        Dispatchers.setMain(Dispatchers.Unconfined)
         container = AppContainer(context)
-        viewModel = HomeViewModel(container)
-    }
-
-    @After
-    fun tearDown() {
-        Dispatchers.resetMain()
+        viewModel = escopo.rastrear(HomeViewModel(container))
     }
 
     // --- o defeito: comando não vira tarefa ------------------------------------------

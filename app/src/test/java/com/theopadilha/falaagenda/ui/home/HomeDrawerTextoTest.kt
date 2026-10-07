@@ -14,18 +14,14 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.core.app.ApplicationProvider
+import com.theopadilha.falaagenda.TestViewModelScopeRule
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.ui.theme.FalaAgendaTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
-import org.junit.After
-import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
@@ -49,20 +45,20 @@ import org.robolectric.shadows.ShadowAlarmManager
 )
 class HomeDrawerTextoTest {
 
+    private val escopo = TestViewModelScopeRule()
+    private val compose = createComposeRule()
+
+    /**
+     * A regra do escopo é a mais EXTERNA de propósito: o `after()` do `ComposeContentTestRule`
+     * descarta a composição, e é esse gesto que deixa o `WhileSubscribed(5_000)` da `agendaUi`
+     * armado — a assinatura só vai a zero ali. Cancelar antes dele cancelaria o escopo com o
+     * timer ainda por nascer, e o timer voltaria a cruzar a fronteira do teste. Ver
+     * [TestViewModelScopeRule].
+     */
     @get:Rule
-    val compose = createComposeRule()
+    val regras: RuleChain = RuleChain.outerRule(escopo).around(compose)
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
-
-    @Before
-    fun setUp() {
-        Dispatchers.setMain(Dispatchers.Unconfined)
-    }
-
-    @After
-    fun tearDown() {
-        Dispatchers.resetMain()
-    }
 
     /**
      * O caminho de ponta a ponta do mesmo vocabulário: a gaveta diz "Fazer os avisos
@@ -79,7 +75,7 @@ class HomeDrawerTextoTest {
         // Bateria restrita: é o ramo `else` do título, o que trazia o jargão.
         shadowOf(context.getSystemService(PowerManager::class.java))
             .setIgnoringBatteryOptimizations(context.packageName, false)
-        val viewModel = HomeViewModel(AppContainer(context))
+        val viewModel = escopo.rastrear(HomeViewModel(AppContainer(context)))
 
         compose.setContent {
             FalaAgendaTheme(darkTheme = false) {
@@ -121,6 +117,10 @@ class HomeDrawerTextoTest {
         compose.onNodeWithText("matar", substring = true, ignoreCase = true).assertDoesNotExist()
     }
 
+    /**
+     * Este caso não cria ViewModel: ele compõe a `HomeDrawerSheet` pura. Não há escopo para
+     * cancelar — e é por isso que a regra, que só cancela o que foi rastreado, é inofensiva aqui.
+     */
     private fun menu(batteryOk: Boolean) {
         compose.setContent {
             FalaAgendaTheme(darkTheme = false) {

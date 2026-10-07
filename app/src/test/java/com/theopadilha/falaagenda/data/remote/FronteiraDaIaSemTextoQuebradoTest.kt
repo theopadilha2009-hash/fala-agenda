@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.data.remote
 
 import android.app.Application
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
@@ -230,5 +231,65 @@ class FronteiraDaIaSemTextoQuebradoTest {
             .isEqualTo("Todo 5 de maio")
         assertThat(RecurrenceRule(RecurrenceKind.MONTHLY, dayOfMonth = 31).describePtBr())
             .isEqualTo("Todo dia 31 do mês")
+    }
+
+    /**
+     * O `diaUtilizavel` tem **dois** propósitos, e o teste de classe acima só prendia um.
+     *
+     * Ele fecha o `"?"` (`"Todo dia ? do mês"`) — e a asserção de ausência de `"?"` cobre isso. Mas
+     * ele também existe para **não descrever um dia que não existe**: `MONTHLY dia=32` não é "todo
+     * dia 32 do mês", é uma regra cujo dia não é utilizável. Trocando `diaUtilizavel` pelo
+     * `dayOfMonth` **cru** no ramo do `MONTHLY`, a suíte inteira continuava verde e o texto virava
+     * `"Todo dia 32 do mês"` — que passa tanto na ausência de `"?"` quanto na asserção de string
+     * não-vazia do teste de classe. O caminho é alcançável pelo dado já gravado: `SeriesEntity`
+     * lê `dayOfMonth` do Room **cru** (`Entities.kt`), sem passar pela faixa da fronteira.
+     *
+     * Aqui a asserção é o **texto exato**, não a ausência de um caractere.
+     */
+    @Test
+    fun aRegraMensalComDiaForaDaFaixaNaoDescreveODiaQueNaoExiste() {
+        listOf(0, -1, 32, 99).forEach { dia ->
+            val texto = RecurrenceRule(RecurrenceKind.MONTHLY, dayOfMonth = dia).describePtBr()
+            assertWithMessage("MONTHLY dia=$dia não pode virar descrição de um dia que não existe")
+                .that(texto)
+                .isEqualTo("Todo mês")
+        }
+    }
+
+    /**
+     * O mesmo para o `YEARLY`: com o mês válido e o dia fora da faixa, a descrição não pode inventar
+     * `"Todo 32 de maio"` — cai na cadência, "Todo ano".
+     */
+    @Test
+    fun aRegraAnualComDiaForaDaFaixaNaoDescreveODiaQueNaoExiste() {
+        listOf(0, -1, 32, 99).forEach { dia ->
+            val texto = RecurrenceRule(
+                RecurrenceKind.YEARLY,
+                dayOfMonth = dia,
+                monthOfYear = 5,
+            ).describePtBr()
+            assertWithMessage("YEARLY dia=$dia não pode virar descrição de um dia que não existe")
+                .that(texto)
+                .isEqualTo("Todo ano")
+        }
+    }
+
+    /**
+     * O outro lado do mesmo `mesUtilizavel`: o mês fora da faixa não vira `"Todo 5 de ?"` — cai na
+     * cadência. Este é o `"?"` que a correção anterior já fechava; fica aqui pelo par com os testes
+     * de cima, asserindo o texto exato.
+     */
+    @Test
+    fun aRegraAnualComMesForaDaFaixaNaoDescreveOMesQueNaoExiste() {
+        listOf(0, -1, 13, 99).forEach { mes ->
+            val texto = RecurrenceRule(
+                RecurrenceKind.YEARLY,
+                dayOfMonth = 5,
+                monthOfYear = mes,
+            ).describePtBr()
+            assertWithMessage("YEARLY mês=$mes não pode virar descrição de um mês que não existe")
+                .that(texto)
+                .isEqualTo("Todo ano")
+        }
     }
 }

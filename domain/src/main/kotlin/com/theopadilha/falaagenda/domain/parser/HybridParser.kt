@@ -28,6 +28,21 @@ class HybridParser(
     private val isAiEnabled: () -> Boolean,
     private val locale: Locale = Locale.forLanguageTag("pt-BR"),
 ) {
+    companion object {
+        /**
+         * O prefixo da nota que a fronteira da IA escreve quando a regra que ela devolveu **não
+         * repete** — "a IA disse que repete e não disse o campo", ou o campo veio fora da faixa.
+         *
+         * Mora aqui, e não junto das outras notas em [NotasDoRascunho], por um motivo: o
+         * [NotasDoRascunho] marca notas do **parser local** para o merge desmentir, e esta nasce do
+         * outro lado. Quem sabe se ela é verdade não é quem a escreve — é o merge, que pode
+         * restaurar a recorrência do local e desfazer o rebaixamento. A fronteira
+         * (`SupabaseFunctions`) compõe o texto a partir **deste** prefixo, então o par
+         * escreve/desmente não pode divergir sem que o compilador veja.
+         */
+        const val NOTA_RECORRENCIA_PERDIDA = "A ajuda extra disse que repete"
+    }
+
     suspend fun parse(transcript: String): ParsedTaskDraft {
         val localDraft = local.parse(transcript)
         if (!deveEscalar(transcript, localDraft)) return localDraft
@@ -91,6 +106,11 @@ class HybridParser(
             if (mergedDate == null) add(MissingDraftField.DATE)
             if (mergedTime == null) add(MissingDraftField.TIME)
         }
+        val recurrence = if (remoteDraft.recurrence.isRecurring) {
+            remoteDraft.recurrence
+        } else {
+            localDraft.recurrence
+        }
         val notes = notasDomescladas(
             locais = localDraft.notes,
             remotas = remoteDraft.notes,
@@ -98,16 +118,13 @@ class HybridParser(
             remotoTrouxeHora = remoteDraft.localTime != null,
             finalTemData = mergedDate != null,
             finalTemHora = mergedTime != null,
+            recorrenciaFinalRepete = recurrence.isRecurring,
         )
         return remoteDraft.copy(
             title = title,
             localDate = mergedDate,
             localTime = mergedTime,
-            recurrence = if (remoteDraft.recurrence.isRecurring) {
-                remoteDraft.recurrence
-            } else {
-                localDraft.recurrence
-            },
+            recurrence = recurrence,
             amountCents = remoteDraft.amountCents ?: localDraft.amountCents,
             observation = remoteDraft.observation.ifBlank { localDraft.observation },
             missingFields = missing,
@@ -162,14 +179,43 @@ class HybridParser(
         remotoTrouxeHora: Boolean,
         finalTemData: Boolean,
         finalTemHora: Boolean,
+        recorrenciaFinalRepete: Boolean,
     ): List<String> {
         val desmentidas = buildSet {
             if (remotoTrouxeData) addAll(NotasDoRascunho.SOBRE_A_DATA)
             if (remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_A_HORA)
             if (finalTemData && finalTemHora) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
         }
-        return (locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } } + remotas)
-            .distinct()
+        val doLocal = locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } }
+        // A nota de recorrência perdida é **do remoto**, e por isso não passa pelo desmentido por
+        // prefixo: quem decide se ela é verdade é o desfecho do merge, não quem a escreveu.
+        //
+        // A fronteira da IA rebaixa a regra a `NONE` quando falta o campo que ela descreve e escreve
+        // a nota junto (`SupabaseFunctions.notaDaRecorrenciaIncompleta`). O `toDraft` está certo: a
+        // regra que ele produz não repete. O que a desfaz é o `mergeRemote`, uma camada acima — ele
+        // só aceita a recorrência do remoto quando ela `isRecurring`, então a regra rebaixada é
+        // descartada e a do **local** volta. Mantida, a nota falava de uma perda que não houve:
+        //
+        //     fala "todo dia 5 do mês"
+        //       local: MONTHLY dia=5 (falta a hora, escala)
+        //       IA:    MONTHLY sem dia → fronteira rebaixa a NONE + nota
+        //       final: MONTHLY dia=5, 'Todo dia 5 do mês', isComplete=true, qc=true
+        //              notes=[...mas não disse o dia. Ficou sem repetir.]
+        //
+        // A caixa "Pode salvar?" mostrava a regra certa com o aviso de perda logo abaixo, em
+        // vermelho, no caminho do salvamento com um toque. A doutrina do `HybridParser` — a
+        // contradição visível que o app inteiro evita — vale na direção inversa: não afirmar uma
+        // perda que não houve.
+        //
+        // O critério é o desfecho final (`recurrence.isRecurring`), e não "o local tinha
+        // recorrência": quando o local também não reconheceu nada, o final é `NONE` e a nota fica —
+        // e aí ela é verdadeira, e sem ela a perda seria silenciosa.
+        val doRemoto = if (recorrenciaFinalRepete) {
+            remotas.filterNot { it.startsWith(NOTA_RECORRENCIA_PERDIDA) }
+        } else {
+            remotas
+        }
+        return (doLocal + doRemoto).distinct()
     }
 
     /**

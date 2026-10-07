@@ -6,6 +6,7 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.toMonthPtBr
+import com.theopadilha.falaagenda.domain.parser.HybridParser
 import com.theopadilha.falaagenda.domain.parser.RemoteDraftParser
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import kotlinx.serialization.SerialName
@@ -153,12 +154,17 @@ private fun kindCoerente(kind: RecurrenceKind, dia: Int?, mes: Int?): Recurrence
  * que ela pediu "todo mês", e ela não teria como saber que a ajuda extra deixou a metade de fora.
  * A frase não culpa ela e não fala em erro de calendário, porque aqui não houve erro — houve
  * omissão.
+ *
+ * O texto começa com [HybridParser.NOTA_RECORRENCIA_PERDIDA] de propósito: quem decide se a nota é
+ * verdade não é quem a escreve. O merge do `HybridParser` pode restaurar a recorrência do local e
+ * desfazer o rebaixamento — e nesse caso suprime esta nota pelo prefixo. Com a marca vinda do
+ * mesmo lugar que a desmente, o par escreve/suprime não pode divergir.
  */
 private fun notaDaRecorrenciaIncompleta(kindLido: RecurrenceKind): String = when (kindLido) {
     RecurrenceKind.MONTHLY ->
-        "A ajuda extra disse que repete todo mês, mas não disse o dia. Ficou sem repetir."
+        HybridParser.NOTA_RECORRENCIA_PERDIDA + " todo mês, mas não disse o dia. Ficou sem repetir."
     else ->
-        "A ajuda extra disse que repete todo ano, mas não disse a data. Ficou sem repetir."
+        HybridParser.NOTA_RECORRENCIA_PERDIDA + " todo ano, mas não disse a data. Ficou sem repetir."
 }
 
 /**
@@ -229,6 +235,12 @@ internal data class ParseResponse(
             // A regra rebaixada **sem** campo fora da faixa: a IA disse que repete e não disse o
             // campo. A de cima já explica esse caso (o campo veio, só não existe no calendário), e
             // as duas juntas seriam duas frases para o mesmo descarte.
+            //
+            // A nota é escrita **aqui**, onde se sabe que o rebaixamento aconteceu, mas quem decide
+            // se ele sobreviveu é o merge do `HybridParser`: a recorrência do local pode voltar
+            // (`mergeRemote` só aceita a do remoto quando ela `isRecurring`) e aí a perda não houve.
+            // Nesse caso o `HybridParser` suprime esta nota pelo prefixo — ver
+            // `HybridParser.NOTA_RECORRENCIA_PERDIDA`.
             if (kind != kindLido && !faixaDescartada) add(notaDaRecorrenciaIncompleta(kindLido))
             if (localDate != null && data == null) add(NOTA_DATA_ILEGIVEL)
             if (localTime != null && hora == null) add(NOTA_HORA_ILEGIVEL)

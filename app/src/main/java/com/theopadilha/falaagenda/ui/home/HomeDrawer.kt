@@ -90,7 +90,15 @@ fun HomeDrawerSheet(
                 onClick = onSettings,
                 icon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
             )
-            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+            // Sem o `color` explícito o `DividerDefaults` do M3 lê o `outlineVariant`, que no
+            // tema é a linha clara (#E4DFD4): sobre o creme da gaveta dá 1,18:1 e o divisor
+            // some — antes de o tema definir o token valia o default do M3 (#CAC4D0, 1,51:1).
+            // O `outline` é a linha que o tema escureceu para se enxergar sobre o fundo
+            // (3,26:1 no claro, 3,76:1 no escuro). Preso em ContrasteDaBordaDoCartaoTest.
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 12.dp),
+                color = MaterialTheme.colorScheme.outline,
+            )
             Text(
                 "Aparência",
                 style = MaterialTheme.typography.titleMedium,

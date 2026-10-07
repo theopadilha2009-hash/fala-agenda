@@ -13,7 +13,7 @@
         android:layout_height="wrap_content"
         android:text="@string/widget_kicker"
         android:textColor="@color/widget_accent"
-        android:textSize="12sp" />
+        android:textSize="16sp" />
 
     <TextView
         android:id="@+id/widget_title"
@@ -24,7 +24,7 @@
         android:maxLines="2"
         android:text="@string/widget_empty_title"
         android:textColor="@color/widget_text"
-        android:textSize="16sp"
+        android:textSize="18sp"
         android:textStyle="bold" />
 
     <TextView
@@ -33,7 +33,7 @@
         android:layout_height="wrap_content"
         android:text="@string/widget_empty_when"
         android:textColor="@color/widget_muted"
-        android:textSize="13sp" />
+        android:textSize="16sp" />
 
     <!-- O botão "Falar" é a ação principal do widget e fica na tela inicial, na mão dela:
          com wrap_content + 8dp de padding ele saía com ~33dp, o menor alvo de toque do
@@ -51,5 +51,5 @@
         android:paddingVertical="14dp"
         android:text="@string/shortcut_speak"
         android:textColor="@color/widget_on_accent"
-        android:textSize="16sp" />
+        android:textSize="18sp" />
 </LinearLayout>

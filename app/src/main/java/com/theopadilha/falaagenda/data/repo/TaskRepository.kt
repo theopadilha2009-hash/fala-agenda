@@ -401,8 +401,18 @@ class TaskRepository(
         // amanhã, que também não foi tocada, continua tocando no horário dela. A dose que fica
         // entre a data antiga e a nova também não foi tocada e continua de pé — por isso o cartão
         // tocado entra pelo id, e não pelo corte de data.
-        val reescritas = pending.filter {
-            it.id == original.id || !it.localDate.isBefore(date)
+        //
+        // O corte considera as DUAS datas: o cartão sai de `original.localDate` e passa a valer em
+        // `date`, então só o que vem estritamente depois das duas segue a série nova. Cortar só
+        // pela data nova era o P0 na direção oposta — mover o cartão de 25/08 para 20/08 cancelava
+        // e apagava tudo que é `>= 20/08` (20, 21, 22, 23 e 24/08), inclusive as doses que ela não
+        // tocou e que deviam ficar intactas; o preview de três datas não as trazia de volta nem no
+        // restart. E a linha da data nova entra sempre, porque é nela que o cartão tocado passa a
+        // valer: a escolha a reescreve, e sem o cancelamento o alarme velho daquela data ficaria
+        // de pé.
+        val corte = maxOf(original.localDate, date)
+        val reescritas = pending.filter { occ ->
+            occ.id == original.id || occ.localDate == date || occ.localDate.isAfter(corte)
         }
         reescritas.forEach { scheduler.cancel(it.id) }
         val updatedSeries = series.copy(
@@ -799,7 +809,16 @@ class TaskRepository(
         // dado como não realizada.
         val today = OccurrenceLifecycle.todayIn(clock.zoneId(), now)
         val existing = occurrenceDao.forSeries(series.id).map { it.toDomain() }
-        val change = OccurrenceLifecycle.advance(series, existing, now, today)
+        // A coluna é o fuso do dia do cadastro, e é contra ela que se mede "o relógio mudou de
+        // fuso": a série em memória já vem com o fuso de AGORA (ver `toTaskSeries`), e o fuso
+        // lido do domínio é o do aparelho agora, não o gravado (ver `toDomain`) — comparar os
+        // dois dava igual em toda execução real, onde o relógio É o fuso do aparelho, e a cura
+        // virava código morto. Sem ela o instante de toda ocorrência já materializada ficava
+        // deslocado para sempre. Quem reescreve por isso é só a ocorrência sem progresso nenhum
+        // — a que ela editou carrega progresso, ou acabou de ser decidida pela edição, que é
+        // quem grava a coluna com o fuso de agora.
+        val fusoMudou = seriesDao.get(series.id)?.zoneId != series.zoneId.id
+        val change = OccurrenceLifecycle.advance(series, existing, now, today, fusoMudou)
         // A varredura decide "não realizada" olhando só o relógio. Um lembrete marcado para
         // um instante que já passou mas nunca foi entregue é entrega pendente, não ocorrência
         // vencida: o disparo atrasado pelo Doze ainda vai tocar, e arquivar aqui matava o

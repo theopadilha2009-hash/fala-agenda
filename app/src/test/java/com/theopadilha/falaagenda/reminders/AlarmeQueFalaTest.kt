@@ -27,7 +27,10 @@ class AlarmeQueFalaTest {
      * Um motor de mentira que obedece a quem manda no teste: só fica pronto quando o teste diz,
      * só termina uma fala quando o teste diz, e conta o que ouviu.
      */
-    private class SintetizadorFalso(private val sabeFalar: Boolean = true) : SintetizadorDeVoz {
+    private class SintetizadorFalso(
+        private val sabeFalar: Boolean = true,
+        private val avisaQueSaiu: Boolean = true,
+    ) : SintetizadorDeVoz {
         val falas = mutableListOf<String>()
         var paradas = 0
         var soltadas = 0
@@ -46,11 +49,19 @@ class AlarmeQueFalaTest {
         override fun falar(
             texto: String,
             id: String,
+            aoSair: () -> Unit,
             aoTerminar: (String) -> Unit,
-        ): Boolean {
+        ) {
+            if (!avisaQueSaiu) {
+                // A frase foi aceita e nenhum som saiu — o motor falhou depois do aceite, pelo
+                // `onError`. O fim é avisado, a saída não.
+                aoTerminar(id)
+                return
+            }
             falas += texto
             terminam += aoTerminar
-            return true
+            // O motor começou a falar — o `onStart` dele.
+            aoSair()
         }
 
         /** A [i]-ésima fala chegou ao fim, como o motor avisaria pelo `onDone`. */
@@ -98,11 +109,20 @@ class AlarmeQueFalaTest {
         val relogio: Relogio,
     ) {
         var encerrou = false
-        val aviso = AvisoFalado(sintetizador, relogio::agendar) { encerrou = true }
+
+        /** Quantas vezes a política disse "está falando". */
+        var anuncios = 0
+
+        val aviso = AvisoFalado(
+            voz = sintetizador,
+            agendar = relogio::agendar,
+            aoFalar = { anuncios++ },
+            aoEncerrar = { encerrou = true },
+        )
     }
 
-    private fun novoAviso(sabeFalar: Boolean = true): Aviso =
-        Aviso(SintetizadorFalso(sabeFalar), Relogio())
+    private fun novoAviso(sabeFalar: Boolean = true, avisaQueSaiu: Boolean = true): Aviso =
+        Aviso(SintetizadorFalso(sabeFalar, avisaQueSaiu), Relogio())
 
     // --- 1. Repete, e só duas vezes -----------------------------------------------------------
 
@@ -277,7 +297,45 @@ class AlarmeQueFalaTest {
         assertThat(aviso.sintetizador.falas).hasSize(2)
     }
 
-    // --- 4. Não fala o lembrete que não está na tela --------------------------------------------
+    // --- 4. Só anuncia a fala que saiu de fato --------------------------------------------------
+
+    /**
+     * A fala saiu: a política anuncia. É a outra metade, e é ela que impede o conserto por omissão
+     * — calar o anúncio de vez passaria no teste de baixo e deixaria a barra sem dizer nada.
+     */
+    @Test
+    fun anunciaQuandoAFalaSai() {
+        val aviso = novoAviso()
+
+        aviso.aviso.falar(ocorrencia, frase)
+        aviso.sintetizador.ficouPronto()
+
+        assertThat(aviso.anuncios).isEqualTo(1)
+    }
+
+    /**
+     * A frase foi **aceita** e nenhum som saiu — o motor falhou depois do aceite, pelo `onError`,
+     * que a costura traduz para o mesmo `aoTerminar` do `onDone`. A política **não** anuncia: a
+     * barra só pode dizer "avisando em voz alta" quando a voz saiu.
+     *
+     * E a escada não quebra: o fim da fala que falhou continua fazendo a política seguir, senão o
+     * aviso ficaria de pé até o prazo por causa de um motor que avisou o fim e não a saída.
+     */
+    @Test
+    fun naoAnunciaQuandoAAceitacaoNaoViraFala() {
+        val aviso = novoAviso(avisaQueSaiu = false)
+
+        aviso.aviso.falar(ocorrencia, frase)
+        aviso.sintetizador.ficouPronto()
+
+        assertThat(aviso.anuncios).isEqualTo(0)
+
+        // A escada seguiu pelo fim: a segunda tentativa é pedida, e continua sem anunciar.
+        aviso.relogio.avancar(PAUSA_ENTRE_AS_FALAS_MS + 1)
+        assertThat(aviso.anuncios).isEqualTo(0)
+    }
+
+    // --- 5. Não fala o lembrete que não está na tela --------------------------------------------
 
     /**
      * A voz entra junto do aviso que **realmente saiu**. Falar um lembrete que a tela não mostra

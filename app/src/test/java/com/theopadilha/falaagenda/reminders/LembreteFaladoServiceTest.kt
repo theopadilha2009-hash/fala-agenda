@@ -42,8 +42,11 @@ class LembreteFaladoServiceTest {
     private val ocorrencia = "remedio:2026-10-07"
     private val titulo = "Tomar remédio"
 
-    private class VozDeMentira(private val recusaAFrase: Boolean = false) : SintetizadorDeVoz {
-        /** As falas que **saíram**. A recusa não entra aqui: não houve som nenhum. */
+    private class VozDeMentira(
+        private val recusaAFrase: Boolean = false,
+        private val falhaDepoisDoAceite: Boolean = false,
+    ) : SintetizadorDeVoz {
+        /** As falas que **saíram**. A recusa e a falha não entram aqui: não houve som nenhum. */
         val falas = mutableListOf<String>()
         var paradas = 0
         var soltadas = 0
@@ -57,16 +60,23 @@ class LembreteFaladoServiceTest {
         /** O `onInit` do aparelho chegou, com a resposta que o teste escolheu. */
         fun ficouPronto(sabeFalar: Boolean = true) = esperando!!.invoke(sabeFalar)
 
-        override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit): Boolean {
-            if (recusaAFrase) {
-                // O caminho do `catch` do `speak` no [VozDoAparelho]: o motor sobe, recusa a frase
-                // e avisa o fim sem ter dito nada.
+        override fun falar(
+            texto: String,
+            id: String,
+            aoSair: () -> Unit,
+            aoTerminar: (String) -> Unit,
+        ) {
+            if (recusaAFrase || falhaDepoisDoAceite) {
+                // Os dois caminhos em que nenhum som sai: a recusa síncrona do `speak` (que devolve
+                // o código de erro) e a falha depois do aceite (o `onError` do motor). Nos dois o
+                // motor avisa o **fim** e nunca avisa a **saída**.
                 aoTerminar(id)
-                return false
+                return
             }
             falas += texto
             terminam += aoTerminar
-            return true
+            // O motor começou a falar — o `onStart` dele.
+            aoSair()
         }
 
         fun terminouA(i: Int) = terminam[i]("fala-$i")
@@ -92,8 +102,13 @@ class LembreteFaladoServiceTest {
     }
 
     /** Um serviço de verdade, com um motor de mentira por disparo, e o relógio na mão do teste. */
-    private fun subirOServico(recusaAFrase: Boolean = false): ServiceController<LembreteFaladoService> {
-        LembreteFaladoService.criarVoz = { VozDeMentira(recusaAFrase).also { vozes += it } }
+    private fun subirOServico(
+        recusaAFrase: Boolean = false,
+        falhaDepoisDoAceite: Boolean = false,
+    ): ServiceController<LembreteFaladoService> {
+        LembreteFaladoService.criarVoz = {
+            VozDeMentira(recusaAFrase, falhaDepoisDoAceite).also { vozes += it }
+        }
         val intent = LembreteFaladoService.intentPara(contexto, ocorrencia, titulo)
         val servico = Robolectric.buildService(LembreteFaladoService::class.java, intent).create()
         servico.get().onStartCommand(intent, 0, 1)
@@ -381,6 +396,30 @@ class LembreteFaladoServiceTest {
     fun aBarraNaoDizQueEstaFalandoQuandoOMotorRecusaAFrase() {
         subirOServico(recusaAFrase = true)
         voz.ficouPronto()
+        assertThat(voz.falas).isEmpty()
+
+        val violacoes = amostrarOBarraco()
+
+        assertThat(falasQueSaíram()).isEqualTo(0)
+        assertThat(violacoes).isEmpty()
+    }
+
+    /**
+     * O motor **aceita** a frase — o `speak` devolve `SUCCESS` — e a síntese falha depois, pelo
+     * `onError` do motor. O `VozDoAparelho` traduz esse aviso para o `aoTerminar` (é o mesmo
+     * caminho de `onDone`), e a frase não existe: nenhum som saiu.
+     *
+     * O retorno do `falar` não separa este caso do aceite verdadeiro — os dois devolvem `true` —,
+     * então a barra anunciava "Avisando em voz alta" no aceite e ficava os 6,5 s do prazo
+     * afirmando, sem uma palavra. É a queixa dela ("o áudio nunca funciona") na voz do pt-BR
+     * corrompida ou parcialmente baixada, ou com o motor ocupado. O oráculo é o efeito: a tela
+     * disse que falou ⇒ alguma fala saiu.
+     */
+    @Test
+    fun aFalhaDeSinteseDepoisDoAceiteAindaDeixaABarraAfirmando() {
+        subirOServico(falhaDepoisDoAceite = true)
+        voz.ficouPronto()
+
         assertThat(voz.falas).isEmpty()
 
         val violacoes = amostrarOBarraco()

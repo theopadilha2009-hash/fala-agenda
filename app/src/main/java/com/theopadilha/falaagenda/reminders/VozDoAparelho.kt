@@ -41,6 +41,16 @@ internal class VozDoAparelho(context: Context) : SintetizadorDeVoz {
     private var motor: TextToSpeech? = null
     private var pronto: ((Boolean) -> Unit)? = null
     private var aoTerminar: ((String) -> Unit)? = null
+
+    /**
+     * A fala em curso: o id dela e o aviso de que o som saiu. Os dois vivem juntos porque são a
+     * mesma fala, e o `UtteranceProgressListener` só recebe o id.
+     */
+    private var idDaFala: String? = null
+    private var aoSair: (() -> Unit)? = null
+
+    /** O `onStart` desta fala já foi entregue? */
+    private var falou = false
     private var solto = false
 
     init {
@@ -104,9 +114,19 @@ internal class VozDoAparelho(context: Context) : SintetizadorDeVoz {
                 .build(),
         )
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = Unit
+            /**
+             * O som começou. É este o aviso que a barra usa para poder dizer "avisando em voz
+             * alta": o `speak` ter aceitado a frase não prova nada — o motor pode falhar depois,
+             * pelo `onError`, sem ter dito uma palavra.
+             */
+            override fun onStart(utteranceId: String?) {
+                anunciarSaida(utteranceId.orEmpty())
+            }
 
             override fun onDone(utteranceId: String?) {
+                // Motor que só avisa o fim, sem `onStart` — o aviso de saída não pode se perder,
+                // senão a barra fica sem a verdade por um detalhe do fabricante.
+                anunciarSaida(utteranceId.orEmpty())
                 aoTerminar?.invoke(utteranceId.orEmpty())
             }
 
@@ -154,27 +174,46 @@ internal class VozDoAparelho(context: Context) : SintetizadorDeVoz {
         if (disponivel) bloco(true) else pronto = bloco
     }
 
-    override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit): Boolean {
-        val tts = motor ?: return false
+    override fun falar(texto: String, id: String, aoSair: () -> Unit, aoTerminar: (String) -> Unit) {
+        val tts = motor
+        if (tts == null) {
+            // Sem motor não há fala: o fim é avisado para a política fechar a conta e não ficar
+            // esperando um aviso que nunca vem.
+            aoTerminar(id)
+            return
+        }
         this.aoTerminar = aoTerminar
-        return try {
+        idDaFala = id
+        this.aoSair = aoSair
+        falou = false
+        try {
             // O `speak` é sincrono na recusa: ele devolve o código de erro na hora e não fala nada.
-            // Um motor com a voz corrompida, um idioma listado sem dado de fala, o motor ocupado —
-            // o mesmo caminho que o `catch` abaixo, só que sem exceção. Sem olhar o retorno, o fim
-            // da fala era avisado e a barra anunciava uma voz que não existiu.
+            // Um motor com a voz corrompida, um idioma listado sem dado de fala, o motor ocupado.
+            // O fim é avisado para a política fechar a conta, e a **saída não**: nenhum som saiu, e
+            // é o `aoSair` que a barra usa para afirmar que está falando.
             val resultado = tts.speak(texto, TextToSpeech.QUEUE_ADD, Bundle(), id)
             if (resultado == TextToSpeech.ERROR) {
                 Log.w(TAG, "O motor recusou a fala $id")
                 aoTerminar(id)
-                false
-            } else {
-                true
             }
         } catch (e: Exception) {
             Log.w(TAG, "Não foi possível falar a fala $id", e)
             aoTerminar(id)
-            false
         }
+    }
+
+    /**
+     * O motor avisou que **começou** a falar — o `onStart` dele, ou o `onDone` de um motor que não
+     * manda o `onStart`. Só daqui para baixo a barra pode dizer "avisando em voz alta".
+     *
+     * A guarda do id é o que separa a fala da vez do aviso atrasado de uma fala já substituída: o
+     * `onStart` pode chegar depois de um disparo novo já ter pedido outra frase. E a guarda do
+     * `falou` mantém o aviso uma vez só por fala, mesmo com o `onStart` e o `onDone` os dois.
+     */
+    private fun anunciarSaida(utteranceId: String) {
+        if (utteranceId != idDaFala || falou) return
+        falou = true
+        aoSair?.invoke()
     }
 
     override fun parar() {
@@ -190,6 +229,8 @@ internal class VozDoAparelho(context: Context) : SintetizadorDeVoz {
         solto = true
         pronto = null
         aoTerminar = null
+        aoSair = null
+        idDaFala = null
         try {
             motor?.shutdown()
         } catch (e: Exception) {

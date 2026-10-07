@@ -25,12 +25,17 @@ internal interface SintetizadorDeVoz {
      * Diz [texto]. [id] volta em [aoTerminar] para quem chamou saber se aquele fim é da fala que
      * ainda interessa; uma fala nova substitui a anterior.
      *
-     * Devolve `false` quando o motor **recusou** a frase e nada saiu. O motor avisa o fim do mesmo
-     * jeito, pelo [aoTerminar] — a política continua fechando a conta —, mas quem anuncia a fala
-     * precisa saber a diferença: motor que aceita a frase e não fala é o "o áudio nunca funciona"
-     * com a barra dizendo que está funcionando.
+     * [aoSair] é o aviso de que **som saiu**: o motor começou a falar. É ele — e não o retorno
+     * desta chamada, nem o fim — que separa "o motor aceitou a frase" de "a fala existe". Um motor
+     * pode aceitar a frase (`speak` devolve `SUCCESS`) e falhar depois, pelo `onError`, sem ter
+     * dito nada; um retorno `Boolean` não distingue os dois, e foi por isso que a barra afirmava
+     * uma voz que não houve.
+     *
+     * [aoTerminar] continua sendo **o fim**, e nada mais: ele chega no `onDone` e no `onError`, e é
+     * dele que a política depende para a escada de repetições — o fim tem que ser avisado nos dois
+     * casos, senão uma fala que falhou prenderia o aviso até o prazo.
      */
-    fun falar(texto: String, id: String, aoTerminar: (String) -> Unit): Boolean
+    fun falar(texto: String, id: String, aoSair: () -> Unit, aoTerminar: (String) -> Unit)
 
     /** Cala agora, sem esperar a frase acabar. */
     fun parar()
@@ -157,16 +162,23 @@ internal class AvisoFalado(
         val id = "fala-${contador++}"
         idDaVez = id
         falas++
-        val saiu = voz.falar(frase, id, ::terminou)
-        // "Avisando em voz alta" só depois de a fala **sair**. O `falar` devolve `false` quando o
-        // motor recusa a frase e avisa o fim sem ter falado: anunciar aqui seria a barra afirmando
-        // com zero falas — o mesmo defeito do motor que não sobe, na metade em que ele sobe e
-        // recusa. A escada de repetições é decidida pelo fim da fala, que o motor avisa nos dois
-        // casos, e não por isto.
-        if (saiu) aoFalar()
+        voz.falar(frase, id, ::saiu, ::terminou)
+        // `saiu` não recebe o id: quem separa a fala da vez do aviso atrasado de uma fala já
+        // substituída é o motor, que é quem conhece os ids das falas que pediu.
         // A última fala não conta com o `onDone` dela para fechar a conta: o motor pode não avisar,
         // e um serviço que fica de pé esperando um aviso que não vem segura o processo à toa.
         if (falas >= FALAS_POR_AVISO) agendar(duracaoFaladaMs(frase)) { encerrar() }
+    }
+
+    /**
+     * O motor começou a falar de verdade. Só daqui para baixo "avisando em voz alta" é verdade.
+     *
+     * A guarda é a do [encerrado]: um aviso de saída que chega depois de o aviso inteiro ter
+     * acabado não pode ressuscitar a afirmação na barra.
+     */
+    private fun saiu() {
+        if (encerrado) return
+        aoFalar()
     }
 
     private fun terminou(id: String) {

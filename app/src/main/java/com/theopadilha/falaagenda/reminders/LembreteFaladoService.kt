@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.theopadilha.falaagenda.R
 
@@ -46,6 +47,7 @@ class LembreteFaladoService : Service() {
         /** O título da tarefa, para a frase. Chave própria: o intent do alarme não traz o texto. */
         const val EXTRA_TITULO = "titulo_falado"
 
+        @VisibleForTesting
         var criarVoz: (Context) -> SintetizadorDeVoz = { VozDoAparelho(it) }
 
         /**
@@ -54,6 +56,7 @@ class LembreteFaladoService : Service() {
          * recusa um disparo com uma voz de outro no ar — não teria como ser exercitado. O padrão é
          * o de verdade; quem troca é o teste.
          */
+        @VisibleForTesting
         var subirEmPrimeiroPlano: (LembreteFaladoService) -> Boolean = {
             it.tentarSubirEmPrimeiroPlano()
         }

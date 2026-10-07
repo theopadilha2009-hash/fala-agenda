@@ -12,9 +12,13 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
@@ -305,6 +309,136 @@ class RecadoCortadoTest {
         val semHora = rascunho().copy(localTime = null, missingFields = emptySet())
 
         assertThat(mayQuickConfirm(semHora, truncated = false, agora, zone)).isFalse()
+    }
+
+    /**
+     * O aviso de corte não pode sobreviver à tela que o viu nascer.
+     *
+     * `draftTruncated` é `rememberSaveable` na raiz, e a confirmação o lê direto: ele não morre
+     * quando a tela de confirmação sai, nem quando a rota muda. O caminho da escrita — que não
+     * ouviu nada — herdava a marca da fala anterior e a confirmação da tarefa **digitada**
+     * dizia "Ouvi só uma parte", uma afirmação falsa sobre o app no lugar onde ela decide.
+     *
+     * O fio é o de verdade, na ordem em que acontece: fala cortada → Cancelar → "Escrever
+     * tarefa" → texto → Continuar. A tela de escrever não recebe a marca de ninguém; quem a
+     * limpa é a origem (a rota de escrita), e é isso que este caso prende.
+     */
+    @Test
+    fun aTarefaDigitadaNaoHerdaOAvisoDeCorteDaFalaAnterior() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        val container = AppContainer(context)
+        runBlocking { container.settings.setOnboardingComplete() }
+
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                FalaAgendaRoot(container = container)
+            }
+        }
+        compose.waitForIdle()
+
+        // 1) A fala cortada, como no caso de cima: o motor para no meio e o parcial é o recado.
+        falarCortado(container)
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText(TRUNCATED_NOTICE).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Confira antes de salvar").assertIsDisplayed()
+        compose.onNodeWithText(TRUNCATED_NOTICE).assertIsDisplayed()
+
+        // 2) "Cancelar" na confirmação: volta para a home com a marca ainda guardada.
+        //    `performScrollTo`: os botões do fim desta tela ficam fora da janela do teste, e um
+        //    clique num nó fora dela não aterrissa em nada — a mesma razão do
+        //    `ConfirmDraftScreenTest`.
+        compose.onNodeWithText("Cancelar").performScrollTo().performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Escrever tarefa").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 3) "Escrever tarefa" e o texto digitado — nenhuma escuta neste caminho.
+        compose.onNodeWithText("Escrever tarefa").performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Continuar").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNode(hasSetTextAction()).performScrollTo().performTextInput("comprar pão")
+        compose.onNodeWithText("Continuar").performScrollTo().performClick()
+
+        // 4) A confirmação da tarefa digitada: o título é o dela e NÃO há aviso de corte.
+        //    "Comprar pão" é o título que o parser monta do texto digitado — a asserção
+        //    positiva de que a confirmação é a da tarefa escrita, e não outra tela qualquer.
+        //
+        //    `assertExists` (e não `assertIsDisplayed`) nos dois nós do topo: o campo de texto
+        //    recebeu o foco e a tela rolou até ele, então o cabeçalho está na árvore mas fora da
+        //    janela. Existir é o que se afirma aqui; a visibilidade seria medida do scroll do
+        //    teste, não da tela. O aviso, esse sim, é negado por existência — e é ela que o
+        //    fix tira da tela.
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Comprar pão").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Confira antes de salvar").assertExists()
+        compose.onNodeWithText("Comprar pão").assertExists()
+        compose.onNodeWithText(TRUNCATED_NOTICE).assertDoesNotExist()
+    }
+
+    /**
+     * O outro lado do fix: limpar a marca não pode virar "nunca mais avisa".
+     *
+     * Depois de uma tarefa digitada, uma fala cortada nova tem de voltar a mostrar o aviso. Sem
+     * este caso, apagar `draftTruncated = ...` de `onDraftReady` — em vez de limpar na escrita —
+     * deixaria o primeiro teste verde e este vermelho.
+     */
+    @Test
+    fun depoisDeEscreverUmaFalaCortadaVoltaAMostrarOAviso() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        val container = AppContainer(context)
+        runBlocking { container.settings.setOnboardingComplete() }
+
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                FalaAgendaRoot(container = container)
+            }
+        }
+        compose.waitForIdle()
+
+        // Ela escreve e confirma a tarefa digitada: nenhum aviso, e a marca limpa na origem.
+        compose.onNodeWithText("Escrever tarefa").performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Continuar").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNode(hasSetTextAction()).performScrollTo().performTextInput("comprar pão")
+        compose.onNodeWithText("Continuar").performScrollTo().performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Comprar pão").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Comprar pão").assertExists()
+        compose.onNodeWithText(TRUNCATED_NOTICE).assertDoesNotExist()
+        compose.onNodeWithText("Cancelar").performScrollTo().performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Escrever tarefa").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Agora a fala cortada: o aviso tem de voltar.
+        falarCortado(container)
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText(TRUNCATED_NOTICE).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Confira antes de salvar").assertExists()
+        compose.onNodeWithText(TRUNCATED_NOTICE).assertExists()
+    }
+
+    /**
+     * A escuta de verdade, com o motor parando no meio: o parcial "tomar" é o recado cortado.
+     * O mesmo fio que os outros casos deste arquivo montam à mão.
+     */
+    private fun falarCortado(container: AppContainer) {
+        container.voice.start(context)
+        idle()
+        val engine = shadowOf(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
+        engine.triggerOnReadyForSpeech(Bundle())
+        engine.triggerOnPartialResults(
+            Bundle().apply {
+                putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("tomar"))
+            },
+        )
+        engine.triggerOnError(SpeechRecognizer.ERROR_NO_MATCH)
     }
 
     private val agora: Instant = Instant.parse("2026-10-06T12:00:00Z")

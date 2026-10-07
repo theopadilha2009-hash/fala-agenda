@@ -35,7 +35,7 @@ motor melhor depois.
   palavra que parece final, e "tomar… remédio… de pressão" pausado entregava "tomar" como
   recado inteiro. Agora o recado só fecha quando o silêncio já dura `MINIMUM_PAUSE_MS`
   (2,5 s) contados do primeiro aviso, e o total depende de qual regra disparou (fonte em
-  `kaldi/src/online2/online-endpoint.h:141-148`): ~3,0 s para fala confiante (rule2, 0,5 s),
+  `kaldi/src/online2/online-endpoint.h`): ~3,0 s para fala confiante (rule2, 0,5 s),
   ~3,5 s para a hesitante (rule3, 1,0 s) e até ~4,5 s quando nada foi reconhecido como
   final (rule4, 2,0 s).
 

@@ -51,21 +51,26 @@ internal class EndOfSpeechPause(
     }
 }
 
-// atalho: não há teto próprio — quem corta é o LISTENING_TIMEOUT_MS do controller (20 s), que
-// é rearmado em `onSpeechBegin` e em `onPartial` (e este só emite quando a string muda). Para
-// quem fala sem parar, o prazo é empurrado para frente a cada parcial e nunca vence; para quem
-// para no meio, ele conta do último parcial — ou do `onReady`, se nunca houve parcial — e não
-// de "20 s de escuta". O número desta constante é o único teto que esta espera tem, e é ele
-// que sobe se a queixa de corte no meio da frase voltar
+// atalho: sem teto próprio — quem corta é o LISTENING_TIMEOUT_MS do controller (20 s); é ele que
+// sobe se a queixa de corte no meio da frase voltar. O prazo é rearmado em `onSpeechBegin` e em
+// `onPartial` (e este só emite quando a string muda): para quem fala sem parar ele é empurrado
+// para frente a cada parcial e nunca vence, e para quem para no meio ele conta do último parcial
+// — ou do `onReady`, se nunca houve parcial —, não de "20 s de escuta".
 internal const val MINIMUM_PAUSE_MS = 2_500L
 
 /**
  * O que a escuta do Vosk já ouviu, e se a pausa de agora pode fechar o recado.
  *
- * O parcial fica *parado* durante a pausa — o Vosk repete a mesma string a cada leitura do
- * microfone. Recontar a espera a cada leitura seria esperar para sempre (e o recado só sairia
- * pelo prazo do controller, cortado): por isso só a fala nova reinicia a contagem, e é o
- * mesmo teste que decide se há o que emitir para a tela.
+ * O parcial **tende** a ficar parado durante a pausa — a mesma string relida a cada leitura do
+ * microfone —, e recontar a espera a cada leitura seria esperar para sempre (o recado só sairia
+ * pelo prazo do controller, cortado). Por isso só a fala nova reinicia a contagem, e é o mesmo
+ * teste que decide se há o que emitir para a tela.
+ *
+ * O que **não** está provado em aparelho é se o `partialResult` do Vosk chega idêntico durante a
+ * pausa ou se oscila. Se ele oscilar — uma revisão do mesmo enunciado, e não fala nova —, cada
+ * revisão entra aqui como fala nova e a espera recomeça. O desfecho é gracioso (espera mais, não
+ * volta ao defeito do corte), mas o teste não prende isso: o que ele prende é o caso da string
+ * idêntica.
  */
 internal class VoskUtterance(private val pause: EndOfSpeechPause = EndOfSpeechPause()) {
     private var heard = ""

@@ -38,14 +38,17 @@ class EndOfSpeechPauseTest {
      * O número tem de ter âncora executável, e não só o comentário.
      *
      * Todas as outras asserções desta classe derivam da própria constante
-     * (`MINIMUM_PAUSE_MS - 1`, `MINIMUM_PAUSE_MS`), então baixar de 2_500 para 1_000 — abaixo
-     * dos 2,0 s que o Kaldi usa como régua mais conservadora (`rule4`) — mantinha 7/7 verdes.
-     * Aqui o piso é um literal: a espera é o que separa a pausa no meio da frase do fim do
-     * recado, e um valor abaixo da régua do motor não segura nada.
+     * (`MINIMUM_PAUSE_MS - 1`, `MINIMUM_PAUSE_MS`), então mexer no valor mantinha a classe
+     * verde: baixar de 2_500 para 1_000 — abaixo dos 2,0 s que o Kaldi usa como régua mais
+     * conservadora (`rule4`) — passava em 7/7.
+     *
+     * O piso é um literal e a asserção é **exata**, não `isAtLeast`: um piso só deixaria o
+     * intervalo 2_000–2_499 sem teste, e é justamente ali que a espera deixa de separar a pausa
+     * no meio da frase do fim do recado. A espera é o número; prendê-lo é o que a torna visível.
      */
     @Test
-    fun oMinimoFicaAcimaDaReguaMaisConservadoraDoKaldi() {
-        assertThat(MINIMUM_PAUSE_MS).isAtLeast(2_000L)
+    fun aEsperaEBemOMinimoQueElaPrecisaSer() {
+        assertThat(MINIMUM_PAUSE_MS).isEqualTo(2_500L)
     }
 
     @Test

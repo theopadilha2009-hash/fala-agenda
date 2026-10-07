@@ -257,6 +257,14 @@ fun FalaAgendaRoot(
                 // confirmação com o texto digitado já jogado fora.
                 onWrite = {
                     homeVm.speech.discard()
+                    // Escrever não ouve nada: a marca de corte da escuta anterior morre aqui, na
+                    // origem do caminho. Sem isto ela atravessava a rota — `draftTruncated` é
+                    // `rememberSaveable` e o caminho de escrita não o tocava — e a confirmação da
+                    // tarefa **digitada** dizia "Ouvi só uma parte": uma afirmação falsa sobre o
+                    // app na tela onde ela decide, o mesmo defeito que este PR corrige, invertido.
+                    // É este mesmo ponto que o `onDraftReady` relê da escuta viva (ver lá), então
+                    // a fala seguinte continua levando o aviso quando o app de fato a cortou.
+                    draftTruncated = false
                     nav.navigate("write")
                 },
                 onQuick = { minutes ->

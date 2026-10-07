@@ -2285,11 +2285,14 @@ class LocalTaskParserTest {
 
     @Test
     fun oraculoDoisDiasDitosComRelativoEscalam() {
-        // F2 da revisão de 06/10: pares ordenados de dias (7×6=42) × N=1..7 × {dias, semanas} = 588
-        // casos. Com DOIS dias ditos e um deslocamento, o guard do delta só olhava `size == 1` e o
-        // ramo caía em "conta crua, não-ambíguo" — a caixa rápida confirmava uma quinta para uma
-        // frase que diz sábado e domingo. O `main` escalava todos os discordantes; o delta regrediu.
-        // Regra: se a conta crua não cai em NENHUM dos dias ditos, nenhum foi honrado -> escala.
+        // F2 da revisão de 06/10, reescrito na de 07/10: o oráculo antigo codificava a DOUTRINA DA
+        // IMPLEMENTAÇÃO (`crua.dayOfWeek != diaA && crua.dayOfWeek != diaB`) e por isso não
+        // enxergava a borda em que a conta crua cai em UM dos dois dias ditos — os 168 casos desse
+        // eixo entravam na expectativa `amb=false` por construção, e zero violações era garantido,
+        // não descoberto. O invariante agora é independente da implementação:
+        //   DOIS dias ditos + um deslocamento relativo => NUNCA uma confirmação calada de data única.
+        // A coincidência da conta crua com um dos dois dias não é confirmação: o outro dia dito
+        // continua sendo um candidato legítimo, e o rascunho tem que escalar (amb=true).
         val nomes = mapOf(
             DayOfWeek.MONDAY to "segunda",
             DayOfWeek.TUESDAY to "terça",
@@ -2299,7 +2302,6 @@ class LocalTaskParserTest {
             DayOfWeek.SATURDAY to "sábado",
             DayOfWeek.SUNDAY to "domingo",
         )
-        val hoje = clock.today()
         var violacoes = 0
         var casos = 0
         val amostra = mutableListOf<String>()
@@ -2310,13 +2312,16 @@ class LocalTaskParserTest {
                     for (unidade in listOf("dias", "semanas")) {
                         casos++
                         val frase = "$nomeA e $nomeB daqui a $n $unidade pagar conta às 10h"
-                        val crua = if (unidade == "semanas") hoje.plusWeeks(n.toLong()) else hoje.plusDays(n.toLong())
-                        val esperadoAmbiguo = crua.dayOfWeek != diaA && crua.dayOfWeek != diaB
                         val d = parser.parse(frase)
-                        if (d.ambiguous != esperadoAmbiguo) {
+                        // O invariante: dois dias ditos + relativo nunca confirmam uma data única em
+                        // silêncio. A regra vale sem consultar a implementação — basta contar os dias
+                        // que a própria frase nomeia.
+                        val diasDitos = setOf(diaA, diaB).size
+                        val confirmacaoCalada = diasDitos > 1 && !d.ambiguous
+                        if (confirmacaoCalada) {
                             violacoes++
                             if (amostra.size < 12) {
-                                amostra += "$frase -> ${d.localDate}/amb=${d.ambiguous} (esperado amb=$esperadoAmbiguo)"
+                                amostra += "$frase -> ${d.localDate}/amb=${d.ambiguous} (dois dias ditos, confirmacao calada)"
                             }
                         }
                     }
@@ -2332,6 +2337,15 @@ class LocalTaskParserTest {
         assertThat(medido.localDate).isEqualTo(LocalDate.of(2026, 9, 3))
         assertThat(medido.ambiguous).isTrue()
         assertThat(medido.canQuickConfirm(clock.instant(), zone)).isFalse()
+
+        // A BORDA que o oráculo antigo não enxergava (168 dos 588 casos): a conta crua cai em UM dos
+        // dois dias ditos e o outro era descartado calado. Hoje é quinta 20/08/2026, e "daqui a dois
+        // dias" é SÁBADO 22/08 — um dos dois dias ditos. O PR devolvia sábado completo, não-ambíguo e
+        // confirmável de um toque, e o DOMINGO que ela disse sumia sem aviso; o `main` escalava.
+        // A coincidência com um dos dias não é confirmação: o outro dia dito continua candidato.
+        val borda = parser.parse("sábado e domingo daqui a 2 dias pagar conta às 10h")
+        assertThat(borda.ambiguous).isTrue()
+        assertThat(borda.canQuickConfirm(clock.instant(), zone)).isFalse()
     }
 
     private fun primeiraOcorrenciaDe(dia: DayOfWeek, de: LocalDate): LocalDate {
@@ -2361,5 +2375,33 @@ class LocalTaskParserTest {
         val sextaDuasSemanas = parser.parse("sexta daqui a duas semanas pagar conta às 10h")
         assertThat(sextaDuasSemanas.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
         assertThat(sextaDuasSemanas.ambiguous).isTrue()
+    }
+
+    @Test
+    fun dataNomeadaComDiaDaSemanaDitoNaoSeContradiz() {
+        // P2 deste lote: `namedDate` era consultado antes de tudo e devolvia com `return` cedo, sem
+        // nunca olhar se a frase TAMBÉM nomeia um dia da semana. "dia das mães no sábado" saía com
+        // data de DOMINGO (09/05/2027) e título 'Sábado almoço' — título e data se contradizendo,
+        // completos, não-ambíguos e confirmáveis de um toque. A mesma doutrina do F1/F2 vale aqui:
+        // quando as duas expressões DISCORDAM, o dia dito (a específica) manda E o rascunho escala.
+        // Hoje é quinta 20/08/2026: a primeira ocorrência do sábado dito é 22/08.
+        val maes = parser.parse("dia das mães no sábado almoço às 12h")
+        assertThat(maes.localDate).isEqualTo(LocalDate.of(2026, 8, 22))
+        assertThat(maes.ambiguous).isTrue()
+        assertThat(maes.canQuickConfirm(clock.instant(), zone)).isFalse()
+        assertThat(maes.title.lowercase()).contains("almoço")
+
+        val corpus = parser.parse("corpus christi na quarta missa às 9h")
+        assertThat(corpus.localDate).isEqualTo(LocalDate.of(2026, 8, 26))
+        assertThat(corpus.ambiguous).isTrue()
+        assertThat(corpus.canQuickConfirm(clock.instant(), zone)).isFalse()
+        assertThat(corpus.title.lowercase()).contains("missa")
+
+        // A contrapartida que NÃO pode regredir: sem dia da semana dito, a data nomeada continua
+        // sozinha, completa e sem ambiguidade.
+        val soData = parser.parse("dia das mães almoço às 12h")
+        assertThat(soData.localDate).isEqualTo(LocalDate.of(2027, 5, 9))
+        assertThat(soData.ambiguous).isFalse()
+        assertThat(soData.canQuickConfirm(clock.instant(), zone)).isTrue()
     }
 }

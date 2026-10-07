@@ -664,7 +664,28 @@ class LocalTaskParser(
         // silêncio, sem nunca consultar a IA. As duas são a expressão mais específica da frase e
         // por isso ganham do "amanhã"/"hoje", que sai do texto junto.
         namedDate(remaining, today)?.let { hit ->
-            return DateHit(hit.date, stripDayWords(hit.remaining), false)
+            val rest = stripDayWords(hit.remaining)
+            // A frase pode dizer as DUAS coisas: a data nomeada ("dia das mães") E um dia da semana
+            // ("no sábado"). O `namedDate` devolve com `return` cedo e nunca olhava o dia dito — a
+            // data saía DOMINGO com título 'Sábado almoço', completa e não-ambígua, e a caixa rápida
+            // confirmava a contradição de um toque. A mesma doutrina do F1/F2: quando as duas
+            // expressões DISCORDAM, o dia dito (a específica) manda E o rascunho escala. Quando
+            // concordam ("sexta-feira santa" já sai como data nomeada, sem sobrar dia), nada muda.
+            val diasDitos = extractWeekDays(rest)
+            if (diasDitos.size == 1 && hit.date != null && hit.date.dayOfWeek !in diasDitos) {
+                val dia = RecurrenceEngine.firstOnOrAfter(
+                    RecurrenceRule(RecurrenceKind.WEEKLY, weekDays = diasDitos),
+                    today,
+                    today,
+                )
+                return DateHit(
+                    dia,
+                    stripWeekDays(rest),
+                    true,
+                    "${NotasDoRascunho.DATA_AMBIGUA} a data nomeada e o dia da semana dito não caem no mesmo dia.",
+                )
+            }
+            return DateHit(hit.date, rest, false)
         }
         monthEdge(remaining, today, recurrence)?.let { hit ->
             return DateHit(hit.date, stripDayWords(hit.remaining), hit.ambiguous)
@@ -745,12 +766,16 @@ class LocalTaskParser(
                 }
                 return DateHit(onNamedDay ?: date, remaining, false)
             }
-            // Dois dias ditos com um deslocamento: quando a conta crua não cai em NENHUM dos dois,
-            // nenhum deles foi honrado e cravar a conta crua calado é o mesmo defeito do caso de um
-            // dia. O `main` escalava aqui (o ramo de dia da semana sem relativo devolve nulo +
-            // ambíguo); o delta regrediu ao só olhar `size == 1`, e a caixa rápida oferecia
-            // "Quinta-feira, 3 de setembro" para uma frase que diz sábado e domingo.
-            if (namedDay.size > 1 && date.dayOfWeek !in namedDay) {
+            // Dois dias ditos com um deslocamento: com DOIS candidatos legítimos na frase, não existe
+            // "a" data — o rascunho escala SEMPRE, mesmo quando a conta crua coincide com um deles.
+            // O guard antigo só escalava quando a conta crua não caía em NENHUM dos dois dias ditos
+            // (`date.dayOfWeek !in namedDay`): quando ela caía em UM deles, o OUTRO era descartado
+            // calado, e a caixa rápida confirmava de um toque a data de um dia só. "sábado e domingo
+            // daqui a 2 dias" (hoje numa quinta) devolvia SÁBADO completo e não-ambíguo, e o domingo
+            // que ela disse sumia sem aviso — o `main` escalava os 168 casos desse eixo; o delta
+            // regrediu. A coincidência da conta com um dos dois dias não é confirmação: o outro dia
+            // dito continua sendo um candidato legítimo.
+            if (namedDay.size > 1) {
                 return DateHit(
                     date,
                     remaining,

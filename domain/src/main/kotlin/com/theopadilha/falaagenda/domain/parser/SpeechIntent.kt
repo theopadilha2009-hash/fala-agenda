@@ -149,6 +149,15 @@ object SpeechIntentClassifier {
         var from = 0
         while (true) {
             val hit = NAO.find(rest, from) ?: return false
+            // A VÍRGULA logo depois do "não" é a quebra prosódica da correção: ela parou, e o que
+            // vem depois é o que ela quis dizer. Sem ela o "não" está negando o verbo que segue
+            // ("não quero mais", "não vou poder ir"), e é continuação.
+            //
+            // É o sinal mais grosseiro e o mais barato: nenhuma cauda de continuação do corpus
+            // tem "não, " — o custo é zero por construção —, e ele fecha de uma vez a família em
+            // que a fala empilha material antes do alvo ("não, **eu vou querer** o dentista",
+            // "não, **acho que** o dentista"), que uma lista de verbos nunca cobre inteira.
+            if (rest.substring(hit.range.last + 1).trimStart(' ').startsWith(",")) return true
             // `from == 0` marca o PRIMEIRO "não" da fala: é ele que, terminando a frase, é uma
             // correção que ela começou e não terminou. Um "não" posterior com a mesma cauda vazia
             // é a ênfase de uma continuação ("não vou poder ir, não"), e ali o comando age.
@@ -192,21 +201,31 @@ object SpeechIntentClassifier {
         // de uma continuação ("... não vou poder ir, não"), o "não" é a ÊNFASE da fala, não o
         // começo de uma correção: o comando age.
         if (tokens.isEmpty()) return primeiro
+        // O sujeito, a moldura da reformulação e a cópula vêm ANTES do alvo e não decidem nada:
+        // "não, **eu** quero **o** de diabetes" tem o sujeito na frente da moldura, e pular só uma
+        // vez deixava o "eu" no lugar do alvo — o veredito lia "não é determinante" e o app agia
+        // sobre o alvo descartado (a dose errada, no remédio). São pulados EM LOOP porque a fala
+        // natural empilha os dois.
         var i = 0
-        if (i >= tokens.size) return false
-        // A moldura da reformulação ("quero o de diabetes") ou a cópula ("não é o de pressão",
-        // "não é isso, o dentista") vêm ANTES do alvo e não decidem nada.
-        if (tokens[i] in MOLDURA || tokens[i] in COPULAS) i++
+        while (i < tokens.size && (tokens[i] in SUJEITOS || tokens[i] in MOLDURA || tokens[i] in COPULAS)) i++
         if (i >= tokens.size) return false
         // O alvo é um dia ("não, hoje", "não é amanhã")...
         if (tokens[i] in TEMPORAIS_DE_CORRECAO) return true
-        // ...ou um determinante seguido de um substantivo ("não o dentista", "não, quero o de
-        // diabetes"). O determinante sozinho no fim não nomeia nada ("... não, o").
+        // ...ou um determinante. O demonstrativo TERMINAL ("cancela o médico, não é isso") nomeia
+        // o alvo sozinho — ele é o próprio alvo sem substantivo, e exigir uma palavra depois dele
+        // deixava a correção passar justamente quando não havia continuação nenhuma, que é o caso
+        // mais perigoso: ela abandonou o comando e o app executa assim mesmo.
         if (tokens[i] !in DEMONSTRATIVOS) return false
-        if (i + 1 >= tokens.size) return false
+        if (i + 1 >= tokens.size) return true
         // "não é o que eu queria": o "que" não é substantivo.
         return tokens[i + 1] !in PALAVRAS_FUNCIONAIS
     }
+
+    /**
+     * O sujeito que a fala espontânea põe antes do verbo ("não, **eu** quero o de diabetes").
+     * Pular só a moldura deixava o sujeito no lugar do alvo, e a correção passava.
+     */
+    private val SUJEITOS = setOf("eu")
 
     /**
      * Os verbos que podem abrir a reformulação sem serem o alvo — "quero **o de diabetes**",

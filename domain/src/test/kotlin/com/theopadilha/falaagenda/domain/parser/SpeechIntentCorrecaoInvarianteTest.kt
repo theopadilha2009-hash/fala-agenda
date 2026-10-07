@@ -18,9 +18,10 @@ import org.junit.Test
  *
  * Há um SEGUNDO corpus aqui, e ele existe por causa do review do PR #83: o de CONTINUAÇÃO. O
  * "não" é a palavra mais comum do português numa continuação ("não vou poder ir", "não deu
- * tempo"), e tratá-lo como conector de correção sempre custava **2400 de 3360** frases — o
- * comando certo deixava de agir. Os dois números juntos são o que prende o fix: o corpus de
- * correção prende o benefício, o de continuação prende o custo.
+ * tempo"), e tratá-lo como conector de correção custava **2400 de 3360** frases com as 21 caudas
+ * de então — o comando certo deixava de agir. Hoje a lista tem 22 caudas e o espaço é 3520; sob o
+ * gatilho largo o bloqueio seria a família inteira. Os dois números juntos são o que prende o fix:
+ * o corpus de correção prende o benefício, o de continuação prende o custo.
  *
  * O alvo esperado de cada caso é ESCRITO À MÃO aqui, e não calculado com o raciocínio do código
  * (um oráculo que recalcula a doutrina só concorda consigo mesmo).
@@ -187,7 +188,13 @@ class SpeechIntentCorrecaoInvarianteTest {
         "a farmácia" to "farmacia",
     )
 
-    /** O espaço do review: 5 verbos × 32 alvos × 21 caudas = 3360. */
+    /**
+     * O espaço do review: 5 verbos × 32 alvos × **22** caudas = **3520** casos.
+     *
+     * A conta estava escrita "21 caudas = 3360" e não batia com a lista — que tem 22 desde que
+     * "não tem como" entrou. O número do log é 3520, e é ele que vale: contagem errada em
+     * comentário é o que a próxima pessoa usa para decidir.
+     */
     private val verbosDeContinuacao = verbos + listOf("exclui ", "tira ")
 
     @Test

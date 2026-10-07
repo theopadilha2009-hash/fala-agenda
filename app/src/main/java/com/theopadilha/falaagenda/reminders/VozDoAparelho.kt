@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.reminders
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -184,7 +185,12 @@ internal class VozDoAparelho(context: Context) : SintetizadorDeVoz {
         }
         this.aoTerminar = aoTerminar
         idDaFala = id
-        this.aoSair = aoSair
+        // A saída só é anunciada se a fala tiver por onde sair. O `onStart` do motor chega mesmo com
+        // o `STREAM_ALARM` em zero — a síntese acontece, a onda é que não sai —, e anunciar ali
+        // fazia a barra afirmar "Avisando em voz alta" num celular calado: a queixa dela ("o áudio
+        // nunca funciona") com o aplicativo dizendo na cara dela que falou. O fim continua sendo
+        // avisado de qualquer jeito: a política precisa dele para fechar a conta.
+        this.aoSair = if (streamDaVozAudivel()) aoSair else null
         falou = false
         try {
             // O `speak` é sincrono na recusa: ele devolve o código de erro na hora e não fala nada.
@@ -214,6 +220,33 @@ internal class VozDoAparelho(context: Context) : SintetizadorDeVoz {
         if (utteranceId != idDaFala || falou) return
         falou = true
         aoSair?.invoke()
+    }
+
+    /**
+     * O stream que carrega esta voz tem por onde soar?
+     *
+     * A fala sobe em [AudioAttributes.USAGE_ALARM] (ver o KDoc da classe), e o volume que a governa
+     * é o de [AudioManager.STREAM_ALARM]. Com ele em zero a síntese acontece e nada sai — medido no
+     * caminho inteiro: o motor aceita a frase, o `onStart` chega e o celular fica calado.
+     *
+     * A leitura é do volume, e o critério é o **zero literal** — o mesmo do `alarmeDoAparelhoMudo`
+     * do [NotificationHelper], e pelo mesmo motivo: no Android 9+ o mínimo do stream de alarme é 1,
+     * e um degrau acima do zero ainda toca. `isStreamMute` não entra: o mudo por software do
+     * `AudioManager` não é o caminho que ela vive, e um critério largo demais faria a barra calar
+     * num aparelho que ainda soa.
+     *
+     * O modo silencioso **não** entra, e é a mesma decisão do #81: o alarme é justamente o que
+     * costuma sobreviver ao silencioso e ao Não Perturbe, e tratar o silencioso como mudo faria a
+     * barra calar para quem está sendo avisada.
+     */
+    private fun streamDaVozAudivel(): Boolean = try {
+        val audio = appContext.getSystemService(AudioManager::class.java)
+        audio == null || audio.getStreamVolume(AudioManager.STREAM_ALARM) > 0
+    } catch (e: Exception) {
+        // Não deu para ler o volume: na dúvida, a voz é afirmada como antes. O silêncio é que
+        // precisa de prova, não a fala.
+        Log.w(TAG, "Não foi possível ler o volume do alarme", e)
+        true
     }
 
     override fun parar() {

@@ -56,6 +56,18 @@ enum class UnsupportedKind {
      * chute é o pior desfecho possível. Reconhecido, não executado.
      */
     ERASE,
+
+    /**
+     * "cancela o médico, não, o dentista": ela se corrigiu no meio da fala, e o alvo ficou
+     * ambíguo.
+     *
+     * O que vem depois do conector pode ser a tarefa ("o dentista"), o dia ("hoje"), a hora
+     * ("às três") ou nada — e o classificador é puro, sem a agenda na mão, então não tem como
+     * decidir. Agir sobre o alvo que ela DESCARTou é o pior desfecho deste aplicativo: no
+     * remédio, concluir o alvo errado é dose errada registrada; no cancelamento, apaga a tarefa
+     * errada e a certa fica. Reconhecido, não executado.
+     */
+    CORRECTION,
 }
 
 /**
@@ -80,6 +92,206 @@ object SpeechIntentClassifier {
             ?: cancel(folded)
             ?: SpeechIntent.Capture
     }
+
+    /**
+     * A pergunta CERTA: depois do conector, a fala **nomeia um alvo novo**?
+     *
+     * Ela fala, percebe que errou e se corrige sem parar de falar: "cancela o médico, não, o
+     * dentista". O classificador agia sobre o alvo que ela DESCARTou — `Cancel(target=medico)` —
+     * e o app apagava o médico; em **275 de 300** casos do catálogo isso aconteceu
+     * (`cacada-fala-2026-10-07-correcao.md`, seção P1). No `Complete` o dano é maior: concluir o
+     * remédio errado é dose errada registrada.
+     *
+     * Um conector de correção é uma fronteira: o que vem ANTES dele foi descartado por ela, e o
+     * alvo que o app pode usar é o de DEPOIS. O classificador não decide o desfecho sozinho
+     * porque o que vem depois pode ser a tarefa ("o dentista"), o dia ("hoje"), a hora ("às
+     * três") ou nada — e ele é puro, sem a agenda na mão. Medido no oráculo: em **405 de 810**
+     * casos do espaço `verbo × conector × alvo` o corrigido é um alvo de tarefa de verdade e
+     * nos outros 405 é um dia, uma hora ou nada. Metade não decide, e escolher no chute é o pior
+     * desfecho — o app prefere escalar a adivinhar (ver a doutrina de `HybridParser`: "duas
+     * expressões de tempo discordam ⇒ escala"). Por isso o desfecho é o mesmo do "apaga isso":
+     * reconhecer e não executar.
+     *
+     * A pergunta é sobre o que vem DEPOIS, e não sobre o conector nem sobre o primeiro token
+     * dele. Três tentativas de heurística de TOKEN falharam, cada uma medida:
+     *
+     * 1. o conector sozinho (largo) — o `não` é a palavra mais comum do português numa
+     *    CONTINUAÇÃO, e "não vou poder ir" deixava de cancelar;
+     * 2. "o próximo token é verbo?" — "não, **quero** o de diabetes" é CORREÇÃO que abre com
+     *    verbo, e o app registrava a dose errada (120 de 140 casos do corpus de reformulação);
+     * 3. "não é isso" — o veredito de cópula perguntava se o token seguinte era determinante, e
+     *    "isso" não está em [DETERMINANTES], então a correção passava e apagava o médico.
+     *
+     * Um token não carrega a informação que a decisão precisa. O que carrega é o ALVO: se o que
+     * vem depois do conector tem a forma de um sintagma nominal — um determinante, um
+     * demonstrativo ou um substantivo —, é uma correção e o alvo descartado não pode ser usado.
+     * Se não tem ("não vou poder ir", "não da tempo", "não me sinto bem"), é continuação e o
+     * comando age. É a mesma classe de veredito que o [eraseNamed] já toma para o "apaga isso"
+     * (ver [DEMONSTRATIVOS]), com a fonte das duas listas compartilhada.
+     *
+     * O gatilho continua sendo o conector: sem conector nada muda (a frase sem correção continua
+     * exatamente como hoje), e uma frase que nunca foi comando — "me lembra de comprar pão, não,
+     * leite" — continua sendo captura, porque a checagem só acontece depois de um gatilho abrir a
+     * fala.
+     */
+    private fun hasCorrection(rest: String): Boolean =
+        CONTENT_CUE.containsMatchIn(rest) || negaComCorrecao(rest)
+
+    /**
+     * O `não` — e SÓ ele — precisa do teste do alvo.
+     *
+     * Ele é a palavra mais comum do português numa continuação ("não vou poder ir", "não da
+     * tempo", "não me sinto bem"), então a presença dele não decide nada: o que decide é se o que
+     * vem depois tem a forma de um alvo novo. Os conectores de [CONTENT_CUE] não têm essa
+     * ambiguidade e continuam valendo pela presença.
+     */
+    private fun negaComCorrecao(rest: String): Boolean {
+        var from = 0
+        while (true) {
+            val hit = NAO.find(rest, from) ?: return false
+            // A VÍRGULA logo depois do "não" é a quebra prosódica da correção: ela parou, e o que
+            // vem depois é o que ela quis dizer. Sem ela o "não" está negando o verbo que segue
+            // ("não quero mais", "não vou poder ir"), e é continuação.
+            //
+            // É o sinal mais grosseiro e o mais barato: nenhuma cauda de continuação do corpus
+            // tem "não, " — o custo é zero por construção —, e ele fecha de uma vez a família em
+            // que a fala empilha material antes do alvo ("não, **eu vou querer** o dentista",
+            // "não, **acho que** o dentista"), que uma lista de verbos nunca cobre inteira.
+            if (rest.substring(hit.range.last + 1).trimStart(' ').startsWith(",")) return true
+            // `from == 0` marca o PRIMEIRO "não" da fala: é ele que, terminando a frase, é uma
+            // correção que ela começou e não terminou. Um "não" posterior com a mesma cauda vazia
+            // é a ênfase de uma continuação ("não vou poder ir, não"), e ali o comando age.
+            if (nomeiaAlvoDepois(rest, hit.range.last + 1, primeiro = from == 0)) return true
+            // O conector não abre um alvo novo: segue procurando outro na fala
+            // ("cancela o médico, não vou poder ir, não, o dentista").
+            from = hit.range.last + 1
+        }
+    }
+
+    private val NAO = Regex("(^|[\\s,])nao\\b")
+
+    /**
+     * O que vem depois do conector tem a forma de um ALVO NOVO?
+     *
+     * A forma é "determinante (ou demonstrativo) + substantivo", ou só o determinante — que é o
+     * que separa a correção da continuação nos dois sentidos:
+     *
+     * - `"não **o dentista**"`, `"não, **quero o de diabetes**"` (o verbo é a moldura, o alvo vem
+     *   depois dele), `"não **essa** consulta"` — nomeia alvo, é correção;
+     * - `"não vou poder ir"`, `"não da tempo"`, `"não me sinto bem"` — nenhum determinante em
+     *   posição de alvo, é continuação e o comando age.
+     *
+     * Só as DUAS primeiras palavras contam: um determinante solto no fim ("... não, o") não é
+     * alvo, e um determinante que aparece tarde é parte da oração ("não vou poder ir **o** dia
+     * inteiro"), não do alvo. E o substantivo tem de ter corpo — "não é **o** que eu queria" não
+     * nomeia tarefa nenhuma.
+     *
+     * A varredura pula a moldura da reformulação ("quero o de diabetes") e a cópula ("não é o de
+     * pressão", "não é isso, o dentista"), e o veredito é da PRESENÇA do alvo — não da
+     * identidade do primeiro token, que foi o que falhou nas três tentativas anteriores. Uma
+     * palavra a mais não abre a porteira: "não vou poder ir o dia inteiro" tem o determinante a
+     * três tokens do conector, e continua sendo continuação.
+     */
+    private fun nomeiaAlvoDepois(rest: String, from: Int, primeiro: Boolean): Boolean {
+        val depois = rest.substring(from).trimStart(' ', ',', '.', '!', '?', ';', ':')
+        val tokens = depois.split(' ').map { it.trim(',', '.', '!', '?', ';', ':') }
+            .filter { it.isNotBlank() }
+        // A fala ACABA no conector: "cancela o médico, não". Ela começou a se corrigir e parou,
+        // e agir sobre o alvo descartado é o pior desfecho — bloqueia. Quando o vazio vem depois
+        // de uma continuação ("... não vou poder ir, não"), o "não" é a ÊNFASE da fala, não o
+        // começo de uma correção: o comando age.
+        if (tokens.isEmpty()) return primeiro
+        // O sujeito, a moldura da reformulação e a cópula vêm ANTES do alvo e não decidem nada:
+        // "não, **eu** quero **o** de diabetes" tem o sujeito na frente da moldura, e pular só uma
+        // vez deixava o "eu" no lugar do alvo — o veredito lia "não é determinante" e o app agia
+        // sobre o alvo descartado (a dose errada, no remédio). São pulados EM LOOP porque a fala
+        // natural empilha os dois.
+        var i = 0
+        while (i < tokens.size && (tokens[i] in SUJEITOS || tokens[i] in MOLDURA || tokens[i] in COPULAS)) i++
+        if (i >= tokens.size) return false
+        // O alvo é um dia ("não, hoje", "não é amanhã")...
+        if (tokens[i] in TEMPORAIS_DE_CORRECAO) return true
+        // ...ou um determinante. O demonstrativo TERMINAL ("cancela o médico, não é isso") nomeia
+        // o alvo sozinho — ele é o próprio alvo sem substantivo, e exigir uma palavra depois dele
+        // deixava a correção passar justamente quando não havia continuação nenhuma, que é o caso
+        // mais perigoso: ela abandonou o comando e o app executa assim mesmo.
+        if (tokens[i] !in DEMONSTRATIVOS) return false
+        if (i + 1 >= tokens.size) return true
+        // "não é o que eu queria": o "que" não é substantivo.
+        return tokens[i + 1] !in PALAVRAS_FUNCIONAIS
+    }
+
+    /**
+     * O sujeito que a fala espontânea põe antes do verbo ("não, **eu** quero o de diabetes").
+     * Pular só a moldura deixava o sujeito no lugar do alvo, e a correção passava.
+     */
+    private val SUJEITOS = setOf("eu")
+
+    /**
+     * Os verbos que podem abrir a reformulação sem serem o alvo — "quero **o de diabetes**",
+     * "tenho **o dentista**". Eles não decidem nada: o veredito é do alvo que vem depois.
+     *
+     * A lista existe porque a alternativa posicional pura ("pula qualquer palavra") custava as
+     * continuações que têm um determinante depois do verbo — "não **vale a pena**", "não
+     * **chegou o** dinheiro", "não **vou a** pé" viravam correção e o comando deixava de agir.
+     * Só os verbos de ESCOLHA e POSSE reformulam um alvo, e são esses que entram.
+     *
+     * O preço é a assimetria conhecida: um verbo de escolha que falte aqui faz a reformulação ser
+     * lida como continuação e o comando age sobre o alvo descartado. O corpus de reformulação
+     * (`reformulacaoQueAbreComVerboNaoAgeSobreOAlvoDescartado`) é quem prende a lista.
+     */
+    private val MOLDURA = setOf(
+        "quero", "queria", "quer", "quis",
+        "prefiro", "preferia",
+        "tenho", "tem", "tinha",
+        "fico", "gosto", "pego", "escolho",
+    )
+
+    /** As cópulas: elas abrem a reformulação ("não é o de pressão") e não decidem nada. */
+    private val COPULAS = setOf("e", "eh", "era", "sao", "for")
+
+    /** Os dias que, depois do conector, nomeiam o alvo da correção ("não, hoje", "não é amanhã"). */
+    private val TEMPORAIS_DE_CORRECAO = setOf("hoje", "amanha", "ontem")
+
+    /**
+     * O que NÃO pode ser o substantivo de um alvo: o pronome relativo ("o **que** eu queria") e
+     * os interrogativos. Sem esta poda, "não é o que eu queria" — que é continuação — era lido
+     * como alvo só porque "o" abre a frase.
+     *
+     * As PREPOSIÇÕES ficam de fora da poda de propósito: "o **de** diabetes" e "o **de** pressão"
+     * são alvos de verdade (o determinante abre, a preposição liga ao nome), e podá-las fazia a
+     * correção ser lida como continuação — o app registrava a dose errada.
+     */
+    private val PALAVRAS_FUNCIONAIS = setOf(
+        "que", "quem", "qual", "quais", "onde", "quando", "como",
+    )
+
+    /**
+     * Os conectores com que ela se corrige. A âncora é `(^|[\s,])` e o rabo `([\s,\.!?;:]|$)`:
+     * o reconhecedor pontua de formas diferentes — a mesma fala chega ", melhor,", ", errei." e
+     * ", mentira" —, e um conector que escapasse deixaria a frase agir sobre o alvo descartado,
+     * calada. O rabo não é só espaço e vírgula: "cancela o médico, errei. o dentista" era o mesmo
+     * defeito com o ponto no lugar da vírgula.
+     *
+     * Entram os que o catálogo não media e são vocabulário plausível de correção falada: "quero
+     * dizer" e "quis dizer" (as duas formas correntes — só a segunda estava na lista, e o
+     * comentário e a lista falavam de coisas diferentes), "me enganei", "corrigindo", "mentira",
+     * "ta errado", "alias", "esquece", "perai", "deixa pra la" e "desculpa" — todos são ela
+     * voltando atrás no que acabou de dizer.
+     *
+     * O `não` NÃO está aqui: ele é o único com ambiguidade de continuação, e por isso o veredito
+     * dele passa por [negaComCorrecao] e [nomeiaAlvoDepois] em vez da presença.
+     *
+     * Ficaram DE FORA os que não voltam atrás de nada: "espera", "depois", "agora" e "então".
+     * "não é isso" não é um conector à parte — é o próprio `não` seguido de demonstrativo, e cai
+     * no veredito de alvo como qualquer outra fala do `não`.
+     */
+    private val CONTENT_CUE = Regex(
+        "(^|[\\s,])(quero dizer|quis dizer|quer dizer|na verdade|ao inves disso|em vez disso|" +
+            "ta errado|deixa pra la|me enganei|corrigindo|mentira|alias|esquece|perai|desculpa|" +
+            "digo|melhor|errei)([\\s,.!?;:]|$)",
+    )
+
 
     /**
      * O preâmbulo que pode anteceder o comando: a interjeição e a cortesia com que ela começa
@@ -211,6 +423,9 @@ object SpeechIntentClassifier {
     private fun complete(folded: String): SpeechIntent? {
         val rest = withoutFiller(folded)
         val hit = opensWith(jaFiz, rest) ?: opensWith(conclui, rest) ?: return null
+        if (hasCorrection(rest.substring(hit.range.last + 1))) {
+            return SpeechIntent.Unknown(UnsupportedKind.CORRECTION)
+        }
         return SpeechIntent.Complete(targetAfter(rest, hit.range.last + 1))
     }
 
@@ -227,6 +442,9 @@ object SpeechIntentClassifier {
     private fun cancel(folded: String): SpeechIntent? {
         val rest = withoutFiller(folded)
         val hit = opensWith(cancela, rest) ?: return null
+        if (hasCorrection(rest.substring(hit.range.last + 1))) {
+            return SpeechIntent.Unknown(UnsupportedKind.CORRECTION)
+        }
         return SpeechIntent.Cancel(targetAfter(rest, hit.range.last + 1))
     }
 
@@ -336,6 +554,12 @@ object SpeechIntentClassifier {
         val target = targetAfter(rest, hit.range.last + 1)
         // Sem alvo ("apaga", "deleta") não há o que casar: é captura, como sempre foi.
         if (target.isEmpty()) return null
+        // "apaga o remédio, não, o de pressão": o terceiro caminho destrutivo. Quem decide o
+        // desfecho aqui é a agenda (ver [SpeechIntent.EraseNamed]), e com o alvo descartado ela
+        // apagaria a tarefa errada — a mesma classe de dano do [cancel] e do [complete].
+        if (hasCorrection(folded.substring(hit.range.last + 1))) {
+            return SpeechIntent.Unknown(UnsupportedKind.CORRECTION)
+        }
         // Um demonstrativo sozinho não nomeia nada — é o "apaga isso" escrito de outro jeito, e
         // o desfecho é o mesmo: reconhecer e não executar, nunca procurar uma tarefa "essa".
         if (target in DEMONSTRATIVOS) return SpeechIntent.Unknown(UnsupportedKind.ERASE)

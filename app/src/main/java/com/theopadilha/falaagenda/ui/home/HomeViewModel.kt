@@ -1002,5 +1002,7 @@ class HomeViewModel(
             "Ainda não sei mudar uma tarefa falando. Toque na tarefa na lista para editar."
         UnsupportedKind.ERASE ->
             "Ainda não sei apagar falando. Toque na tarefa na lista e use Excluir."
+        UnsupportedKind.CORRECTION ->
+            "Não entendi qual é a tarefa. Diga só o nome dela, ou use os botões da lista."
     }
 }

@@ -38,6 +38,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.QuietHours
+import com.theopadilha.falaagenda.speech.OfflineVoiceStatus
 import com.theopadilha.falaagenda.BuildConfig
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
@@ -66,6 +67,7 @@ fun SettingsScreen(
     val configured = container.supabase.isConfigured
     val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(container))
     val message by vm.message.collectAsState()
+    val voice = vm.voiceOffline.collectAsState()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -157,6 +159,16 @@ fun SettingsScreen(
                 }
             }
 
+            // Depois do silêncio, e não no topo: a tela rola, mas o que fica acima da
+            // dobra é o que ela vê sem arrastar — e o ajuste que ela veio mudar é o do
+            // silêncio. Este cartão é leitura, não ajuste.
+            QuietCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Voz do celular", style = MaterialTheme.typography.titleMedium)
+                    Text(voiceOfflineMessage(voice.value), style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
             QuietCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Ajuda extra (opcional)", style = MaterialTheme.typography.titleMedium)
@@ -219,4 +231,37 @@ fun SettingsScreen(
             text = { TimePicker(state = state) },
         )
     }
+}
+
+/**
+ * O que a tela de ajustes diz sobre a voz do celular.
+ *
+ * Mora fora do composable, como `voiceErrorMessage`, para o teste poder prendê-lo sem
+ * montar a tela.
+ *
+ * A regra que governa cada frase: **o app nunca faz ela achar que fez algo errado**. A
+ * reclamação dela era "o áudio nunca funciona", e o caminho da voz offline não dizia
+ * nada em lugar nenhum — o modelo de 31 MB podia estar baixando, ter falhado, ou nunca
+ * ter sido tentado, e a tela era igual nos três casos. Agora ela sabe, sem levar culpa
+ * por nenhum deles: a falha não tem "erro" nem "falhou", e a saída é a mesma de sempre —
+ * usar o microfone, que é o que de fato tenta de novo (uma tentativa por pedido de voz).
+ *
+ * Sem jargão pelo mesmo motivo que "reconhecimento do aparelho" saiu de
+ * `voiceErrorMessage`: quem lê não sabe o que é modelo, motor ou download, e um termo
+ * desses só serviria para ela achar que o problema é dela.
+ */
+internal fun voiceOfflineMessage(status: OfflineVoiceStatus): String = when (status) {
+    OfflineVoiceStatus.NaoInstalado ->
+        "A voz do seu celular ainda não foi preparada. Toque no microfone para preparar."
+    // O estado que ela mais vai ver: são 31 MB, e o download pode durar. Dizer que pode
+    // usar o microfone normalmente é o que evita ela achar, no meio do caminho, que
+    // quebrou alguma coisa.
+    OfflineVoiceStatus.Instalando ->
+        "Estamos preparando a voz do celular. Pode usar o microfone normalmente."
+    OfflineVoiceStatus.Pronto -> "A voz do seu celular está pronta."
+    // "Tente de novo" seria um botão que não existe: a segunda tentativa é o próximo
+    // toque no microfone, e é isso que a frase diz. O motivo real fica no estado e no
+    // log, para quem atende o telefone diagnosticar à distância.
+    is OfflineVoiceStatus.Falhou ->
+        "Não deu para preparar a voz do celular. Use o microfone normalmente; na próxima vez tentamos de novo."
 }

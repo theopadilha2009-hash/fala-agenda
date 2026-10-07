@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.RingtoneManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -54,8 +55,17 @@ object NotificationHelper {
      * lembrada isso é quase o mesmo que não sair. São dois caminhos até aqui — o canal rebaixado
      * nas configurações e o canal que continua alto com o som posto em "Nenhum" —, e o segundo é
      * o que passava como saudável.
+     *
+     * [APARELHO_MUDO] é o canal certo num aparelho que não deixa soar: o volume do alarme está no
+     * mínimo. O canal está alto, com som de alarme e vibrando — a sondagem antiga parava aqui e
+     * dizia "avisos OK" —, e o lembrete saía num celular que não toca. É a queixa literal dela
+     * ("o áudio nunca funciona") vista do outro lado: não é o aviso que falha, é o aparelho que
+     * está sem deixar soar, e o aplicativo tem que dizer isso em vez de se declarar saudável.
+     *
+     * É um estado próprio, e não um [QUIET], porque o conserto é outro: o canal mudo se arruma
+     * nos Ajustes DO CANAL, e o aparelho mudo se arruma no volume do próprio celular.
      */
-    enum class ReminderAlerts { OK, OFF, QUIET }
+    enum class ReminderAlerts { OK, OFF, QUIET, APARELHO_MUDO }
 
     /**
      * O canal do lembrete, que é um alarme — e não um aviso de mensagem.
@@ -99,8 +109,10 @@ object NotificationHelper {
     /**
      * O próximo lembrete vai sair sem som, sem vibração e sem aparecer sobre a tela?
      * Acontece quando o app está sem permissão de notificação, quando o canal foi desligado
-     * ou quando foi rebaixado nas configurações do aparelho. A resposta vem do canal gravado,
-     * não da constante: o sistema ignora uma criação que tente subir a importância de volta.
+     * ou quando foi rebaixado nas configurações do aparelho — e também quando o canal está certo
+     * mas o volume do alarme do aparelho está no mínimo ([ReminderAlerts.APARELHO_MUDO]). A
+     * resposta vem do canal gravado, não da constante: o sistema ignora uma criação que tente
+     * subir a importância de volta.
      *
      * O aplicativo NÃO toca som próprio quando esta resposta é `true`, e é de propósito. Uma
      * notificação bloqueada não sai de jeito nenhum, e um `MediaPlayer` não conserta isso —
@@ -128,6 +140,11 @@ object NotificationHelper {
      * A ordem importa: o canal DESLIGADO sai primeiro porque ele não é "sem som" — com
      * [NotificationManager.IMPORTANCE_NONE] a notificação não aparece de forma nenhuma, e contá-lo
      * como mudo faria o app dizer "sem som" enquanto o remédio das 08:00 nunca mais saía.
+     *
+     * O aparelho entra DEPOIS do canal, e a ordem é essa porque o canal descreve o caminho da
+     * notificação e o aparelho descreve o que acontece com o som no fim dele: não adianta arrumar
+     * o volume de um aparelho cujo canal está desligado, e o cartão que ela precisa ver primeiro é
+     * o do canal. Com o canal saudável, sobra o volume — e é ele que este veredito não olhava.
      */
     fun reminderAlerts(context: Context): ReminderAlerts {
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return ReminderAlerts.OFF
@@ -136,7 +153,51 @@ object NotificationHelper {
         if (canal.importance == NotificationManager.IMPORTANCE_NONE) return ReminderAlerts.OFF
         if (canal.importance < NotificationManager.IMPORTANCE_DEFAULT) return ReminderAlerts.QUIET
         // Canal alto mas mudo é o mesmo desfecho que canal rebaixado: o lembrete sai, ninguém ouve.
-        return if (channelSilenced(canal)) ReminderAlerts.QUIET else ReminderAlerts.OK
+        if (channelSilenced(canal)) return ReminderAlerts.QUIET
+        // Canal certo, aparelho mudo: o lembrete sai e o celular não toca. Era o "avisos OK".
+        return if (alarmeDoAparelhoMudo(context)) ReminderAlerts.APARELHO_MUDO else ReminderAlerts.OK
+    }
+
+    /**
+     * O volume do alarme do aparelho está no mínimo, então nenhum lembrete vai soar?
+     *
+     * O canal do lembrete sobe em [AudioAttributes.USAGE_ALARM] — é um alarme, e não um aviso de
+     * mensagem —, e o som de um alarme sai pelo volume de ALARME do aparelho. Com esse volume
+     * zerado (um toque na tecla de volume, ou o volume do despertador baixado e esquecido), o
+     * lembrete é entregue e não toca: a mesma experiência muda que ela descreve como "o áudio
+     * nunca funciona", agora com o aplicativo dizendo que estava tudo bem.
+     *
+     * **Só o volume zero conta, e isso é de propósito.** O critério poderia acender o cartão para
+     * "volume baixo", mas um degrau acima do zero ainda toca — e um cartão que aparece para quem
+     * continua sendo avisada ensina a ignorá-lo, que é pior do que não ter cartão nenhum.
+     * `STREAM_ALARM` vai de 0 a 7, e o zero é o único degrau em que não há som audível.
+     *
+     * O critério é `== 0`, e não `<= getStreamMinVolume()`, porque no Android 9+ o mínimo do
+     * stream de alarme é **1**, não zero (`MIN_STREAM_VOLUME[STREAM_ALARM]`), e o `getStreamVolume`
+     * devolve 0 quando o stream está mudo. Comparar com o mínimo acenderia o cartão no degrau 1 —
+     * que é audível, é o ajuste mais baixo do controle de volume —, ou seja, exatamente o alarme
+     * falso que este KDoc recusa. O zero é o único valor que significa "não toca" nos dois lados.
+     *
+     * **O modo silencioso NÃO entra, e é o ponto mais delicado.** O silencioso e o Não Perturbe
+     * governam o toque e as notificações comuns; o alarme é justamente o que costuma sobreviver
+     * aos dois — quem põe o celular no silencioso à noite espera que o despertador ainda toque.
+     * Tratar silencioso como mudo acenderia o cartão para quem está deixando soar, e o risco aqui
+     * é o inverso do defeito: um cartão sempre aceso não avisa mais nada. Por isso o modo de
+     * toque é lido e descartado de propósito — o volume é o único sinal que o aplicativo pode
+     * afirmar sem medir o comportamento de plataforma do aparelho dela.
+     *
+     * O que este critério **não** alcança, e é limite honesto: o Não Perturbe com o alarme
+     * bloqueado de propósito (uma escolha dela, e o aplicativo não deve passar por cima), e um
+     * aparelho cujo volume de alarme o sistema trate de outro jeito. Os dois só se medem no
+     * aparelho, e não no Robolectric.
+     *
+     * `getStreamMinVolume` só existe a partir do Android 9, mas não é ele que a comparação usa:
+     * o critério é o zero literal, que vale em todas as versões e é o único que significa "não
+     * toca". Não há checagem de versão aqui de propósito.
+     */
+    private fun alarmeDoAparelhoMudo(context: Context): Boolean {
+        val audio = context.getSystemService(AudioManager::class.java) ?: return false
+        return audio.getStreamVolume(AudioManager.STREAM_ALARM) == 0
     }
 
     /**
@@ -202,7 +263,11 @@ object NotificationHelper {
             NotificationManagerCompat.from(context)
                 .notify(AlarmIds.requestCode(occurrenceId, AlarmIds.NOTIF_REMINDER), notification)
             if (remindersWillBeSilent(context)) {
-                Log.w(TAG, "Lembrete $occurrenceId apareceu sem som: canal $CHANNEL_ID rebaixado")
+                Log.w(
+                    TAG,
+                    "Lembrete $occurrenceId apareceu sem som: canal $CHANNEL_ID rebaixado " +
+                        "ou volume de alarme do aparelho zerado",
+                )
             }
             ReminderDelivery.POSTED
         } catch (e: SecurityException) {
@@ -262,7 +327,11 @@ object NotificationHelper {
             )
             // Aqui ela precisa notar: um aviso mudo é quase tão ruim quanto nenhum.
             if (remindersWillBeSilent(context)) {
-                Log.w(TAG, "Aviso de ação não aplicada $occurrenceId apareceu sem som: canal rebaixado")
+                Log.w(
+                    TAG,
+                    "Aviso de ação não aplicada $occurrenceId apareceu sem som: canal rebaixado " +
+                        "ou volume de alarme do aparelho zerado",
+                )
             }
             ReminderDelivery.POSTED
         } catch (e: SecurityException) {

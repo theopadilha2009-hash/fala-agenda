@@ -7,6 +7,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.R
@@ -54,6 +55,17 @@ class LembreteQueFazBarulhoTest {
         shadowOf(ApplicationProvider.getApplicationContext<Application>())
             .grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         shadowOf(gerente).setNotificationsEnabled(true)
+    }
+
+    /**
+     * O eixo do aparelho fora do caminho: o Robolectric nasce com o volume de alarme zerado, e
+     * sem isto o veredito seria [NotificationHelper.ReminderAlerts.APARELHO_MUDO] — que é um
+     * defeito do aparelho, e não o do canal que estes casos medem. O aparelho audível é o
+     * pressuposto deles, agora explícito.
+     */
+    private fun aparelhoAudivel() {
+        val audio = contexto.getSystemService(AudioManager::class.java)
+        audio.setStreamVolume(AudioManager.STREAM_ALARM, audio.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
     }
 
     private fun criarCanalMudo(importancia: Int) {
@@ -188,6 +200,7 @@ class LembreteQueFazBarulhoTest {
     @Test
     fun canalAltoComOVibraLigadoNaoEhTratadoComoSemSom() {
         liberarNotificacoes()
+        aparelhoAudivel()
         gerente.createNotificationChannel(
             NotificationChannel(
                 NotificationHelper.CHANNEL_ID, "Lembretes", NotificationManager.IMPORTANCE_HIGH,
@@ -205,6 +218,7 @@ class LembreteQueFazBarulhoTest {
     @Test
     fun canalAltoComSomEhAvisoQueFunciona() {
         liberarNotificacoes()
+        aparelhoAudivel()
         NotificationHelper.ensureChannel(contexto)
 
         assertThat(NotificationHelper.reminderAlerts(contexto))

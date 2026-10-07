@@ -22,10 +22,32 @@ class ReminderAlertCardTest {
     fun cadaEstadoTemTituloTextoEBotaoProprios() {
         val desligados = reminderAlertCard(ReminderAlerts.OFF)!!
         val semSom = reminderAlertCard(ReminderAlerts.QUIET)!!
+        val aparelhoMudo = reminderAlertCard(ReminderAlerts.APARELHO_MUDO)!!
 
-        assertThat(desligados.title).isNotEqualTo(semSom.title)
-        assertThat(desligados.text).isNotEqualTo(semSom.text)
-        assertThat(desligados.button).isNotEqualTo(semSom.button)
+        val cartoes = listOf(desligados, semSom, aparelhoMudo)
+        assertThat(cartoes.map { it.title }.toSet()).hasSize(cartoes.size)
+        assertThat(cartoes.map { it.text }.toSet()).hasSize(cartoes.size)
+        assertThat(cartoes.map { it.button }.toSet()).hasSize(cartoes.size)
+    }
+
+    /**
+     * O aparelho mudo tem cartão próprio — o canal está certo, o que não deixa soar é o volume do
+     * celular. O texto diz o que vai acontecer se ela não mexer ("aparece na tela, mas não faz
+     * barulho") e aponta o botão como o caminho, que é o que ela precisa para o lembrete não
+     * virar mais um "não funcionou".
+     *
+     * O caminho é o botão, e **não** a tecla de volume do lado do celular: fora do toque de um
+     * alarme a tecla mexe no volume de mídia, e mandá-la apertar ali não subiria o volume que o
+     * lembrete usa. Um texto acionável que aponta o gesto errado é o mesmo cartão sem conserto.
+     */
+    @Test
+    fun oAparelhoMudoDizOndeAumentarOVolume() {
+        val aparelhoMudo = reminderAlertCard(ReminderAlerts.APARELHO_MUDO)!!
+
+        assertThat(aparelhoMudo.title).contains("volume")
+        assertThat(aparelhoMudo.text).contains("não faz barulho")
+        assertThat(aparelhoMudo.text).contains("aumente o volume")
+        assertThat(aparelhoMudo.text).doesNotContain("tecla")
     }
 
     @Test
@@ -59,6 +81,17 @@ class ReminderAlertCardTest {
     @Test
     fun canalRebaixadoVaiAosAjustesDoCanal() {
         assertThat(alertFix(ReminderAlerts.QUIET)).isEqualTo(AlertFix.OPEN_CHANNEL_SETTINGS)
+    }
+
+    /**
+     * O aparelho mudo NÃO se conserta na tela do canal: lá o canal já está certo, alto e com som.
+     * O que falta é o volume do celular, e mandá-la de novo aos Ajustes do canal daria um botão
+     * que não muda nada — o mesmo defeito do botão que abria uma tela sem nada para ligar.
+     */
+    @Test
+    fun oAparelhoMudoVaiAosAjustesDeSomENaoDoCanal() {
+        assertThat(alertFix(ReminderAlerts.APARELHO_MUDO)).isEqualTo(AlertFix.OPEN_SOUND_SETTINGS)
+        assertThat(alertFix(ReminderAlerts.APARELHO_MUDO)).isNotEqualTo(AlertFix.OPEN_CHANNEL_SETTINGS)
     }
 
     /** O pedido resolveu: não há Ajustes a abrir. */

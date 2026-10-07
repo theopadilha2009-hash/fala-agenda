@@ -612,6 +612,12 @@ fun HomeScreen(
                                                 channelNotificationSettings(context),
                                                 "Não consegui abrir os ajustes de aviso deste celular.",
                                             )
+                                            // O canal está certo e o volume do aparelho não: a tela
+                                            // de som é onde se sobe o volume do alarme.
+                                            AlertFix.OPEN_SOUND_SETTINGS -> openOrReport(
+                                                soundSettings(),
+                                                "Não consegui abrir os ajustes de som deste celular.",
+                                            )
                                             null -> Unit
                                         }
                                     },
@@ -987,6 +993,15 @@ private fun channelNotificationSettings(context: Context): Intent =
     Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
         .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
         .putExtra(Settings.EXTRA_CHANNEL_ID, NotificationHelper.CHANNEL_ID)
+
+/**
+ * Os Ajustes de SOM do aparelho: é onde mora o volume que o lembrete usa. O canal do lembrete
+ * está alto, com som de alarme e vibrando — o que falta é o volume do celular, e a tela do canal
+ * não tem esse controle. Aqui ela sobe o volume do alarme, que é o mesmo do despertador que ela
+ * já conhece.
+ */
+private fun soundSettings(): Intent =
+    Intent(Settings.ACTION_SOUND_SETTINGS)
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable

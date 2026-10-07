@@ -198,14 +198,15 @@ class HybridParser(
             if (finalTemData && finalTemHora) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
         }
         val doLocal = locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } }
-        // A nota de recorrência perdida é **do remoto**, e por isso não passa pelo desmentido por
-        // prefixo: quem decide se ela é verdade é o desfecho do merge, não quem a escreveu.
+        // As notas **do remoto** não passam pelo desmentido por prefixo do local: quem decide se
+        // elas são verdade é o desfecho do merge, não quem as escreveu.
         //
-        // A fronteira da IA rebaixa a regra a `NONE` quando falta o campo que ela descreve e escreve
-        // a nota junto (`SupabaseFunctions.notaDaRecorrenciaIncompleta`). O `toDraft` está certo: a
-        // regra que ele produz não repete. O que a desfaz é o `mergeRemote`, uma camada acima — ele
-        // só aceita a recorrência do remoto quando ela `isRecurring`, então a regra rebaixada é
-        // descartada e a do **local** volta. Mantida, a nota falava de uma perda que não houve:
+        // A de recorrência: a fronteira da IA rebaixa a regra a `NONE` quando falta o campo que ela
+        // descreve e escreve a nota junto (`SupabaseFunctions.notaDaRecorrenciaIncompleta`). O
+        // `toDraft` está certo: a regra que ele produz não repete. O que a desfaz é o `mergeRemote`,
+        // uma camada acima — ele só aceita a recorrência do remoto quando ela `isRecurring`, então a
+        // regra rebaixada é descartada e a do **local** volta. Mantida, a nota falava de uma perda
+        // que não houve:
         //
         //     fala "todo dia 5 do mês"
         //       local: MONTHLY dia=5 (falta a hora, escala)
@@ -213,24 +214,46 @@ class HybridParser(
         //       final: MONTHLY dia=5, 'Todo dia 5 do mês', isComplete=true, qc=true
         //              notes=[...mas não disse o dia. Ficou sem repetir.]
         //
-        // A caixa "Pode salvar?" mostrava a regra certa com o aviso de perda logo abaixo, em
+        // As de data/hora são a **mesma classe**, e é por isso que elas descem para cá também. A
+        // fronteira descarta o `local_date` que não é data e escreve "Ficou sem essa parte"; o merge
+        // restaura a data que o **local** tinha (`mergedDate = remoteDraft.localDate ?:
+        // localDraft.localDate`) e a parte não sumiu:
+        //
+        //     fala "reunião 25/10"
+        //       local: data=2026-10-25, hora=null → escala (falta a hora)
+        //       IA:    {"local_date":"2026-02-30","local_time":"10:00"} → data descartada + nota
+        //       final: data=2026-10-25, hora=10:00, canQuickConfirm=true
+        //              notes=[...devolveu uma data que não deu para entender. Ficou sem essa parte.]
+        //
+        // A caixa "Pode salvar?" mostrava a data certa com o aviso de perda logo abaixo, em
         // vermelho, no caminho do salvamento com um toque. A doutrina do `HybridParser` — a
         // contradição visível que o app inteiro evita — vale na direção inversa: não afirmar uma
         // perda que não houve.
         //
-        // O critério é o desfecho final (`recurrence.isRecurring`), e não "o local tinha
-        // recorrência": quando o local também não reconheceu nada, o final é `NONE` e a nota fica —
-        // e aí ela é verdadeira, e sem ela a perda seria silenciosa.
-        val doRemoto = if (recorrenciaFinalRepete) {
-            // As duas notas falam da mesma coisa — a repetição se perdeu — e caem juntas quando o
-            // desfecho mostra que ela não se perdeu. A de faixa entra aqui pelo mesmo motivo: com o
-            // campo inválido descartado e o local restaurando a regra, "Ficou sem essa parte" é
-            // falso, porque a parte está lá.
-            remotas.filterNot {
-                it.startsWith(NOTA_RECORRENCIA_PERDIDA) || it.startsWith(NOTA_FAIXA_DESCARTADA)
-            }
-        } else {
-            remotas
+        // São **dois juízes**, e cada nota responde ao seu. O da recorrência pergunta "o desfecho
+        // repete?"; quando repete, a perda não houve e as duas notas que a afirmam caem juntas — a
+        // de recorrência incompleta e a de faixa (o campo inválido descartado, com o local
+        // restaurando a regra, não custou nada: "Ficou sem essa parte" é falso, a parte está lá).
+        // Quando o local também não reconheceu nada, o final é `NONE` e as notas ficam — e aí são
+        // verdadeiras, e sem elas a perda seria silenciosa.
+        //
+        // O da data/hora pergunta "o campo **existe** no rascunho?" — o mesmo juiz, com o sinal
+        // trocado porque a pergunta é outra: a recorrência pergunta "repete?", a data pergunta
+        // "existe?". Ele não depende da recorrência, e por isso é avaliado fora do `if`: uma nota de
+        // data ao lado de uma regra que repete continua sendo uma nota falsa se a data está lá.
+        //
+        // As listas não se atropelam: `IA_SOBRE_A_DATA`/`IA_SOBRE_A_HORA` falam do `local_date`/
+        // `local_time`; `NOTA_FAIXA_DESCARTADA` fala do campo da **recorrência** (`day_of_month`,
+        // `month_of_year`). Prefixos distintos, assuntos distintos — a de faixa não entra em
+        // `IA_SOBRE_A_DATA`.
+        val notasQueOFinalDesmente = buildSet {
+            if (finalTemData) addAll(NotasDoRascunho.IA_SOBRE_A_DATA)
+            if (finalTemHora) addAll(NotasDoRascunho.IA_SOBRE_A_HORA)
+        }
+        val doRemoto = remotas.filterNot { nota ->
+            (recorrenciaFinalRepete &&
+                (nota.startsWith(NOTA_RECORRENCIA_PERDIDA) || nota.startsWith(NOTA_FAIXA_DESCARTADA))) ||
+                notasQueOFinalDesmente.any { nota.startsWith(it) }
         }
         return (doLocal + doRemoto).distinct()
     }

@@ -7,6 +7,7 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.toMonthPtBr
 import com.theopadilha.falaagenda.domain.parser.HybridParser
+import com.theopadilha.falaagenda.domain.parser.NotasDoRascunho
 import com.theopadilha.falaagenda.domain.parser.RemoteDraftParser
 import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import kotlinx.serialization.SerialName
@@ -106,12 +107,19 @@ private val JSON = "application/json; charset=utf-8".toMediaType()
 private const val NOTA_FAIXA_INVALIDA =
     HybridParser.NOTA_FAIXA_DESCARTADA + ". Ficou sem essa parte."
 
-/** A mesma ideia, para os dois campos que a IA devolve como texto: `local_date` e `local_time`. */
+/**
+ * A mesma ideia, para os dois campos que a IA devolve como texto: `local_date` e `local_time`.
+ *
+ * A frase começa com a marca que mora em [NotasDoRascunho] de propósito: quem decide se a nota é
+ * verdade não é quem a escreve. O merge do `HybridParser` pode restaurar a data/hora do local e
+ * desfazer o descarte — e nesse caso suprime esta nota pelo prefixo. Com a marca vinda do mesmo
+ * lugar que a desmente, o par escreve/suprime não pode divergir.
+ */
 private const val NOTA_DATA_ILEGIVEL =
-    "A ajuda extra devolveu uma data que não deu para entender. Ficou sem essa parte."
+    NotasDoRascunho.IA_DATA_ILEGIVEL + " Ficou sem essa parte."
 
 private const val NOTA_HORA_ILEGIVEL =
-    "A ajuda extra devolveu um horário que não deu para entender. Ficou sem essa parte."
+    NotasDoRascunho.IA_HORA_ILEGIVEL + " Ficou sem essa parte."
 
 /** O mês só existe em `1..12`; o dia só existe em `1..31`. Fora disso é dado da IA, não um pedido. */
 private fun faixaDaRecorrencia(

@@ -52,4 +52,24 @@ object NotasDoRascunho {
 
     /** Notas que falam do instante final: caem quando o rascunho final tem data e hora. */
     val SOBRE_O_INSTANTE = listOf(INSTANTE_PASSADO)
+
+    /**
+     * A nota da IA que diz que a data **não deu para entender** e "ficou sem essa parte".
+     *
+     * Ao contrário das de cima, ela não nasce do parser local: nasce na fronteira da IA
+     * (`SupabaseFunctions`), quando `local_date` não é uma data. Quem decide se ela é verdade,
+     * porém, é o mesmo juiz: o **desfecho do merge**. O `mergeRemote` só aceita a data do remoto
+     * quando ela existe, então uma data que o **local** cravou volta e a parte não sumiu — e aí a
+     * nota mente. O `HybridParser` a suprime pelo prefixo; por isso a marca mora aqui, junto das
+     * outras, e a fronteira compõe o texto a partir dela — o par escreve/suprime não pode divergir
+     * sem que o compilador veja.
+     */
+    const val IA_DATA_ILEGIVEL = "A ajuda extra devolveu uma data que não deu para entender."
+
+    /** A mesma ideia para a hora: o prefixo da nota de `local_time` ilegível da IA. */
+    const val IA_HORA_ILEGIVEL = "A ajuda extra devolveu um horário que não deu para entender."
+
+    /** As notas da IA que falam da data/hora perdida: caem quando o rascunho final tem aquele campo. */
+    val IA_SOBRE_A_DATA = listOf(IA_DATA_ILEGIVEL)
+    val IA_SOBRE_A_HORA = listOf(IA_HORA_ILEGIVEL)
 }

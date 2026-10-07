@@ -1129,6 +1129,24 @@ class LocalTaskParser(
             return DateHit(date, remaining, false)
         }
 
+        // DOIS dias relativos na mesma fala ("hoje e amanhã às 9h", "amanhã e depois de amanhã"):
+        // os três ramos abaixo devolvem no PRIMEIRO que casa, e o segundo dia nunca era olhado —
+        // a fala virava um dia só, completa e confirmável num toque, com o dia descartado sobrando
+        // no título ("Hoje", "Dentista hoje"). O modelo tem UM `localDate`; com dois dias ditos não
+        // existe "a" data, e cravar uma delas calado é o defeito. É o gêmeo do `days.size > 1`
+        // (dois dias da semana) e do "no dia 25 e no dia 30": escala em vez de escolher.
+        //
+        // O guard é do tamanho do defeito: só conta expressão de dia RELATIVO, e só morde com DUAS
+        // ou mais. "amanhã" sozinho, "hoje" sozinho e "depois de amanhã" sozinho continuam sendo
+        // cravados — a régua larga demais derruba fala legítima e é pior que a pergunta.
+        if (diasRelativosDitos(remaining) > 1) {
+            return DateHit(
+                null,
+                stripDayWords(remaining),
+                true,
+                "${NotasDoRascunho.DATA_AMBIGUA} a fala diz mais de um dia. Não dá para cravar um só.",
+            )
+        }
         Regex("""\bdepois\s+de\s+amanha\b""").find(remaining)?.let {
             remaining = remaining.replace(it.value, " ")
             return DateHit(today.plusDays(2), remaining, false)
@@ -1516,6 +1534,16 @@ class LocalTaskParser(
         remaining = remaining.replace(Regex("""\bamanha\b|\bhoje\b"""), " ")
         return TextNormalizer.compactSpaces(remaining)
     }
+
+    /**
+     * Quantas expressões de dia RELATIVO a fala diz — nunca QUAL delas. Quem responde "existe uma
+     * data que as honre?" é o chamador; aqui só se conta.
+     *
+     * A ordem da alternância é a regra: `depois de amanhã` vem antes de `amanhã` para casar
+     * inteiro. Sem isso o `findAll` contaria duas expressões ("depois de amanhã" e o "amanhã" de
+     * dentro) e o dia ÚNICO que ela disse escalaria sozinho.
+     */
+    private fun diasRelativosDitos(text: String): Int = DIAS_RELATIVOS.findAll(text).count()
 
     private data class PeriodHit(val hint: String?, val label: String, val remaining: String)
 
@@ -2293,6 +2321,14 @@ class LocalTaskParser(
 
         /** "semana que vem" sozinha (sem dia da semana): a data é a próxima semana, no mesmo dia. */
         private val WEEK_PHRASE = Regex("""\b(?:na\s+|da\s+)?semana\s+que\s+vem\b""")
+
+        /**
+         * As expressões de dia relativo que o parser resolve sem conta: `depois de amanhã`, `amanhã`
+         * e `hoje`. A alternância mantém `depois de amanhã` inteiro (a armadilha é ele conter
+         * "amanhã"), e é por isso que a contagem de dias ditos não pode ser feita com três `find`
+         * soltos — o dia único escalaria sozinho.
+         */
+        private val DIAS_RELATIVOS = Regex("""\bdepois\s+de\s+amanha\b|\bamanha\b|\bhoje\b""")
 
         /** "no começo/início do mês": primeiro dia do mês seguinte quando o dia 1 já passou. */
         private val MONTH_START = Regex("""\b(?:no\s+)?(?:comeco|inicio)\s+do\s+(?:mes(?:\s+que\s+vem)?|proximo\s+mes)\b""")

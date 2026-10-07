@@ -75,6 +75,17 @@ class LocalTaskParser(
             remaining = hit.remaining
         }
 
+        // O texto para a checagem das duas tomadas: a frase INTEIRA com o valor em reais já fora.
+        //
+        // Dois extratores mexem no texto antes desta checagem, e os dois não podem valer igual para
+        // ela. O `extractAmount` PRECISA valer: o "12" de "… às 8 da manhã e 12 reais" é dinheiro,
+        // não um segundo horário, e ler a frase inteira fazia o preço derrubar o 08:00 que ela disse.
+        // O `stripWeekDays` NÃO pode valer: ele apaga o "e" junto com os dias da semana, e ali o "e"
+        // É a conjunção que separa as duas tomadas ("toda segunda às 8 da manhã e 8 da noite").
+        //
+        // Tirar o valor de `working` (antes do `stripWeekDays`) dá as duas coisas de uma vez: sem o
+        // dinheiro e com a conjunção. O `remaining` do relógio só serve para o preço.
+        val semValor = extractAmount(working)?.remaining ?: working
         val timeHit = extractTime(remaining)
         remaining = timeHit.remaining
         var localTime = timeHit.time
@@ -91,9 +102,11 @@ class LocalTaskParser(
         // oferecia um horário que ela não falou, e a segunda dose (20h) não existia em campo nenhum.
         // É o mesmo modo de falha mais caro do app — número errado confirmável em um toque.
         //
-        // A leitura é sobre `working`, e não sobre o `remaining` do relógio: `stripWeekDays` apaga o
-        // "e" junto com os dias da semana ("toda segunda às 8 da manhã e 8 da noite"), e ali o "e"
-        // É a conjunção que separa as duas tomadas.
+        // A leitura é sobre `semValor` — o texto que ainda tem o "e" e já não tem o dinheiro —, e
+        // não sobre o `remaining` do relógio nem sobre o `working` cru. Ver a montagem de
+        // `semValor` acima: o `stripWeekDays` apaga o "e" junto com os dias da semana ("toda
+        // segunda às 8 da manhã e 8 da noite") e ali o "e" É a conjunção que separa as tomadas;
+        // o valor em reais, ao contrário, tem que sair do caminho, senão o preço vira horário.
         //
         // O `TaskSeries` guarda UM `localTime` — não há onde pôr as duas, e escolher uma delas seria
         // inventar. Ambíguo com nota, como quando a hora não foi dita, e o horário sai do rascunho:
@@ -104,7 +117,7 @@ class LocalTaskParser(
         // "às 8 da manhã e de noite" (período só, sem número) fica de fora de propósito: ali não há
         // um segundo horário dito, e o 08:00 do rascunho é a primeira dose, que ela falou.
         if (localTime != null && timeHit.hadPeriod) {
-            segundaTomadaNoMesmoDia(working)?.let { segunda ->
+            segundaTomadaNoMesmoDia(semValor)?.let { segunda ->
                 ambiguous = true
                 confidence = minOf(confidence, 0.5)
                 notes += "Parece haver dois horários no mesmo dia. A série guarda um horário por vez — confirme o horário."

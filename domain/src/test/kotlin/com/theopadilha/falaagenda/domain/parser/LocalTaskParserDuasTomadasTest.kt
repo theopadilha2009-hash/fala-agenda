@@ -184,12 +184,54 @@ class LocalTaskParserDuasTomadasTest {
             .isEqualTo(java.time.LocalTime.of(8, 30))
     }
 
+    // ---- O teto não pode ler um número que OUTRO extrator já consumiu ----
+
     @Test
-    fun periodoDaSegundaParteSemNumeroContinuaNaoInventando() {
-        // "às 8 da manhã e de noite": a segunda parte só diz o período, sem número. O parser já
-        // devolvia 08:00 sem ambiguidade; o certo é não cravar a segunda tomada — mas também não
-        // inventar um minuto. Aqui o que se prende é o "não crava a noite calada".
+    fun valorEmReaisDepoisDoPeriodoNaoViraSegundaTomada() {
+        // O valor em reais é lido ANTES do relógio, e o texto que o relógio recebe já não o tem.
+        // O "12" de "e 12 reais" não é horário nenhum — é dinheiro. Um critério que varre a frase
+        // INTEIRA conta esse número como segunda tomada e derruba o 08:00 que ela disse: a fala
+        // vira ambígua por causa do preço, não por causa de uma dose a mais.
+        //
+        // O par "12 reais" (ambíguo) × "30 reais" (seguro) é o que denuncia o defeito: o gatilho é
+        // o número caber em 0–23, e não existir um segundo horário.
+        val draft = parser.parse("pagar a conta às 8 da manhã e 12 reais")
+        assertThat(draft.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+        assertThat(draft.ambiguous).isFalse()
+        assertThat(draft.amountCents).isEqualTo(1200L)
+
+        val vinte = parser.parse("pagar a conta às 8 da manhã e 20 reais")
+        assertThat(vinte.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+        assertThat(vinte.ambiguous).isFalse()
+
+        // O "30" passa do teto, então já ficava seguro na base — é o controle que mostra que o
+        // problema é o teto lendo o número, não o número em si.
+        val trinta = parser.parse("pagar a conta às 8 da manhã e 30 reais")
+        assertThat(trinta.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+        assertThat(trinta.ambiguous).isFalse()
+    }
+
+    @Test
+    fun segundaTomadaContinuaSendoVistaQuandoOValorNaoEstaLá() {
+        // O outro lado do conserto: tirar o valor do caminho não pode cegar a regra para o caso
+        // que ela existe para pegar. Sem os "reais", o mesmo "e 12" é um horário.
+        val draft = parser.parse("tomar remédio todo dia às 8 da manhã e 12 da noite")
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+    }
+
+    @Test
+    fun periodoDaSegundaParteSemNumeroNaoCravaNemInventa() {
+        // "às 8 da manhã e de noite": a segunda parte só diz o período, sem número. NÃO há um
+        // segundo horário dito, então a regra dos dois horários não tem o que pegar — e o 08:00 é
+        // a primeira dose, que ela falou. Isto é uma FRONTEIRA, não um conserto: o desfecho é o
+        // mesmo antes e depois da correção, e por isso o teste prende o valor positivo (08:00, sem
+        // ambiguidade) em vez de só "não confirma" — que era verdade na base por falta de data.
         val draft = parser.parse("tomar remédio às 8 da manhã e de noite")
+        assertThat(draft.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+        assertThat(draft.ambiguous).isFalse()
+        // Confirma rápido é falso aqui só porque não há data dita — o horário, esse, é o que ela falou.
         assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
     }
 }

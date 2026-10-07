@@ -232,6 +232,21 @@ class LocalTaskParser(
      * caixa rápida confirma em silêncio é a pior classe de defeito deste projeto.
      */
     private fun extractAmount(text: String): AmountHit? {
+        // "2 mil e 500 reais", "2 mil e quinhentos reais": o valor composto — um número em DÍGITO
+        // escalado, o "e" e a parcela que fecha o valor. Vem antes do numérico porque sem ele o
+        // numérico re-ancorava no pedaço depois do "e" ("500 reais") e gravava R$500,00 no lugar de
+        // R$2.500,00; e o extenso re-ancorava no "mil e quinhentos reais", que o guard do dígito
+        // anterior recusava — o valor ficava nulo com o texto todo no título.
+        VALOR_COMPOSTO.find(text)?.let { m ->
+            if (conectorSemCentavos(text, m)) return null
+            val bruto = centsFromNumber(m.groupValues[1]) ?: return@let
+            val principal = escalaEmCentavos(bruto, m.groupValues[2]) ?: return@let
+            val parcela = reaisFromSpoken(m) ?: return@let
+            // As duas parcelas somadas não podem estourar o `Long`: o valor fica nulo e a fala
+            // inteira vai para o título, em vez de virar dinheiro pela metade.
+            if (parcela > Long.MAX_VALUE - principal) return null
+            return withCentavos(principal + parcela, text, m)
+        }
         REAIS_NUMERIC.find(text)?.let { m ->
             val numero = m.groups[1] ?: m.groups[3] ?: m.groups[5] ?: return@let
             val escala = m.groups[2] ?: m.groups[4] ?: m.groups[6]
@@ -340,7 +355,7 @@ class LocalTaskParser(
         var fim = reais.range.last + 1
         CENTAVOS.find(caudaDoValor(text, reais))?.let { tail ->
             val extra = centsFromSpoken(tail.groupValues[1])
-            if (extra != null && extra in 0..99) {
+            if (extra != null) {
                 total += extra
                 // O corte é por ÍNDICE na frase, e não pela concatenação do casamento com a cauda:
                 // o casamento do cifrão já termina no espaço, e a string remontada teria dois
@@ -354,6 +369,23 @@ class LocalTaskParser(
     /** Os centavos ditos em dígito ("50") ou por extenso ("cinquenta e cinco"). */
     private fun centsFromSpoken(raw: String): Long? =
         raw.toLongOrNull() ?: numberFromWords(TextNormalizer.compactSpaces(raw))
+
+    /**
+     * A parcela que o "e" acrescenta a um valor já escalado ("2 mil e 500", "2 mil e quinhentos"),
+     * em CENTAVOS. O dígito é lido pelo mesmo `centsFromNumber` do resto — ele já recusa o número
+     * malformado ("30.50") em vez de inventar uma leitura —, e a escala depois dele ("500 mil") é
+     * aplicada por fora.
+     */
+    private fun reaisFromSpoken(m: MatchResult): Long? {
+        val numero = m.groupValues[3]
+        if (numero.isNotEmpty()) {
+            val cents = centsFromNumber(numero) ?: return null
+            return escalaEmCentavos(cents, m.groupValues[4])
+        }
+        val extenso = m.groupValues[5]
+        if (extenso.isEmpty()) return null
+        return (numberFromWords(TextNormalizer.compactSpaces(extenso)) ?: return null) * 100
+    }
 
     /**
      * "1.500" e "1.234,56" são milhar por ponto e decimal por vírgula. Só o ponto de milhar
@@ -2044,6 +2076,22 @@ class LocalTaskParser(
         )
 
         /**
+         * "2 mil e 500 reais", "2 mil e quinhentos reais", "2 milhoes e 500 mil reais": o valor
+         * composto — a escala dita em DÍGITO, o "e" e a parcela que fecha o valor, em dígito ou por
+         * extenso. Sem este ramo o numérico re-ancorava no pedaço depois do "e" e gravava R$500,00
+         * no lugar de R$2.500,00, e o extenso re-ancorava no "mil e quinhentos reais", recusado pelo
+         * guard do dígito anterior — a fala ficava sem valor nenhum.
+         *
+         * Os grupos: 1-2 a parte em dígito com a escala, 3-4 a parcela em dígito com a escala dela,
+         * 5 a parcela por extenso. O "e" é o único conector: "2 mil 500 reais" não é fala.
+         */
+        private val VALOR_COMPOSTO = Regex(
+            """\b($BR_NUMBER)\s*(mil|milhao|milhoes)\s+e\s+""" +
+                """(?:($BR_NUMBER)\s*(mil|milhao|milhoes)?|((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*))""" +
+                """\s+(?:de\s+)?(?:reais|real)\b""",
+        )
+
+        /**
          * "meio milhão de reais" (500 mil) e "meio mil reais" (500): o "meio" é o multiplicador da
          * escala, e fica fora da alternância de palavras (senão casaria "meio real" = 50 centavos).
          * Vem antes do extenso, que sem ele casaria só o "milhão"/"mil" e gravaria o dobro.
@@ -2074,9 +2122,14 @@ class LocalTaskParser(
         /** O "e <número>" logo depois do valor: centavos que ela não nomeou (ver `conectorSemCentavos`). */
         private val CONECTOR_NUMERO = Regex("""\s+e\s+(?:$NUMBER_WORD_ALT)\b|\s+e\s+\d{1,2}\b""")
 
-        /** "e cinquenta centavos": os centavos falados depois do valor em reais. */
+        /**
+         * "e cinquenta centavos": os centavos falados depois do valor em reais. O dígito vale até
+         * três casas porque "100 centavos"/"150 centavos" são fala real (o reconhecimento às vezes
+         * devolve o centavo estourado): com duas casas o casamento nem acontecia, o valor saía só
+         * com os reais e o "100 centavos" ficava pendurado no título.
+         */
         private val CENTAVOS = Regex(
-            """\s+e\s+((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*|\d{1,2})\s+centavos?\b""",
+            """\s+e\s+((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*|\d{1,3})\s+centavos?\b""",
         )
 
         /** "meio real": cinquenta centavos — a única fração falada com o nome do dinheiro. */

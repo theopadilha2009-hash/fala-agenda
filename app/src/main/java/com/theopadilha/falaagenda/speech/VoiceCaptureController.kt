@@ -56,10 +56,31 @@ class VoiceCaptureController(
     private var offlineSpeech: OfflineSpeech? = null
 
     private val watchdog = Runnable { onWatchdog() }
+    private val hardLimit = Runnable { onHardLimit() }
 
     private fun armWatchdog(millis: Long) {
         handler.removeCallbacks(watchdog)
         handler.postDelayed(watchdog, millis)
+    }
+
+    /**
+     * O teto duro da escuta: armado **uma vez** por escuta, e nunca rearmado.
+     *
+     * O `LISTENING_TIMEOUT_MS` sozinho não é teto. Ele é rearmado a cada `onPartial` — de
+     * propósito, para não cortar quem dita por mais de 20 s —, e `onPartial` emite sempre que a
+     * string muda. O parcial do Vosk pode **oscilar** durante a pausa (uma revisão do mesmo
+     * enunciado: "tomar" → "tomar remédio" → "tomar"); se oscilar, cada revisão rearma o prazo
+     * de 20 s e o endpointer nunca fecha, porque cada revisão também reinicia a espera da pausa
+     * ([VoskUtterance]). A escuta ficaria aberta enquanto a oscilação durasse.
+     *
+     * Este teto é a resposta: um limite absoluto, contado de `onReady`, que nenhuma revisão
+     * consegue empurrar. Ele **não** fecha o recado em silêncio — passa por `giveUpOnTimeout`,
+     * então o texto que ficou chega marcado como cortado e ela vê o aviso. Cortar calado seria
+     * o defeito original de volta, com outra causa.
+     */
+    private fun armHardLimit() {
+        handler.removeCallbacks(hardLimit)
+        handler.postDelayed(hardLimit, HARD_LIMIT_MS)
     }
 
     /** Nenhum estado de escuta pode durar para sempre: se o motor não responde, sai daqui. */
@@ -70,6 +91,13 @@ class VoiceCaptureController(
             VoiceState.LISTENING -> giveUpOnTimeout(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
             VoiceState.UNDERSTANDING -> giveUpOnTimeout(SpeechRecognizer.ERROR_NO_MATCH)
             else -> Unit
+        }
+    }
+
+    private fun onHardLimit() {
+        if (!session) return
+        if (_ui.value.state == VoiceState.LISTENING) {
+            giveUpOnTimeout(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
         }
     }
 
@@ -254,6 +282,7 @@ class VoiceCaptureController(
             if (!session) return
             heardReady = true
             armWatchdog(LISTENING_TIMEOUT_MS)
+            armHardLimit()
             _ui.value = _ui.value.copy(state = VoiceState.LISTENING, error = null)
         }
 
@@ -311,6 +340,14 @@ class VoiceCaptureController(
         const val PREPARING_TIMEOUT_MS = 10_000L
         const val LISTENING_TIMEOUT_MS = 20_000L
         const val UNDERSTANDING_TIMEOUT_MS = 8_000L
+
+        /**
+         * O teto absoluto da escuta, contado do `onReady` e nunca rearmado. Generoso de
+         * propósito: quem dita um recado longo passa dos 20 s do [LISTENING_TIMEOUT_MS] sem
+         * problema, e este teto não existe para apressar ninguém — existe para que a escuta não
+         * fique aberta para sempre quando o parcial oscila (ver [armHardLimit]).
+         */
+        const val HARD_LIMIT_MS = 60_000L
     }
 }
 

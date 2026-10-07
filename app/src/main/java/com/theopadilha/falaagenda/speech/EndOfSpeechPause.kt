@@ -51,11 +51,12 @@ internal class EndOfSpeechPause(
     }
 }
 
-// atalho: sem teto próprio — quem corta é o LISTENING_TIMEOUT_MS do controller (20 s); é ele que
-// sobe se a queixa de corte no meio da frase voltar. O prazo é rearmado em `onSpeechBegin` e em
-// `onPartial` (e este só emite quando a string muda): para quem fala sem parar ele é empurrado
-// para frente a cada parcial e nunca vence, e para quem para no meio ele conta do último parcial
-// — ou do `onReady`, se nunca houve parcial —, não de "20 s de escuta".
+// atalho: a espera não tem teto próprio; quem fecha é o `HARD_LIMIT_MS` do controller (60 s,
+// contados do `onReady` e nunca rearmados), e é ele que sobe se a queixa de corte no meio da
+// frase voltar. O `LISTENING_TIMEOUT_MS` sozinho não serve de teto: ele é rearmado em
+// `onSpeechBegin` e em `onPartial` (e este só emite quando a string muda), então para quem fala
+// sem parar — ou para o parcial que oscila durante a pausa — ele é empurrado para frente a cada
+// parcial e nunca vence.
 internal const val MINIMUM_PAUSE_MS = 2_500L
 
 /**
@@ -68,9 +69,11 @@ internal const val MINIMUM_PAUSE_MS = 2_500L
  *
  * O que **não** está provado em aparelho é se o `partialResult` do Vosk chega idêntico durante a
  * pausa ou se oscila. Se ele oscilar — uma revisão do mesmo enunciado, e não fala nova —, cada
- * revisão entra aqui como fala nova e a espera recomeça. O desfecho é gracioso (espera mais, não
- * volta ao defeito do corte), mas o teste não prende isso: o que ele prende é o caso da string
- * idêntica.
+ * revisão entra aqui como fala nova e a espera recomeça. Isolada, o desfecho é gracioso (espera
+ * mais, não volta ao defeito do corte). **Contínua**, não: cada revisão também rearma o prazo de
+ * escuta do controller, e a escuta ficaria aberta enquanto a oscilação durasse — a mesma classe
+ * do defeito original. Quem fecha isso é o teto duro do controller (`HARD_LIMIT_MS`), que a
+ * oscilação não estende; o caso `aOscilacaoDoParcialNaoDeixaAEscutaAbertaParaSempre` prende.
  */
 internal class VoskUtterance(private val pause: EndOfSpeechPause = EndOfSpeechPause()) {
     private var heard = ""

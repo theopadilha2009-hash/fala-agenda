@@ -12,12 +12,15 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
@@ -234,17 +237,21 @@ class RecadoCortadoTest {
 
         // O parse (local, sem IA) e a navegação: a tela de confirmação é a que a espera
         // termina mostrando, e é ela que o teste precisa alcançar.
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText(TRUNCATED_NOTICE).fetchSemanticsNodes().isNotEmpty()
-        }
+        esperarAConfirmacao()
 
         // Estar na confirmação é parte do que se afirma: o aviso da `MicDock` da home também
         // casa com o texto, e um teste que parasse aqui passaria com o app ainda na home —
         // exatamente o buraco que este caso existe para fechar. A tela onde ela confirma é a
         // que tem o título e o "Você disse" do recado cortado, e é nela que o aviso tem de
         // estar; a `MicDock` da home já saiu da composição.
-        compose.onNodeWithText("Confira antes de salvar").assertIsDisplayed()
-        compose.onNodeWithText("Você disse: “tomar”").assertIsDisplayed()
+        compose.onNodeWithText(CONFIRM_TITLE).assertIsDisplayed()
+        // Numa janela mais curta o "Você disse" e o aviso caem abaixo da dobra, e
+        // `assertIsDisplayed` falharia por geometria ("The component is not displayed!"), não
+        // por conteúdo. Rolar até o nó antes de assertá-lo mantém a asserção **positiva** — o
+        // que se afirma é que o texto está na tela dela, e não apenas que ele existe.
+        rolarAte(DISSE_TOMAR)
+        compose.onNodeWithText(DISSE_TOMAR).assertIsDisplayed()
+        rolarAte(TRUNCATED_NOTICE)
         compose.onNodeWithText(TRUNCATED_NOTICE).assertIsDisplayed()
     }
 
@@ -286,11 +293,10 @@ class RecadoCortadoTest {
             },
         )
 
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Confira antes de salvar").fetchSemanticsNodes().isNotEmpty()
-        }
+        esperarAConfirmacao()
 
-        compose.onNodeWithText("Você disse: “tomar”").assertIsDisplayed()
+        rolarAte(DISSE_TOMAR)
+        compose.onNodeWithText(DISSE_TOMAR).assertIsDisplayed()
         compose.onNodeWithText(TRUNCATED_NOTICE).assertDoesNotExist()
     }
 
@@ -338,10 +344,13 @@ class RecadoCortadoTest {
 
         // 1) A fala cortada, como no caso de cima: o motor para no meio e o parcial é o recado.
         falarCortado(container)
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText(TRUNCATED_NOTICE).fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithText("Confira antes de salvar").assertIsDisplayed()
+        // A espera é pelo título, e não pelo aviso: o aviso também é renderizado pela `MicDock`
+        // da home (ver o caso de cima), então esperar por ele ficava satisfeito **antes** da
+        // navegação e o título era assertado sem espera — a asserção da linha seguinte corria
+        // com o parse. O título só existe na confirmação.
+        esperarAConfirmacao()
+        compose.onNodeWithText(CONFIRM_TITLE).assertIsDisplayed()
+        rolarAte(TRUNCATED_NOTICE)
         compose.onNodeWithText(TRUNCATED_NOTICE).assertIsDisplayed()
 
         // 2) "Cancelar" na confirmação: volta para a home com a marca ainda guardada.
@@ -373,7 +382,7 @@ class RecadoCortadoTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Comprar pão").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("Confira antes de salvar").assertExists()
+        compose.onNodeWithText(CONFIRM_TITLE).assertExists()
         compose.onNodeWithText("Comprar pão").assertExists()
         compose.onNodeWithText(TRUNCATED_NOTICE).assertDoesNotExist()
     }
@@ -417,11 +426,40 @@ class RecadoCortadoTest {
 
         // Agora a fala cortada: o aviso tem de voltar.
         falarCortado(container)
+        // Espera pelo título, que só a confirmação tem — o aviso também vive na `MicDock` da
+        // home, e esperar por ele era satisfeito antes da navegação (ver o caso de cima).
+        esperarAConfirmacao()
+        compose.onNodeWithText(CONFIRM_TITLE).assertExists()
+        rolarAte(TRUNCATED_NOTICE)
+        compose.onNodeWithText(TRUNCATED_NOTICE).assertIsDisplayed()
+    }
+
+    /**
+     * Espera a tela de confirmação **estar composta**.
+     *
+     * O que se espera é o título, e não o [TRUNCATED_NOTICE]: o aviso é renderizado em dois
+     * lugares — a `MicDock` da home (que fica na árvore enquanto o parse roda) e a confirmação
+     * —, então uma espera pelo aviso era satisfeita **na home**, antes da navegação. O que
+     * vinha depois (o assert do título) corria com o parse e caía por conta disso. O título
+     * "Confira antes de salvar" só existe na confirmação; esperar por ele é esperar pela tela
+     * de destino de verdade, e é o que prende o F-A em vez de deixá-lo a cargo do relógio.
+     */
+    private fun esperarAConfirmacao() {
         compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText(TRUNCATED_NOTICE).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText(CONFIRM_TITLE).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("Confira antes de salvar").assertExists()
-        compose.onNodeWithText(TRUNCATED_NOTICE).assertExists()
+    }
+
+    /**
+     * Rola até o nó antes de assertá-lo visível.
+     *
+     * A janela do Robolectric é curta, e a confirmação é uma coluna rolável: o aviso fica
+     * abaixo da dobra e um `assertIsDisplayed` direto falharia por geometria ("The component is
+     * not displayed!"), não por o aviso ter sumido. Rolar **antes** mantém a asserção positiva —
+     * o que se afirma continua sendo que o aviso está na tela dela, e não só que ele existe.
+     */
+    private fun rolarAte(texto: String) {
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(texto))
     }
 
     /**
@@ -443,6 +481,14 @@ class RecadoCortadoTest {
 
     private val agora: Instant = Instant.parse("2026-10-06T12:00:00Z")
     private val zone: ZoneId = ZoneId.of("America/Sao_Paulo")
+
+    private companion object {
+        /** O título da tela de confirmação: o único texto que **só** ela renderiza. */
+        const val CONFIRM_TITLE = "Confira antes de salvar"
+
+        /** O recado cortado como a confirmação o mostra, na citação do "Você disse". */
+        const val DISSE_TOMAR = "Você disse: “tomar”"
+    }
 
     private fun rascunho() = ParsedTaskDraft(
         title = "Cabelo",

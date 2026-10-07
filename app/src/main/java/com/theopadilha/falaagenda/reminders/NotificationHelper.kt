@@ -32,6 +32,20 @@ object NotificationHelper {
      */
     private const val LEGACY_CHANNEL_ID = "fala_agenda_reminders"
 
+    /**
+     * O canal da voz que fala o lembrete, e ele é **mudo** de propósito.
+     *
+     * Ele não existe para avisar: quem avisa é o canal de alarme acima, com o som de alarme do
+     * aparelho. Ele existe porque o Android exige uma notificação de quem sobe em primeiro plano, e
+     * um canal com som próprio faria dois alarmes tocarem juntos — o plim do canal do lembrete e um
+     * som a mais por cima da própria voz. A voz é o aviso; a notificação é o preço dela.
+     *
+     * [IMPORTANCE_LOW] e não [NotificationManager.IMPORTANCE_NONE]: um canal desligado não mostra
+     * notificação nenhuma, e um primeiro plano sem notificação visível é um serviço que o sistema
+     * mata — a frase morreria no meio.
+     */
+    const val CHANNEL_VOZ_ID = "fala_agenda_voz"
+
     private const val TAG = "NotificationHelper"
 
     /** Como terminou a tentativa de mostrar um lembrete. */
@@ -104,6 +118,27 @@ object NotificationHelper {
             enableVibration(true)
         }
         manager.createNotificationChannel(channel)
+    }
+
+    /**
+     * O canal da voz, criado antes de o serviço subir em primeiro plano.
+     *
+     * Sem som e sem vibração: a voz já é o áudio, e o canal só precisa existir para a notificação
+     * do primeiro plano ter onde nascer. Chamar de novo não desfaz nada — o sistema ignora uma
+     * criação repetida, e é o estado gravado no aparelho que manda.
+     */
+    fun ensureChannelVoz(context: Context) {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        val canal = NotificationChannel(
+            CHANNEL_VOZ_ID,
+            context.getString(R.string.notification_channel_voice),
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = "Enquanto o aplicativo está falando o lembrete em voz alta"
+            setSound(null, null)
+            enableVibration(false)
+        }
+        manager.createNotificationChannel(canal)
     }
 
     /**
@@ -383,7 +418,12 @@ object NotificationHelper {
             .cancel(AlarmIds.requestCode(occurrenceId, AlarmIds.NOTIF_REMINDER))
     }
 
-    private fun openPending(context: Context, occurrenceId: String): PendingIntent =
+    /**
+     * O toque na notificação da voz abre a mesma tarefa que o toque no lembrete abre. Não é
+     * privado porque o serviço da voz precisa do mesmo destino, e duas cópias deste `PendingIntent`
+     * divergiriam com o tempo — a da voz abrindo a tela errada.
+     */
+    fun openPending(context: Context, occurrenceId: String): PendingIntent =
         PendingIntent.getActivity(
             context,
             AlarmIds.requestCode(occurrenceId, AlarmIds.ACTION_OPEN),

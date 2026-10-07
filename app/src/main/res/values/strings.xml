@@ -45,6 +45,15 @@
     <string name="open_alarm_settings">Abrir ajustes de alarme</string>
     <string name="empty_today">Nada para hoje. Toque no microfone para falar um recado.</string>
     <string name="notification_channel">Lembretes</string>
+    <string name="notification_channel_voice">Voz do lembrete</string>
+    <!-- A frase que o celular fala em voz alta. Sem jargão e sem culpa: ela é idosa, e a frase
+         mais importante do aplicativo é a que ela ouve com o celular na sala e ela na cozinha.
+         Sem "remédio" no texto de propósito: o aplicativo é de tarefas em geral, e a mesma frase
+         fala de um remédio e de "pagar a conta de luz" — a segunda não é remédio de ninguém. O
+         "Está na hora." é o mesmo do corpo da notificação, para ela ouvir e ler a mesma coisa. -->
+    <string name="reminder_spoken">Está na hora. %1$s.</string>
+    <string name="reminder_speaking_title">Avisando em voz alta</string>
+    <string name="reminder_speaking_text">Você pode concluir ou adiar pelo aviso do lembrete.</string>
     <string name="action_not_applied_title">Não deu para fazer isso</string>
     <string name="action_not_applied_text">Esta tarefa não está mais na agenda e nada foi gravado.</string>
     <string name="action_not_applied_title_complete">Não deu para concluir</string>

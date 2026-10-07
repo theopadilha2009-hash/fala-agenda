@@ -23,6 +23,7 @@ import com.theopadilha.falaagenda.domain.parser.SpeechTargetResolution
 import com.theopadilha.falaagenda.domain.parser.UnsupportedKind
 import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import com.theopadilha.falaagenda.platform.UpdateCheck
+import com.theopadilha.falaagenda.reminders.VozDoLembrete
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -491,11 +492,20 @@ class HomeViewModel(
      */
     private fun <T> write(
         action: String,
+        /**
+         * Roda antes de a gravação começar. Existe para a ação que **não pode esperar o banco**:
+         * calar a voz do lembrete. O repositório pode demorar, falhar ou dizer que a ocorrência
+         * saiu da agenda, e nada disso muda o fato de que ela pediu para aquilo parar — continuar
+         * ouvindo "está na hora do remédio" enquanto a gravação acontece é o aviso brigando com
+         * ela. Quem passa um `onStart` assume que ele não pode falhar.
+         */
+        onStart: (() -> Unit)? = null,
         onError: ((String) -> Unit)? = null,
         onSuccess: (T) -> Unit = {},
         block: suspend () -> T,
     ) = viewModelScope.launch {
         _busy.value = true
+        onStart?.invoke()
         try {
             val result = withContext(Dispatchers.IO) { block() }
             onSuccess(result)
@@ -615,6 +625,11 @@ class HomeViewModel(
     }
 
     fun complete(item: AgendaItem) = write(
+        // A voz do lembrete cala antes de qualquer coisa, como no receiver do toque: ela está
+        // falando na cabeça dela agora, e o `cancel` do repositório apaga o alarme e a
+        // notificação — não a fala. Sem isto, concluir pela lista deixava o celular dizendo
+        // "está na hora do remédio" para um remédio que ela acabou de tomar.
+        onStart = { VozDoLembrete.parar(item.occurrence.id) },
         action = "Não consegui marcar como feito.",
         // O item vai dentro do recado: é ele que o desfazer devolve, e não "o último que
         // foi tocado" — que já pode ser outro.
@@ -661,6 +676,9 @@ class HomeViewModel(
 
     fun snooze(id: String, minutes: Long = 30) = write(
         action = "Não consegui adiar.",
+        // Mesma razão do `complete`: adiar é o gesto em que ela quer a voz calada e o aviso mais
+        // tarde. Continuar ouvindo "está na hora" depois de adiar é o aviso brigando com ela.
+        onStart = { VozDoLembrete.parar(id) },
         onSuccess = { desfecho ->
             when (desfecho) {
                 ActionOutcome.APPLIED -> {

@@ -41,7 +41,18 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
                         // O motivo do aviso não sair (permissão negada, canal desligado, sistema
                         // recusando) mora no NotificationHelper, e é lá que ele entra no log —
                         // junto do occurrenceId. Logar de novo aqui só repetiria a linha.
-                        when (NotificationHelper.showReminder(context, occurrenceId, seriesId, title)) {
+                        val entrega =
+                            NotificationHelper.showReminder(context, occurrenceId, seriesId, title)
+                        // A voz entra junto do aviso que REALMENTE saiu, e só com ele. Falar um
+                        // lembrete que a tela não mostra mandaria ela procurar na barra uma
+                        // notificação que não existe — e, no remédio, isso é o remédio que não
+                        // toca. `falar` não bloqueia: ele pede o serviço e volta, porque a frase
+                        // dura mais que os 8 s deste `goAsync` e o `finally` daqui de baixo não
+                        // pode esperar por ela.
+                        if (deveFalarOlembrete(entrega)) {
+                            LembreteFaladoService.falar(context, occurrenceId, title)
+                        }
+                        when (entrega) {
                             NotificationHelper.ReminderDelivery.POSTED -> Delivery.ARRIVED
                             NotificationHelper.ReminderDelivery.BLOCKED -> Delivery.BLOCKED
                             NotificationHelper.ReminderDelivery.FAILED -> Delivery.FAILED
@@ -139,6 +150,11 @@ class ReminderActionReceiver : BroadcastReceiver() {
         val pending = goAsync()
         app.appScope.launch {
             try {
+                // A voz cala antes de qualquer outra coisa, e de propósito: ela está falando na
+                // cabeça dela agora, e continuar dizendo "está na hora do remédio" depois que ela
+                // já tomou é pior que o silêncio. Isto não espera o banco, não espera a
+                // notificação e não depende de nada dar certo daqui para baixo.
+                VozDoLembrete.parar(occurrenceId)
                 val resposta = try {
                     withTimeout(WORK_TIMEOUT_MS) { aplicar(app, acao, occurrenceId) }
                 } catch (e: TimeoutCancellationException) {

@@ -234,30 +234,65 @@ class LocalTaskParser(
             val numero = m.groups[1] ?: m.groups[3] ?: m.groups[5] ?: return@let
             val escala = m.groups[2] ?: m.groups[4] ?: m.groups[6]
             if (conectorSemCentavos(text, m)) return null
-            val cents = (centsFromNumber(numero.value) ?: return@let) * escalaMultiplier(escala?.value)
-            return withCentavos(cents, text, m)
+            val cents = centsFromNumber(numero.value) ?: return@let
+            return withCentavos(escalaEmCentavos(cents, escala?.value) ?: return@let, text, m)
         }
         // Antes do extenso: "meio mil reais" é R$500, e sem este ramo o extenso casaria só o
-        // "mil reais" e gravaria R$1.000 (o dobro).
+        // "mil reais" e gravaria R$1.000 (o dobro). A unidade de dinheiro tem que estar dita:
+        // "meio milhão de pessoas" não é valor nenhum.
         MEIO_MIL_ESCALA.find(text)?.let { m ->
+            if (!unidadeDita(text, m)) return@let
             val cents = escalaMultiplier(m.groupValues[1]) * 50L
             return withCentavos(cents, text, m)
         }
         MEIO_REAL.find(text)?.let { m ->
+            if (conectorSemCentavos(text, m)) return@let
             return AmountHit(50, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
         }
         REAIS_EXTENSO.find(text)?.let { m ->
             if (conectorSemCentavos(text, m)) return null
+            // "30.50 mil reais": o extenso re-ancorava no "mil reais" depois de um número em
+            // dígito que o ramo numérico já recusou (o ponto não é milhar) e gravava R$1.000,00.
+            if (precedidoDeDigito(text, m)) return null
+            // "meio milhão de reais" é R$500 mil, e tem ramo próprio acima; aqui o "meio" valeria
+            // zero e o valor sairia errado.
+            if (m.value.trimStart().startsWith("meio ")) return null
             val cents = (numberFromWords(m.groupValues[1]) ?: return@let) * 100
             return withCentavos(cents, text, m)
         }
-        MIL_ESCALA.find(text)?.let { m ->
-            val cents = (centsFromNumber(m.groupValues[1]) ?: return@let) *
-                escalaMultiplier(m.groupValues[2]) * 100
-            return AmountHit(cents, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
-        }
+        // Sem ramo próprio para "N mil" sozinho: o número em dígito escalado só vale com a
+        // unidade de dinheiro dita, e quem a exige é o [REAIS_NUMERIC] ("5 mil reais", "R$ 5 mil").
+        // Sem a unidade não há o que distinguir entre pagar R$5.000 e caminhar 5 mil passos.
         return null
     }
+
+    /**
+     * O escalar dito ("15 mil", "1,5 milhão") sobre um número que já está em centavos: multiplica
+     * por mil/milhão. `null` quando o produto estoura o `Long` — o valor vira nulo e a palavra fica
+     * no título, em vez de estourar a exceção que derrubava a interpretação inteira.
+     */
+    private fun escalaEmCentavos(cents: Long, escala: String?): Long? {
+        val multiplicador = escalaMultiplier(escala)
+        if (cents != 0L && multiplicador > Long.MAX_VALUE / cents) return null
+        return cents * multiplicador
+    }
+
+    /**
+     * A unidade de dinheiro no próprio casamento ("meio mil reais", "meio milhão de reais") ou
+     * logo depois dele, dentro do alcance do escalar: "meio milhão de pessoas" não tem nenhuma.
+     */
+    private fun unidadeDita(text: String, hit: MatchResult): Boolean =
+        REAIS_TAIL.containsMatchIn(hit.value) ||
+            REAIS_TAIL.containsMatchIn(text.substring(hit.range.last + 1).take(UNIDADE_ALCANCE))
+
+    /**
+     * O extenso com um número em DÍGITO imediatamente antes: "30.50 mil reais" casa só o
+     * "mil reais" e gravava R$1.000,00. O dígito que o próprio valor recusou (o ponto não é
+     * milhar) não pode virar dinheiro pelo pedaço que sobrou — o valor não sai e o texto fica no
+     * título.
+     */
+    private fun precedidoDeDigito(text: String, hit: MatchResult): Boolean =
+        text.substring(0, hit.range.first).trimEnd().lastOrNull()?.isDigit() == true
 
     /**
      * O conector "e" logo depois do valor, sem a palavra "centavos": "tres reais e vinte" não diz
@@ -300,12 +335,20 @@ class LocalTaskParser(
      * (exatamente 3 dígitos, e nunca depois da vírgula) sai: "30.50" é ambíguo entre 30,50 e um
      * 30.500 malformado, e tirar o ponto dele inventava R$30,00 (no cifrão) ou R$50,00 (em "30.50
      * reais"). Na dúvida, o valor não é extraído e a palavra fica no título.
+     *
+     * O inteiro sem separador vale até quatro dígitos: "1500 reais" é o valor dito e não tem outra
+     * leitura (com cinco ou mais, "12345" pode ser um milhar malformado — segue nulo). O ponto só
+     * é milhar quando o ÚLTIMO grupo tem exatamente 3 dígitos: "12.345" e "1.234.567" valem, e
+     * "1.23"/"12.3456" não.
      */
     private fun centsFromNumber(raw: String): Long? {
         val inteiro = raw.substringBefore(',')
-        if (inteiro.substringAfter('.', "").let { it.isNotEmpty() && it.length != 3 }) return null
-        if (!inteiro.matches(Regex("""\d{1,3}(?:\.\d{3})*"""))) return null
-        return raw.replace(".", "").replace(',', '.').toBigDecimalOrNull()?.movePointRight(2)?.toLong()
+        val ultimoGrupo = inteiro.substringAfterLast('.', "")
+        if (ultimoGrupo.isNotEmpty() && ultimoGrupo.length != 3) return null
+        if (!inteiro.matches(Regex("""\d{1,3}(?:\.\d{3})*|\d{1,$MAX_DIGITOS_INTEIRO}"""))) return null
+        if (inteiro.replace(".", "").length > MAX_DIGITOS_INTERPRETAVEIS) return null
+        val normalizado = raw.replace(".", "").replace(',', '.')
+        return normalizado.toBigDecimalOrNull()?.movePointRight(2)?.toLong()
     }
 
     /** "milhão"/"mil" por extenso depois do número em dígito: "15 mil" são 15.000. */
@@ -1365,7 +1408,7 @@ class LocalTaskParser(
             (NUMBER_WORDS.keys + listOf("cem", "cento", "mil", "milhao", "milhoes"))
                 .distinct()
                 .sortedByDescending { it.length }
-                .joinToString("|")
+                .joinToString("|") { """\b$it\b""" }
 
         /**
          * O número do valor em pt-BR: "120", "30,50", "1.500", "1.234,56". O milhar por ponto vem
@@ -1413,10 +1456,23 @@ class LocalTaskParser(
         private val MEIO_MIL_ESCALA = Regex("""\bmeio\s+(mil|milhao|milhoes)\b(?:\s+de)?\s*(?:reais|real)?\b""")
 
         /**
-         * "15 mil": o escalar por extenso logo depois do número em dígito, sem "reais" — o valor
-         * está no "mil", não no que vem depois. [escalaMultiplier] lê o escalar.
+         * A unidade de dinheiro dita: a palavra "reais"/"real" ou o cifrão "R$"/"rs". É o que
+         * separa "5 mil reais" de "caminhar 5 mil passos" — sem ela, nenhum valor é interpretado.
          */
-        private val MIL_ESCALA = Regex("""\b($BR_NUMBER)\s+(mil|milhao|milhoes)\b""")
+        private val REAIS_TAIL = Regex("""\b(?:reais|real)\b|r\s*\$|rs\b""")
+
+        /** Até onde a unidade pode estar do escalar ("meio milhão de reais", com o "de" no meio). */
+        private const val UNIDADE_ALCANCE = 16
+
+        /** O inteiro em dígito sem separador vale até aqui; com 5+ pode ser milhar malformado. */
+        private const val MAX_DIGITOS_INTEIRO = 4
+
+        /**
+         * Teto de dígitos do inteiro: "99999999999999999 reais" estourava o `Long` dentro do
+         * `toLong()` do `BigDecimal` (exceção, não nulo) e derrubava o parse inteiro. Acima do
+         * teto o valor fica nulo e a palavra vai para o título.
+         */
+        private const val MAX_DIGITOS_INTERPRETAVEIS = 15
 
         /** O "e <número>" logo depois do valor: centavos que ela não nomeou (ver `conectorSemCentavos`). */
         private val CONECTOR_NUMERO = Regex("""\s+e\s+(?:$NUMBER_WORD_ALT)\b|\s+e\s+\d{1,2}\b""")

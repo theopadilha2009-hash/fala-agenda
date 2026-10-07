@@ -404,4 +404,323 @@ class LocalTaskParserValoresEFaixasTest {
         assertThat(draft.amountCents).isEqualTo(123456L)
         assertThat(draft.title).isEqualTo("Pagar")
     }
+
+    // ---- Terceiro review: o ramo do escalar "N mil" ----
+
+    @Test
+    fun milSemUnidadeDeDinheiroNaoInventaValor() {
+        // O ramo do escalar em dígito disparava sem "reais"/"R$" e multiplicava por 100 um valor
+        // que JÁ estava em centavos (o `centsFromNumber` devolve centavos): "pagar 5 mil" gravava
+        // R$500.000,00, 100× o certo, com `canQuickConfirm=true` — a caixa rápida confirmava em
+        // silêncio. E as METAS de caminhada ganhavam dinheiro que ela não falou: "caminhar 5 mil
+        // passos" → R$500.000,00, "correr 10 mil" → R$1.000.000,00.
+        val cincoMil = parser.parse("pagar 5 mil amanhã às 10h")
+        assertThat(cincoMil.amountCents).isNull()
+        assertThat(cincoMil.title).contains("mil")
+
+        val caminhada = parser.parse("caminhar 5 mil passos amanhã às 10h")
+        assertThat(caminhada.amountCents).isNull()
+        assertThat(caminhada.title).contains("passos")
+
+        val corrida = parser.parse("correr 10 mil amanhã às 10h")
+        assertThat(corrida.amountCents).isNull()
+        assertThat(corrida.title).isEqualTo("Correr 10 mil")
+
+        assertThat(parser.parse("andar 3 mil passos amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("3 mil km amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("meio milhao de pessoas amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar meio milhão de pessoas amanhã às 10h").amountCents).isNull()
+
+        // A caixa rápida ainda confirma a frase completa — o que não pode é o número inventado.
+        assertThat(cincoMil.canQuickConfirm(clock.instant(), zone)).isTrue()
+    }
+
+    @Test
+    fun dozeMilSemReaisNaoViraUmMilhaoEDuzentosMil() {
+        // Medido no review: "pagar 12 mil no medico" gravava R$1.200.000,00 com a caixa rápida
+        // confirmando em silêncio. Sem a unidade dita o valor não existe — e o "12 mil" fica no
+        // título, que é o único lugar em que a palavra dela pode estar.
+        val draft = parser.parse("pagar 12 mil no medico amanhã às 10h")
+        assertThat(draft.amountCents).isNull()
+        assertThat(draft.title).contains("12 mil")
+        assertThat(draft.canQuickConfirm(clock.instant(), zone)).isTrue()
+    }
+
+    @Test
+    fun milComReaisContinuaGravandoOValorCerto() {
+        // A mesma intenção dita com "reais" tem que dar o MESMO valor da sem "reais" — ou nenhuma
+        // das duas. O certo vem do ramo que exige a unidade: `centsFromNumber` já devolve centavos
+        // e o escalar multiplica por mil; o `* 100` extra era o fator de 100 entre as duas.
+        assertThat(parser.parse("pagar 5 mil reais amanhã às 10h").amountCents).isEqualTo(500000L)
+        assertThat(parser.parse("pagar 1 mil reais amanhã às 10h").amountCents).isEqualTo(100000L)
+        assertThat(parser.parse("pagar 12 mil reais amanhã às 10h").amountCents).isEqualTo(1200000L)
+        assertThat(parser.parse("pagar 999 mil reais amanhã às 10h").amountCents).isEqualTo(99900000L)
+        assertThat(parser.parse("pagar 5 mil de reais amanhã às 10h").amountCents).isEqualTo(500000L)
+
+        // O cifrão no lugar do "reais": o "mil" continua escalando o número.
+        assertThat(parser.parse("pagar R$ 5 mil amanhã às 10h").amountCents).isEqualTo(500000L)
+        assertThat(parser.parse("pagar R$ 12 mil amanhã às 10h").amountCents).isEqualTo(1200000L)
+
+        // O produto que estoura o `Long` não derruba o parse nem inventa: o valor fica nulo.
+        assertThat(parser.parse("pagar 999999999 mil reais amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar 999.999.999.999.999 mil reais amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar 999.999.999.999.999 milhoes de reais amanhã às 10h").amountCents)
+            .isNull()
+    }
+
+    @Test
+    fun escalarEmDigitoNaoRoubaOValorDaFraseComReais() {
+        // "1000 mil reais" (mil mil = R$1.000.000,00) era lido como R$1.000,00: o ramo do escalar
+        // não ancorava o "reais" que vinha depois, vencia o ramo que exige a unidade e ainda
+        // multiplicava por 100. Agora quem lê é o ramo que exige "reais", e o valor é o dito.
+        val milMil = parser.parse("pagar 1000 mil reais amanhã às 10h")
+        assertThat(milMil.amountCents).isEqualTo(100000000L)
+        assertThat(milMil.title).isEqualTo("Pagar")
+
+        assertThat(parser.parse("pagar 1500 mil reais amanhã às 10h").amountCents).isEqualTo(150000000L)
+    }
+
+    // ---- Terceiro review: a palavra de número casando por prefixo ----
+
+    @Test
+    fun palavraDeNumeroNaoCasaPorPrefixo() {
+        // A alternância das palavras de número era montada sem `\b` em volta de cada uma: "pagar
+        // meio reais" casava "meio" como número e "reais" como unidade, e gravava amountCents=0 —
+        // dinheiro inventado. O "meio real" dela são R$0,50, e "meio" sozinho não é número.
+        val meioReais = parser.parse("pagar meio reais amanhã às 10h")
+        assertThat(meioReais.amountCents).isNull()
+        assertThat(meioReais.title).contains("reais")
+
+        // "meio real" (singular) continua sendo cinquenta centavos.
+        assertThat(parser.parse("pagar meio real amanhã às 10h").amountCents).isEqualTo(50L)
+    }
+
+    @Test
+    fun meioRealComConectorNaoInventaCinquentaCentavos() {
+        // "meio real e vinte": o "e vinte" é o mesmo conector que o PR recusa em "tres reais e
+        // vinte" — sem a palavra "centavos" fechando, não é inequívoco. O ramo do "meio real"
+        // devolvia 50 calado e ainda deixava o "e vinte" no título.
+        val draft = parser.parse("pagar meio real e vinte amanhã às 10h")
+        assertThat(draft.amountCents).isNull()
+        assertThat(draft.title).contains("vinte")
+    }
+
+    // ---- Terceiro review (P3): o inteiro de quatro dígitos sem separador ----
+
+    @Test
+    fun digitoRecusadoAntesDoExtensoNaoViraValor() {
+        // "30.50 mil reais": o extenso re-ancorava no "mil reais" que vinha DEPOIS do número que o
+        // próprio valor recusou (o ponto não é milhar) e gravava R$1.000,00 — dinheiro que ela não
+        // falou. O dígito recusado não pode virar valor pelo pedaço que sobrou.
+        val draft = parser.parse("pagar 30.50 mil reais amanhã às 10h")
+        assertThat(draft.amountCents).isNull()
+        assertThat(draft.title).contains("30.50")
+    }
+
+    @Test
+    fun numeroGrandeDemaisNaoDerrubaNemInventa() {
+        // O `toLong()` do `BigDecimal` estoura em número de 20 dígitos (exceção, não nulo) e
+        // derrubava a interpretação inteira da frase. Acima do teto o valor fica nulo e o texto
+        // vai para o título.
+        val vinteDigitos = parser.parse("pagar 99999999999999999999 reais amanhã às 10h")
+        assertThat(vinteDigitos.amountCents).isNull()
+        assertThat(vinteDigitos.title).contains("99999999999999999999")
+
+        assertThat(parser.parse("pagar 99999999999999999999999999999999 reais amanhã às 10h").amountCents)
+            .isNull()
+        assertThat(parser.parse("pagar 999.999.999.999.999.999.999 reais amanhã às 10h").amountCents)
+            .isNull()
+
+        // A fronteira do teto: 15 dígitos ainda são lidos (e não estouram o `Long`).
+        assertThat(parser.parse("pagar 999.999.999.999.999 reais amanhã às 10h").amountCents)
+            .isEqualTo(99999999999999900L)
+        // Um dígito além do teto: nulo, e o texto fica no título.
+        assertThat(parser.parse("pagar 1.999.999.999.999.999 reais amanhã às 10h").amountCents).isNull()
+
+        // Sem separador, o padrão do número só aceita até 4 dígitos: o inteiro longo é ambíguo.
+        assertThat(parser.parse("pagar 999999999 reais amanhã às 10h").amountCents).isNull()
+    }
+
+    @Test
+    fun quatroDigitosSemSeparadorViraValor() {
+        // "1500 reais" ficava sem valor: o número só casava milhar COM ponto ("1.500") e o
+        // `centsFromNumber` recusava inteiro de 4 dígitos. Quatro dígitos sem separador não têm
+        // outra leitura — não há ambiguidade a preservar.
+        assertThat(parser.parse("pagar 1500 reais amanhã às 10h").amountCents).isEqualTo(150000L)
+        assertThat(parser.parse("pagar R$ 1500 amanhã às 10h").amountCents).isEqualTo(150000L)
+        assertThat(parser.parse("pagar 9999 reais amanhã às 10h").amountCents).isEqualTo(999900L)
+        assertThat(parser.parse("pagar 1234 reais amanhã às 10h").amountCents).isEqualTo(123400L)
+        assertThat(parser.parse("pagar 1500,00 reais amanhã às 10h").amountCents).isEqualTo(150000L)
+
+        // O ponto que não é milhar (F-A) e o milhar por ponto ficam como estavam.
+        assertThat(parser.parse("pagar R$ 30.50 amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar 30.50 reais amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar 15.000 reais amanhã às 10h").amountCents).isEqualTo(1500000L)
+        assertThat(parser.parse("pagar 1.234,56 reais amanhã às 10h").amountCents).isEqualTo(123456L)
+        assertThat(parser.parse("pagar 30,50 reais amanhã às 10h").amountCents).isEqualTo(3050L)
+
+        // Cinco dígitos sem separador seguem sem leitura: podem ser milhar malformado.
+        assertThat(parser.parse("pagar 12345 reais amanhã às 10h").amountCents).isNull()
+    }
+
+    @Test
+    fun milharPorPontoComVariosGruposViraValor() {
+        // "1.234.567 reais" ficava sem valor: a checagem do ponto olhava tudo depois do PRIMEIRO
+        // ponto ("234.567", 7 caracteres) e recusava qualquer número com mais de um grupo. O que
+        // define o milhar é o ÚLTIMO grupo ter exatamente 3 dígitos.
+        assertThat(parser.parse("pagar 12.345 reais amanhã às 10h").amountCents).isEqualTo(1234500L)
+        assertThat(parser.parse("pagar 1.234.567 reais amanhã às 10h").amountCents).isEqualTo(123456700L)
+        assertThat(parser.parse("pagar R$ 1.234.567,89 amanhã às 10h").amountCents).isEqualTo(123456789L)
+
+        // O ponto que não fecha grupo de 3 continua recusado.
+        assertThat(parser.parse("pagar 1.23 reais amanhã às 10h").amountCents).isNull()
+        assertThat(parser.parse("pagar 12.3456 reais amanhã às 10h").amountCents).isNull()
+    }
+
+    // ---- Oráculo: todo valor falado vira o número certo, ou null com a palavra no título ----
+
+    @Test
+    fun oraculoDoValorFalado() {
+        class Caso(
+            val frase: String,
+            /** O número que gerou a frase, por construção — nunca lido do parser. */
+            val esperado: Long?,
+            val palavras: List<String>,
+            /** `true`: tem que ser exatamente [esperado]. `false`: [esperado] ou `null`. */
+            val obrigatorio: Boolean,
+        )
+
+        val casos = mutableListOf<Caso>()
+
+        // "N reais" / "R$ N": o valor é o número dito, em centavos.
+        for (n in 1..9999) {
+            val esperado = n.toLong() * 100
+            casos += Caso("pagar $n reais amanhã às 10h", esperado, listOf("reais"), true)
+            casos += Caso("pagar R$ $n amanhã às 10h", esperado, listOf("r$"), true)
+        }
+        // Cinco dígitos sem separador: ambíguo, o valor não sai.
+        for (n in 10000..10050) {
+            casos += Caso("pagar $n reais amanhã às 10h", null, listOf("reais"), true)
+            casos += Caso("pagar R$ $n amanhã às 10h", null, listOf("r$"), true)
+        }
+        // Milhar por ponto, um e vários grupos.
+        for (a in 1..9) {
+            for (b in listOf(0, 123, 500, 999)) {
+                val mmm = b.toString().padStart(3, '0')
+                casos += Caso("pagar $a.$mmm reais amanhã às 10h", (a.toLong() * 1000 + b) * 100, listOf("reais"), true)
+                casos += Caso("pagar R$ $a.$mmm amanhã às 10h", (a.toLong() * 1000 + b) * 100, listOf("r$"), true)
+                for (c in listOf(1, 500)) {
+                    val ccc = c.toString().padStart(3, '0')
+                    val valor = ((a.toLong() * 1000 + b) * 1000 + c) * 100
+                    casos += Caso("pagar $a.$mmm.$ccc reais amanhã às 10h", valor, listOf("reais"), true)
+                }
+            }
+        }
+        // Decimal por vírgula.
+        for (n in 1..999) {
+            for (m in listOf(1, 5, 50, 99)) {
+                val mm = m.toString().padStart(2, '0')
+                casos += Caso("pagar $n,$mm reais amanhã às 10h", n.toLong() * 100 + m, listOf("reais"), true)
+                casos += Caso("pagar R$ $n,$mm amanhã às 10h", n.toLong() * 100 + m, listOf("r$"), true)
+            }
+        }
+        // "N reais e M centavos".
+        for (n in 1..999) {
+            for (m in listOf(1, 5, 50, 99)) {
+                casos += Caso(
+                    "pagar $n reais e $m centavos amanhã às 10h",
+                    n.toLong() * 100 + m,
+                    listOf("reais", "centavos"),
+                    true,
+                )
+            }
+        }
+        // Por extenso.
+        listOf(
+            "um" to 1L, "dois" to 2L, "cinco" to 5L, "dez" to 10L, "quinze" to 15L, "vinte" to 20L,
+            "cem" to 100L, "cento e vinte e cinco" to 125L, "duzentos e cinquenta" to 250L,
+            "mil" to 1000L, "mil e duzentos" to 1200L, "dois mil e quinhentos" to 2500L,
+            "um milhão" to 1000000L, "um milhão e duzentos mil" to 1200000L,
+        ).forEach { (palavra, valor) ->
+            casos += Caso("pagar $palavra reais amanhã às 10h", valor * 100, listOf("reais"), true)
+        }
+        // "meio": o multiplicador da escala, nunca um valor.
+        casos += Caso("pagar meio mil reais amanhã às 10h", 50000L, listOf("reais"), true)
+        casos += Caso("pagar meio milhão de reais amanhã às 10h", 50000000L, listOf("reais"), true)
+        casos += Caso("pagar meio mil amanhã às 10h", 50000L, listOf("mil"), false)
+        casos += Caso("pagar meio milhão amanhã às 10h", 50000000L, listOf("milhao"), false)
+        casos += Caso("pagar meio milhão de pessoas amanhã às 10h", null, listOf("milhao"), true)
+        casos += Caso("meio milhao de pessoas amanhã às 10h", null, listOf("milhao"), true)
+        casos += Caso("pagar meio reais amanhã às 10h", null, listOf("reais"), true)
+        // "N milhão" com e sem a unidade.
+        for (n in listOf(1, 2, 5)) {
+            casos += Caso("pagar $n milhão de reais amanhã às 10h", n.toLong() * 100000000, listOf("reais"), true)
+            casos += Caso("pagar $n milhão amanhã às 10h", n.toLong() * 100000000, listOf("milhao"), false)
+        }
+        // "N mil reais" (unidade dita) e "N mil" (sem unidade): ou o valor certo, ou null.
+        for (n in 1..999) {
+            casos += Caso("pagar $n mil reais amanhã às 10h", n.toLong() * 100000, listOf("reais"), true)
+            casos += Caso("pagar R$ $n mil amanhã às 10h", n.toLong() * 100000, listOf("r$"), true)
+            casos += Caso("pagar $n mil amanhã às 10h", n.toLong() * 100000, listOf("mil"), false)
+        }
+        for (n in listOf(1000, 1500, 2000, 9999)) {
+            casos += Caso("pagar $n mil reais amanhã às 10h", n.toLong() * 100000, listOf("reais"), true)
+            casos += Caso("pagar $n mil amanhã às 10h", null, listOf("mil"), false)
+        }
+        // Metas e quantidades com "mil": dinheiro NENHUM.
+        listOf("caminhar 5 mil passos", "correr 10 mil", "andar 3 mil passos", "3 mil km").forEach { frase ->
+            casos += Caso("$frase amanhã às 10h", null, listOf("mil"), true)
+        }
+        for (n in 1..200) {
+            casos += Caso("caminhar $n mil passos amanhã às 10h", null, listOf("passos"), true)
+            casos += Caso("correr $n mil amanhã às 10h", null, listOf("mil"), true)
+            casos += Caso("$n mil km amanhã às 10h", null, listOf("km"), true)
+            casos += Caso("andar $n mil passos amanhã às 10h", null, listOf("passos"), true)
+        }
+        // "N mil reais" com N de quatro dígitos é "N mil" reais: "1000 mil reais" = R$1.000.000,00
+        // (o "mil mil" dito), e o valor é o mesmo que o número em dígito escalado dá.
+        casos += Caso("pagar 1000 mil reais amanhã às 10h", 100000000L, listOf("reais"), true)
+        casos += Caso("pagar 1500 mil reais amanhã às 10h", 150000000L, listOf("reais"), true)
+        // Ambiguidade que o PR já recusa.
+        casos += Caso("pagar R$ 30.50 amanhã às 10h", null, listOf("30.50"), true)
+        casos += Caso("pagar 30.50 reais amanhã às 10h", null, listOf("30.50"), true)
+        casos += Caso("pagar 30.50 mil reais amanhã às 10h", null, listOf("30.50"), true)
+        casos += Caso("pagar 1.23 reais amanhã às 10h", null, listOf("1.23"), true)
+        casos += Caso("pagar 12.3456 reais amanhã às 10h", null, listOf("12.3456"), true)
+        // Número grande demais para o `Long`: não derruba nem inventa.
+        casos += Caso("pagar 99999999999999999 reais amanhã às 10h", null, listOf("99999999999999999"), true)
+        casos += Caso("pagar 999.999.999.999.999.999 reais amanhã às 10h", null, listOf("999"), true)
+        casos += Caso("pagar 999.999.999.999.999 reais amanhã às 10h", 99999999999999900L, listOf("reais"), true)
+        casos += Caso("pagar 1.999.999.999.999.999 reais amanhã às 10h", null, listOf("999"), true)
+        // O extenso não resgata um dígito que o próprio valor recusou.
+        casos += Caso("pagar 12.3456 mil reais amanhã às 10h", null, listOf("12.3456"), true)
+        casos += Caso("pagar 1.23 mil reais amanhã às 10h", null, listOf("1.23"), true)
+        // Produto do escalar que estoura o `Long`.
+        casos += Caso("pagar 999999999 mil reais amanhã às 10h", null, listOf("mil"), true)
+        casos += Caso("pagar 9999999999 milhoes de reais amanhã às 10h", null, listOf("milhoes"), true)
+
+        val violacoes = mutableListOf<String>()
+        casos.forEach { caso ->
+            val draft = parser.parse(caso.frase)
+            val obtido = draft.amountCents
+            val tituloDobrado = java.text.Normalizer.normalize(draft.title.lowercase(), java.text.Normalizer.Form.NFD)
+                .replace("\\p{M}+".toRegex(), "")
+            val palavrasOk = caso.palavras.all { tituloDobrado.contains(it) }
+            val tipo = when {
+                // O valor dito: tem que ser exatamente o número que gerou a frase.
+                caso.obrigatorio && obtido != caso.esperado -> "número"
+                // Sem unidade de dinheiro: ou o valor certo, ou nenhum — nunca um inventado.
+                !caso.obrigatorio && obtido != null && obtido != caso.esperado -> "número"
+                // Sem valor, a palavra dela tem que estar no título — nada some calado.
+                obtido == null && !palavrasOk -> "palavra"
+                else -> null
+            }
+            if (tipo != null && violacoes.size < 40) {
+                violacoes += "$tipo|${caso.frase}|obtido=$obtido|esperado=${caso.esperado}|" +
+                    "obrig=${caso.obrigatorio}|title='${draft.title}'"
+            }
+        }
+        println("ORACULO|total=${casos.size}|violacoes=${violacoes.size}")
+        assertThat(violacoes).isEmpty()
+    }
 }

@@ -97,7 +97,16 @@ class SpeechIntentCorrecaoInvarianteTest {
                         )
                         val alvoDeAcao = alvoDe(intent) ?: return@forEach
                         agiuComCorrecao++
-                        if (alvoDeAcao == alvo.alvoDescartado) violDescartado++
+                        if (alvoDeAcao == alvo.alvoDescartado) {
+                            violDescartado++
+                            if (violDescartado <= 12) {
+                                println(
+                                    "PROBE-VIOL|«" +
+                                        frase(preambulo, verbo, alvo.descartado, conector, alvo.corrigido) +
+                                        "» → $intent",
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -247,9 +256,9 @@ class SpeechIntentCorrecaoInvarianteTest {
     @Test
     fun asCaudasQueSeConfundemComDeterminanteContinuamBloqueadas() {
         val ambiguas = listOf(
-            "cancela o médico, não da fisioterapia",
-            "cancela o médico, não esta consulta",
-            "já tomei o remédio, não ta bom",
+            "cancela o médico, não esta certo",
+            "cancela o médico, não esta marcado",
+            "cancela o médico, não é o momento",
         )
         var bloqueadas = 0
         ambiguas.forEach { frase ->

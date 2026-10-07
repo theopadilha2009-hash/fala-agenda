@@ -94,7 +94,7 @@ object SpeechIntentClassifier {
     }
 
     /**
-     * O que ela disse DEPOIS de se corrigir.
+     * A pergunta CERTA: depois do conector, a fala **nomeia um alvo novo**?
      *
      * Ela fala, percebe que errou e se corrige sem parar de falar: "cancela o médico, não, o
      * dentista". O classificador agia sobre o alvo que ela DESCARTou — `Cancel(target=medico)` —
@@ -112,146 +112,166 @@ object SpeechIntentClassifier {
      * expressões de tempo discordam ⇒ escala"). Por isso o desfecho é o mesmo do "apaga isso":
      * reconhecer e não executar.
      *
-     * O gatilho é o conector, não o verbo: sem conector nada muda (a frase sem correção continua
+     * A pergunta é sobre o que vem DEPOIS, e não sobre o conector nem sobre o primeiro token
+     * dele. Três tentativas de heurística de TOKEN falharam, cada uma medida:
+     *
+     * 1. o conector sozinho (largo) — o `não` é a palavra mais comum do português numa
+     *    CONTINUAÇÃO, e "não vou poder ir" deixava de cancelar;
+     * 2. "o próximo token é verbo?" — "não, **quero** o de diabetes" é CORREÇÃO que abre com
+     *    verbo, e o app registrava a dose errada (120 de 140 casos do corpus de reformulação);
+     * 3. "não é isso" — o veredito de cópula perguntava se o token seguinte era determinante, e
+     *    "isso" não está em [DETERMINANTES], então a correção passava e apagava o médico.
+     *
+     * Um token não carrega a informação que a decisão precisa. O que carrega é o ALVO: se o que
+     * vem depois do conector tem a forma de um sintagma nominal — um determinante, um
+     * demonstrativo ou um substantivo —, é uma correção e o alvo descartado não pode ser usado.
+     * Se não tem ("não vou poder ir", "não da tempo", "não me sinto bem"), é continuação e o
+     * comando age. É a mesma classe de veredito que o [eraseNamed] já toma para o "apaga isso"
+     * (ver [DEMONSTRATIVOS]), com a fonte das duas listas compartilhada.
+     *
+     * O gatilho continua sendo o conector: sem conector nada muda (a frase sem correção continua
      * exatamente como hoje), e uma frase que nunca foi comando — "me lembra de comprar pão, não,
      * leite" — continua sendo captura, porque a checagem só acontece depois de um gatilho abrir a
      * fala.
-     *
-     * São DOIS gatilhos, e a separação entre eles é o que impede a regressão medida no review do
-     * PR #83: o `não` é a palavra mais comum do português numa CONTINUAÇÃO ("não vou poder ir",
-     * "não deu tempo"), e tratá-lo como conector sempre custava **2400 de 3360** frases do corpus
-     * de continuação — o comando certo deixava de agir. Ver [negaComCorrecao] e [CORRECTION_CUE].
      */
     private fun hasCorrection(rest: String): Boolean =
-        CORRECTION_CUE.containsMatchIn(rest) || negaComCorrecao(rest)
+        CONTENT_CUE.containsMatchIn(rest) || negaComCorrecao(rest)
 
     /**
-     * Os conectores de correção que NÃO têm ambiguidade com uma continuação: eles não abrem uma
-     * oração de razão, então o que vem depois deles é sempre o que ela quis dizer.
+     * O `não` — e SÓ ele — precisa do teste do alvo.
      *
-     * A âncora `(^|[\s,])` e o rabo `([\s,]|$)` valem para todos: o reconhecedor pontua de
-     * formas diferentes — a mesma fala chega ", melhor,", ", errei," e ", mentira" —, e um
-     * conector que escapasse deixaria a frase agir sobre o alvo descartado, calada.
-     *
-     * Os que o catálogo não media e entraram por serem vocabulário plausível de correção falada:
-     * "quis dizer" (a variante mais provável de "quer dizer" na fala), "me enganei", "corrigindo",
-     * "mentira", "ta errado", "alias", "esquece", "perai", "deixa pra la" e "desculpa" — todos
-     * são ela voltando atrás no que acabou de dizer. Ficaram DE FORA os que não são correção:
-     * "não é isso" (já é o próprio `não`), e os que abrem uma captura ou uma pergunta ("espera",
-     * "depois", "agora", "então"), que não voltam atrás de nada.
-     */
-    private val CORRECTION_CUE = Regex(
-        "(^|[\\s,])(quer dizer|quis dizer|na verdade|ao inves disso|em vez disso|ta errado|" +
-            "deixa pra la|me enganei|corrigindo|mentira|alias|esquece|perai|desculpa|" +
-            "digo|melhor|errei)([\\s,]|$)",
-    )
-
-    /**
-     * O "não" é correção só quando o que segue NÃO é uma oração.
-     *
-     * Ele é a palavra mais comum do português numa continuação, e o gatilho largo custava caro:
-     * `"cancela o médico, não vou poder ir"` deixava de cancelar (o comando certo), e
-     * `"já tomei o remédio de pressão, não preciso mais"` deixava de registrar a dose — **2400 de
-     * 3360** frases do corpus de continuação, medido no review do PR #83.
-     *
-     * O que separa os dois casos é observável no token seguinte:
-     *
-     * - `"não **vou** poder ir"`, `"não **preciso** mais"`, `"não **deu** tempo"` — depois do
-     *   "não" vem uma ORAÇÃO (verbo conjugado). É continuação, não correção: o alvo dela segue
-     *   de pé e o comando age.
-     * - `"não **o dentista**"`, `"não **o de diabetes**"` — depois vem um sintagma nominal. É
-     *   correção, e o alvo descartado não pode ser usado.
-     *
-     * [VERBOS_CONJUGADOS] é uma lista escrita à mão, e a assimetria do erro é o que a torna
-     * aceitável: um verbo que falte na lista faz a frase ser lida como CORREÇÃO — o app deixa de
-     * agir e pergunta, que é o lado seguro. O erro oposto (ler uma correção como continuação)
-     * apagaria ou concluiria a tarefa errada, e é o que a lista precisa evitar. Por isso os
-     * tokens ambíguos ficam de fora dela: "da" é o verbo ("não dá tempo") E a contração
-     * "de+a" ("não, da fisioterapia"), "esta" é o verbo e o demonstrativo ("não, esta consulta"),
-     * "to"/"ta" são a primeira pessoa do verbo e a cortesia de confirmação. Sem poder separá-los
-     * pela forma, a escolha é a segura — bloquear —, e o custo está preso em teste
-     * (`asCaudasQueSeConfundemComDeterminanteContinuamBloqueadas`).
-     *
-     * As CÓPULAS entram na lista de verbos à parte, porque elas sozinhas não decidem nada:
-     * `"não é o de pressão"` é correção (o que segue NOMEIA a tarefa) e `"não é possível"` é
-     * continuação — as duas abrem com "é". O que decide é o token DEPOIS da cópula, e é isso que
-     * [nomeiaAlvo] olha.
-     *
-     * "foi"/"fui" NÃO estão em [COPULAS]: a forma no passado é a mais comum como verbo ("não fui
-     * ainda", "não foi possível"), e as duas são continuações. O preço é a correção com cópula no
-     * passado ("não foi o de pressão"), que não é a forma natural dela — quem fala assim diz "não
-     * é o de pressão".
+     * Ele é a palavra mais comum do português numa continuação ("não vou poder ir", "não da
+     * tempo", "não me sinto bem"), então a presença dele não decide nada: o que decide é se o que
+     * vem depois tem a forma de um alvo novo. Os conectores de [CONTENT_CUE] não têm essa
+     * ambiguidade e continuam valendo pela presença.
      */
     private fun negaComCorrecao(rest: String): Boolean {
         var from = 0
         while (true) {
             val hit = NAO.find(rest, from) ?: return false
-            val depois = rest.substring(hit.range.last + 1)
-                .trimStart(' ', ',', '.', '!', '?', ';', ':')
-            val primeiro = depois.substringBefore(' ')
-            if (primeiro.isEmpty()) return true
-            val oracao = primeiro in VERBOS_CONJUGADOS && !(primeiro in COPULAS && nomeiaAlvo(depois))
-            if (!oracao) return true
-            // Uma oração depois do "não" não é correção: segue procurando outro "não" na fala
+            // `from == 0` marca o PRIMEIRO "não" da fala: é ele que, terminando a frase, é uma
+            // correção que ela começou e não terminou. Um "não" posterior com a mesma cauda vazia
+            // é a ênfase de uma continuação ("não vou poder ir, não"), e ali o comando age.
+            if (nomeiaAlvoDepois(rest, hit.range.last + 1, primeiro = from == 0)) return true
+            // O conector não abre um alvo novo: segue procurando outro na fala
             // ("cancela o médico, não vou poder ir, não, o dentista").
             from = hit.range.last + 1
         }
     }
 
-    /**
-     * O token depois da cópula NOMEIA o alvo da correção — um determinante ("não é **o** de
-     * pressão") ou um dia ("não é **amanhã**")? Se nomeia, a frase é correção; se não ("não é
-     * **possível**"), é continuação.
-     */
-    private fun nomeiaAlvo(depois: String): Boolean {
-        val apos = depois.substringBefore(' ').let { depois.substring(it.length).trimStart(' ') }
-        val token = apos.substringBefore(' ')
-        return token in DETERMINANTES || token in TEMPORAIS_DE_CORRECAO
-    }
-
-    /** Os dias que, depois de uma cópula, nomeiam o alvo da correção ("não é amanhã"). */
-    private val TEMPORAIS_DE_CORRECAO = setOf("hoje", "amanha", "ontem")
-
     private val NAO = Regex("(^|[\\s,])nao\\b")
 
     /**
-     * As formas verbais que, abrindo o que vem depois do "não", fazem dele uma ORAÇÃO — uma
-     * continuação ("não vou poder ir", "não deu tempo"), não uma correção ("não, o dentista").
+     * O que vem depois do conector tem a forma de um ALVO NOVO?
      *
-     * Só as formas que NÃO se confundem com outra classe: um verbo que falte aqui vira correção
-     * (o app pergunta em vez de agir, lado seguro), e um token ambíguo que entrasse viraria
-     * continuação numa correção de verdade (o app apagaria a tarefa errada). Ver
-     * [negaComCorrecao].
+     * A forma é "determinante (ou demonstrativo) + substantivo", ou só o determinante — que é o
+     * que separa a correção da continuação nos dois sentidos:
      *
-     * As cópulas ([COPULAS]) entram aqui de propósito: são justamente elas que abrem o caso em
-     * que o veredito depende do que vem DEPOIS (ver [nomeiaAlvo]). Sem elas na lista, o ramo das
-     * cópulas seria inalcançável — foi o que a mutação mostrou.
+     * - `"não **o dentista**"`, `"não, **quero o de diabetes**"` (o verbo é a moldura, o alvo vem
+     *   depois dele), `"não **essa** consulta"` — nomeia alvo, é correção;
+     * - `"não vou poder ir"`, `"não da tempo"`, `"não me sinto bem"` — nenhum determinante em
+     *   posição de alvo, é continuação e o comando age.
+     *
+     * Só as DUAS primeiras palavras contam: um determinante solto no fim ("... não, o") não é
+     * alvo, e um determinante que aparece tarde é parte da oração ("não vou poder ir **o** dia
+     * inteiro"), não do alvo. E o substantivo tem de ter corpo — "não é **o** que eu queria" não
+     * nomeia tarefa nenhuma.
+     *
+     * A varredura pula a moldura da reformulação ("quero o de diabetes") e a cópula ("não é o de
+     * pressão", "não é isso, o dentista"), e o veredito é da PRESENÇA do alvo — não da
+     * identidade do primeiro token, que foi o que falhou nas três tentativas anteriores. Uma
+     * palavra a mais não abre a porteira: "não vou poder ir o dia inteiro" tem o determinante a
+     * três tokens do conector, e continua sendo continuação.
      */
-    private val VERBOS_CONJUGADOS = setOf(
-        "e", "eh", "era", "sao", "for",
-        "vou", "vai", "vais", "vamos",
-        "posso", "pode", "podia", "poderia", "pude",
-        "preciso", "precisa", "precisava",
-        "quero", "quer", "queria", "quis",
-        "consigo", "consegue", "consegui",
-        "sei", "sabe", "sabia",
-        "tenho", "tem", "tinha", "tive",
-        "deu", "dei", "dou",
-        "fui", "foi", "vim", "venho", "veio",
-        "ficou", "fico", "fiquei",
-        "deixa", "deixei", "deixou",
-        "esqueci", "esqueceu",
-        "lembro", "lembrei",
-        "perdi", "perdeu",
-        "faltou", "sobrou",
-        "adianta", "funciona", "funcionou", "vale", "valeu",
-        "aconteceu", "acontece",
-        "estou", "estava", "estive",
-        "conheco", "moro", "trabalho", "estudo",
+    private fun nomeiaAlvoDepois(rest: String, from: Int, primeiro: Boolean): Boolean {
+        val depois = rest.substring(from).trimStart(' ', ',', '.', '!', '?', ';', ':')
+        val tokens = depois.split(' ').map { it.trim(',', '.', '!', '?', ';', ':') }
+            .filter { it.isNotBlank() }
+        // A fala ACABA no conector: "cancela o médico, não". Ela começou a se corrigir e parou,
+        // e agir sobre o alvo descartado é o pior desfecho — bloqueia. Quando o vazio vem depois
+        // de uma continuação ("... não vou poder ir, não"), o "não" é a ÊNFASE da fala, não o
+        // começo de uma correção: o comando age.
+        if (tokens.isEmpty()) return primeiro
+        var i = 0
+        if (i >= tokens.size) return false
+        // A moldura da reformulação ("quero o de diabetes") ou a cópula ("não é o de pressão",
+        // "não é isso, o dentista") vêm ANTES do alvo e não decidem nada.
+        if (tokens[i] in MOLDURA || tokens[i] in COPULAS) i++
+        if (i >= tokens.size) return false
+        // O alvo é um dia ("não, hoje", "não é amanhã")...
+        if (tokens[i] in TEMPORAIS_DE_CORRECAO) return true
+        // ...ou um determinante seguido de um substantivo ("não o dentista", "não, quero o de
+        // diabetes"). O determinante sozinho no fim não nomeia nada ("... não, o").
+        if (tokens[i] !in DEMONSTRATIVOS) return false
+        if (i + 1 >= tokens.size) return false
+        // "não é o que eu queria": o "que" não é substantivo.
+        return tokens[i + 1] !in PALAVRAS_FUNCIONAIS
+    }
+
+    /**
+     * Os verbos que podem abrir a reformulação sem serem o alvo — "quero **o de diabetes**",
+     * "tenho **o dentista**". Eles não decidem nada: o veredito é do alvo que vem depois.
+     *
+     * A lista existe porque a alternativa posicional pura ("pula qualquer palavra") custava as
+     * continuações que têm um determinante depois do verbo — "não **vale a pena**", "não
+     * **chegou o** dinheiro", "não **vou a** pé" viravam correção e o comando deixava de agir.
+     * Só os verbos de ESCOLHA e POSSE reformulam um alvo, e são esses que entram.
+     *
+     * O preço é a assimetria conhecida: um verbo de escolha que falte aqui faz a reformulação ser
+     * lida como continuação e o comando age sobre o alvo descartado. O corpus de reformulação
+     * (`reformulacaoQueAbreComVerboNaoAgeSobreOAlvoDescartado`) é quem prende a lista.
+     */
+    private val MOLDURA = setOf(
+        "quero", "queria", "quer", "quis",
+        "prefiro", "preferia",
+        "tenho", "tem", "tinha",
+        "fico", "gosto", "pego", "escolho",
     )
 
-    /** As cópulas: o veredito delas sai do que vem DEPOIS (ver [negaComCorrecao]). */
+    /** As cópulas: elas abrem a reformulação ("não é o de pressão") e não decidem nada. */
     private val COPULAS = setOf("e", "eh", "era", "sao", "for")
+
+    /** Os dias que, depois do conector, nomeiam o alvo da correção ("não, hoje", "não é amanhã"). */
+    private val TEMPORAIS_DE_CORRECAO = setOf("hoje", "amanha", "ontem")
+
+    /**
+     * O que NÃO pode ser o substantivo de um alvo: o pronome relativo ("o **que** eu queria") e
+     * os interrogativos. Sem esta poda, "não é o que eu queria" — que é continuação — era lido
+     * como alvo só porque "o" abre a frase.
+     *
+     * As PREPOSIÇÕES ficam de fora da poda de propósito: "o **de** diabetes" e "o **de** pressão"
+     * são alvos de verdade (o determinante abre, a preposição liga ao nome), e podá-las fazia a
+     * correção ser lida como continuação — o app registrava a dose errada.
+     */
+    private val PALAVRAS_FUNCIONAIS = setOf(
+        "que", "quem", "qual", "quais", "onde", "quando", "como",
+    )
+
+    /**
+     * Os conectores com que ela se corrige. A âncora é `(^|[\s,])` e o rabo `([\s,\.!?;:]|$)`:
+     * o reconhecedor pontua de formas diferentes — a mesma fala chega ", melhor,", ", errei." e
+     * ", mentira" —, e um conector que escapasse deixaria a frase agir sobre o alvo descartado,
+     * calada. O rabo não é só espaço e vírgula: "cancela o médico, errei. o dentista" era o mesmo
+     * defeito com o ponto no lugar da vírgula.
+     *
+     * Entram os que o catálogo não media e são vocabulário plausível de correção falada: "quero
+     * dizer" e "quis dizer" (as duas formas correntes — só a segunda estava na lista, e o
+     * comentário e a lista falavam de coisas diferentes), "me enganei", "corrigindo", "mentira",
+     * "ta errado", "alias", "esquece", "perai", "deixa pra la" e "desculpa" — todos são ela
+     * voltando atrás no que acabou de dizer.
+     *
+     * O `não` NÃO está aqui: ele é o único com ambiguidade de continuação, e por isso o veredito
+     * dele passa por [negaComCorrecao] e [nomeiaAlvoDepois] em vez da presença.
+     *
+     * Ficaram DE FORA os que não voltam atrás de nada: "espera", "depois", "agora" e "então".
+     * "não é isso" não é um conector à parte — é o próprio `não` seguido de demonstrativo, e cai
+     * no veredito de alvo como qualquer outra fala do `não`.
+     */
+    private val CONTENT_CUE = Regex(
+        "(^|[\\s,])(quero dizer|quis dizer|quer dizer|na verdade|ao inves disso|em vez disso|" +
+            "ta errado|deixa pra la|me enganei|corrigindo|mentira|alias|esquece|perai|desculpa|" +
+            "digo|melhor|errei)([\\s,.!?;:]|$)",
+    )
 
 
     /**

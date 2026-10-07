@@ -41,6 +41,17 @@ class HybridParser(
          * escreve/desmente não pode divergir sem que o compilador veja.
          */
         const val NOTA_RECORRENCIA_PERDIDA = "A ajuda extra disse que repete"
+
+        /**
+         * O prefixo da nota que a fronteira da IA escreve quando o campo da recorrência veio **fora
+         * da faixa** do calendário (`day_of_month = 32`, `month_of_year = 13`).
+         *
+         * Vale o mesmo raciocínio da [NOTA_RECORRENCIA_PERDIDA], e é por isso que ela mora aqui: a
+         * nota afirma que a repetição se perdeu, mas quem decide se a perda houve é o merge — o
+         * local pode ter a regra certa e restaurá-la. Quando o desfecho repete, "Ficou sem essa
+         * parte" é falso: a parte está lá, e o descarte do campo inválido não custou nada.
+         */
+        const val NOTA_FAIXA_DESCARTADA = "A ajuda extra devolveu uma data fora do calendário"
     }
 
     suspend fun parse(transcript: String): ParsedTaskDraft {
@@ -219,17 +230,29 @@ class HybridParser(
         // contradição visível que o app inteiro evita — vale na direção inversa: não afirmar uma
         // perda que não houve.
         //
-        // O critério é o desfecho final — o campo **existe** no rascunho —, e não "o local tinha o
-        // campo": quando ninguém o tem, o final fica sem ele e a nota permanece. Aí ela é
-        // verdadeira, e sem ela a perda seria muda. É o mesmo juiz da nota de recorrência, com o
-        // sinal trocado porque a pergunta também é outra: a recorrência pergunta "repete?", a data
-        // pergunta "existe?".
+        // São **dois juízes**, e cada nota responde ao seu. O da recorrência pergunta "o desfecho
+        // repete?"; quando repete, a perda não houve e as duas notas que a afirmam caem juntas — a
+        // de recorrência incompleta e a de faixa (o campo inválido descartado, com o local
+        // restaurando a regra, não custou nada: "Ficou sem essa parte" é falso, a parte está lá).
+        // Quando o local também não reconheceu nada, o final é `NONE` e as notas ficam — e aí são
+        // verdadeiras, e sem elas a perda seria silenciosa.
+        //
+        // O da data/hora pergunta "o campo **existe** no rascunho?" — o mesmo juiz, com o sinal
+        // trocado porque a pergunta é outra: a recorrência pergunta "repete?", a data pergunta
+        // "existe?". Ele não depende da recorrência, e por isso é avaliado fora do `if`: uma nota de
+        // data ao lado de uma regra que repete continua sendo uma nota falsa se a data está lá.
+        //
+        // As listas não se atropelam: `IA_SOBRE_A_DATA`/`IA_SOBRE_A_HORA` falam do `local_date`/
+        // `local_time`; `NOTA_FAIXA_DESCARTADA` fala do campo da **recorrência** (`day_of_month`,
+        // `month_of_year`). Prefixos distintos, assuntos distintos — a de faixa não entra em
+        // `IA_SOBRE_A_DATA`.
         val notasQueOFinalDesmente = buildSet {
             if (finalTemData) addAll(NotasDoRascunho.IA_SOBRE_A_DATA)
             if (finalTemHora) addAll(NotasDoRascunho.IA_SOBRE_A_HORA)
         }
         val doRemoto = remotas.filterNot { nota ->
-            (recorrenciaFinalRepete && nota.startsWith(NOTA_RECORRENCIA_PERDIDA)) ||
+            (recorrenciaFinalRepete &&
+                (nota.startsWith(NOTA_RECORRENCIA_PERDIDA) || nota.startsWith(NOTA_FAIXA_DESCARTADA))) ||
                 notasQueOFinalDesmente.any { nota.startsWith(it) }
         }
         return (doLocal + doRemoto).distinct()

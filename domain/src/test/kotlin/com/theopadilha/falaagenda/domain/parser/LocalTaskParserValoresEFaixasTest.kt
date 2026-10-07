@@ -2,6 +2,7 @@ package com.theopadilha.falaagenda.domain.parser
 
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.domain.model.MissingDraftField
+import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import org.junit.Test
 import java.time.LocalDate
@@ -251,12 +252,18 @@ class LocalTaskParserValoresEFaixasTest {
         // O alvo 3 ("2 caixas" fica no título) preservava também o dígito que o parser JÁ usou como
         // dia, hora ou recorrência. Os valores esperados são os títulos do `main` (fbebfa9) medidos
         // com este mesmo relógio de 2026-08-20 10:00 — a regressão é o PR tê-los mudado.
+        //
+        // EXCEÇÃO (07/10): "toda semana 5 da tarde" esperava "Toda semana", mas esse valor do `main`
+        // CONGELA um defeito — o `main` não reconhece "toda semana" como recorrência: devolve
+        // `rec=NONE` (tarefa única, que não repete) e deixa o ruído "Toda semana" preso no título.
+        // O ramo do #68 conserta as duas coisas (`rec=WEEKLY` e o ruído fora do título), então aqui
+        // o esperado é o título vazio. As outras nove entradas seguem valendo como guarda.
         val doMain = mapOf(
             "todo dia 5 caminhar" to "Caminhar",
             "tomar remédio 8 da manhã" to "Tomar remédio",
             "amanhã consulta dia 5 de manhã" to "Consulta dia",
             "todo dia 5 da tarde" to "",
-            "toda semana 5 da tarde" to "Toda semana",
+            "toda semana 5 da tarde" to "",
             "tomar remédio todo dia 5 da tarde" to "Tomar remédio",
             "pagar conta no dia 25 e no dia 30" to "Pagar conta dia dia",
             "tomar remédio às 8 em ponto e às 20h" to "Tomar remédio ponto",
@@ -266,6 +273,19 @@ class LocalTaskParserValoresEFaixasTest {
         doMain.forEach { (frase, tituloNoMain) ->
             assertThat(parser.parse(frase).title).isEqualTo(tituloNoMain)
         }
+
+        // O que justifica a exceção acima, preso como asserção positiva: "toda semana" é uma
+        // RECORRÊNCIA semanal (não uma tarefa única) e não sobra no título. Sem isto, a exceção
+        // seria só um valor trocado para o teste ficar verde.
+        val semanal = parser.parse("toda semana caminhar")
+        assertThat(semanal.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(semanal.title).isEqualTo("Caminhar")
+
+        val comHora = parser.parse("toda semana às 17h caminhar")
+        assertThat(comHora.recurrence.kind).isEqualTo(RecurrenceKind.WEEKLY)
+        assertThat(comHora.localTime).isEqualTo(LocalTime.of(17, 0))
+        assertThat(comHora.title).isEqualTo("Caminhar")
+        assertThat(comHora.missingFields).isEmpty()
 
         // A quantidade genuína continua no título — é o alvo 3, e não pode regredir de volta.
         assertThat(parser.parse("comprar 2 caixas de leite amanhã às 10h").title)

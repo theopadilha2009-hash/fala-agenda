@@ -268,6 +268,161 @@ INV5 CAPTURA-LEGITIMA-DESVIADA = 0 de 24
   caminho escalado ficou sem medição.
 - **Não foi varrido o `data/`** em busca de um guard de duplicata fora do `saveDraft`.
 
+## Parte C — a disfluência: hesitação, gagueira e muleta
+
+Terceira caçada. Nenhuma das nove anteriores mediu isto, e é o que o reconhecimento de fala
+entrega na prática: **uma idosa não fala em frase limpa.** Ela hesita, gagueja, se repete e
+usa muleta. Todas as sondas rodaram em cópia descartável, com o parser real.
+
+### Correção de premissa (método)
+
+O briefing dizia "salva calado, sem mostrar a tela". O fluxo real é `canQuickConfirm=true`
+(`HomeScreen.kt:259`) → **`QuickConfirmDialog` ("Pode salvar?")** com **`Salvar` no slot
+primário** (`QuickConfirmDialog.kt:118-127`). Não é salvo sem interação — é **um toque**, com
+o valor errado já preenchido e o botão certo em destaque. A classe de erro é a mesma; o
+número de toques é 1, não 0.
+
+### A1 [P0] Muleta dentro do período do dia → erro de 12 horas, silencioso
+
+```
+S4 controle "tomar remédio amanhã às oito da noite"        -> hora=20:00 amb=false qc=true
+S4 hesit    "tomar remédio amanhã às oito da, hã, noite"   -> hora=08:00 amb=false qc=true
+S4 VIOLA-SILENCIOSO: qc=true 20:00 -> 08:00
+```
+
+Ela veria **"Tomar remédio / Amanhã às 08:00"** e um toque em Salvar. **Remédio da noite às 8
+da manhã.** Varredura de 11 horas × 3 períodos: **16 de 33 violam, 10 silenciosas.** A faixa
+perigosa é exata:
+
+```
+"…às sete da, hã, tarde" -> 19:00 virou 07:00 amb=false SILENCIOSO(qc=true)
+"…às oito da, hã, noite" -> 20:00 virou 08:00 amb=false SILENCIOSO(qc=true)
+"…às onze da, hã, tarde" -> 23:00 virou 11:00 amb=false SILENCIOSO(qc=true)
+"…às uma da, hã, tarde"  -> 13:00 virou 01:00 amb=true  qc=false
+```
+
+Horas **1–6** quebradas ficam `amb=true` (escala, seguro). Horas **7–11** ficam `amb=false` +
+`qc=true` — **o mesmo número da manhã, cravado com cara de certeza.**
+
+**Causa raiz** (`LocalTaskParser.kt`): os qualificadores da hora são **adjacentes por
+construção** — `trailingMinutes` (`:469`, `m.range.first != from`) e `TRAILING_PERIOD` (`:480`,
+`p.range.first == after`) exigem colagem. Uma muleta no meio os desconecta. E `noPeriod`
+(`:492`) consulta `PERIOD_PHRASE` no **texto inteiro**, então o "tarde" solto no fim mantém
+`noPeriod=false` — nem ambíguo fica. Bônus: a muleta entra no título (`"Tomar remédio ah"`).
+
+### A2 [P0] Muleta dentro do minuto ("e meia") → perde 30 min, silencioso
+
+```
+S4 controle "…às oito e meia"      -> hora=08:30 amb=false qc=true
+S4 hesit    "…às oito, hã, e meia" -> hora=08:00 amb=false qc=true
+S4 VIOLA-SILENCIOSO: qc=true 08:30 -> 08:00
+```
+
+**6 de 6** casos. Mesma causa raiz (adjacência do `MINUTE_TAIL`). `"nove e meia"` → 09:00;
+`"oito e quinze"` → 08:00, e o "quinze" ainda sobra no título.
+
+### A3 [P0] Muleta imediatamente antes da hora → a hora some
+
+```
+"tomar remédio amanhã às oito"      -> hora=08:00 amb=false qc=true
+"tomar remédio amanhã às, hã, oito" -> hora=null  amb=false qc=false titulo="Tomar remédio oito"
+```
+
+**69 de 981** variações perdem a hora. Não inventa hora errada (`qc=false` → tela de edição),
+mas ela tem que **ditar de novo** — e o título fica `"Tomar remédio oito"`, com a hora no nome.
+
+### A4 [P1] O "ou" da indecisão: escolhe a primeira e deixa o Salvar pronto
+
+```
+"tomar remédio amanhã às oito ou nove" -> hora=08:00 amb=false qc=true titulo="Tomar remédio ou nove"
+```
+
+Ela hesitou entre oito e nove; o app cravou oito e não marcou ambíguo.
+
+### A5 [P1] Gagueira da hora → extração perdida (não inventa)
+
+```
+"tomar remédio amanhã às 21h 21h"          -> hora=null amb=true qc=false
+"oito, oito horas tomar remédio amanhã"    -> hora=null amb=false qc=false titulo="Oito, tomar remédio"
+"tomar remédio amanhã às oito, oito horas" -> hora=08:00 qc=true titulo="Tomar remédio oito"
+```
+
+A gagueira da hora nunca gera hora errada — ou some (seguro) ou repete a mesma. O resíduo é
+o título.
+
+### A6 [P2] Muleta e gagueira no nome da tarefa — 476 de 981 variações
+
+```
+"ah, deixa eu ver, tomar remédio amanhã às oito" -> titulo="Deixa eu tomar remédio"
+"tipo assim, tomar remédio amanhã às oito"       -> titulo="Tipo tomar remédio"
+"olha, eu preciso tomar remédio amanhã às oito"  -> titulo="Eu tomar remédio"
+"tomar remédio, hã, às oito amanhã"              -> titulo="Tomar"          <- a tarefa se chama "Tomar"
+"tomar, tomar remédio amanhã às oito"            -> titulo="Tomar, remédio" <- vírgula no nome
+"tomar remedio amanha as oito ne"                -> titulo="Tomar remedio ne"
+```
+
+`"Tomar"` sozinho e `"Tomar, remédio"` são novos (o catálogo de 06/10 registrou a classe em
+`"Ãh remédio"`). Todos com `qc=true`.
+
+### Oráculo
+
+| invariante | casos | violações |
+|---|---|---|
+| **I1** acrescentar hesitação não muda data nem hora (conjunto à mão) | 16 | **0** |
+| **I1'** o mesmo, varredura sistemática (posição × 16 marcadores × vírgula × gagueira) | **981** | **154** (85 silenciosas, 69 perdeu) |
+| **I2** hesitação não muda o título | 16 | **8** |
+| **I3** `qc=true` ⇒ data/hora são as que ela disse | 9 | **4** |
+| **I4** sem acento/minúsculo/ordem trocada dá o mesmo | 5 | data/hora **0**, título **5** |
+| **I5** título nunca carrega muleta | 15 | **5** |
+| **I7** período do dia não muda com muleta no meio | 33 | **16** (10 silenciosas) |
+| **I8** "e meia" não muda com muleta no meio | 6 | **6** (6 silenciosas) |
+| data muda com hesitação/gagueira | 981 | **0** |
+
+```
+PROBE| C total casos=981 quebraHora=154 quebraData=0 perdeQC=69 tituloComMuleta=476
+```
+
+**A lição de método se repetiu, e é a segunda vez no dia:** o conjunto **escolhido à mão**
+(I1, 16 casos) deu **0 violações**; a varredura sistemática do **mesmo eixo** deu **154**. A
+sonda manual não acha — o gerador acha.
+
+### Diferencial — pré-existente, e nenhum PR aberto toca
+
+Números **idênticos** nos três commits, com `--rerun-tasks`:
+
+| commit | o que é | quebraHora / silenciosas / perdeQC / título |
+|---|---|---|
+| `83bf24b` | clone local | 154 / 85 / 69 / 476 |
+| **`ca65eeb`** | **main real do GitHub hoje** (#62) | **154 / 85 / 69 / 476** |
+| `4c93a2b` | head do PR **#68** (o único aberto que mexe em `extractDate`/`extractTime`) | 154 / 85 / 69 / 476 |
+
+Não duplica os nove anteriores: a Parte A cobre a **correção com conector** (`"não,"`,
+`"quer dizer,"`), eixo distinto e com causa raiz distinta (`found.size > 1` → hora nula). O
+catálogo de 06/10 (itens 4 e 9) registrou a muleta no título. **Nada mediu o período ou o
+minuto quebrado por hesitação (A1/A2) nem a hora que some (A3)** — são novos.
+
+### Medido e OK nesta parte (não refazer)
+
+- **O caminho limpo:** `"tomar remédio amanhã às oito"` → 21/08 08:00, `amb=false`, `qc=true`.
+- **ASR cru não quebra data/hora:** sem acento, minúsculo, tudo junto, ordem trocada, sem
+  pontuação — **0 de 5** violações de data/hora. `"amanha as oito e meia tomar remedio"` →
+  08:30. O parser **não depende de acento, ordem nem pontuação** (só o título ecoa a forma).
+- **Hesitação ANTES da frase é inofensiva:** `"é... tomar remédio"`, `"né, então, ..."`,
+  `"bom, então, ..."` → data, hora e título corretos.
+- **Data nunca muda** com hesitação ou gagueira: `quebraData=0` em 981 casos.
+- **Gagueira de hora não inventa:** `"21h 21h"` → `null` + `amb=true` (seguro).
+
+### Não confirmado nesta parte
+
+- **Se a IA remota resgata.** Os casos `amb=true` escalam via `HybridParser.deveEscalar`. **Os
+  silenciosos (A1/A2, `qc=true`) não escalam** — `deveEscalar` só dispara com campo faltando ou
+  `ambiguous` —, então esse caminho está fechado mesmo com a IA ligada. A IA não foi chamada.
+- **Forma real da hesitação no áudio.** Testado texto; as três formas de inserção (com vírgula,
+  sem, e reticências) quebram todas.
+- **Se o `PERIOD_PHRASE` global é intencional.** Ele existe para `"hoje à noite às nove"` não
+  virar ambíguo, mas é o que mascara `noPeriod` no caso A1. Um fix de adjacência precisa
+  decidir isso antes.
+
 ## Medido e OK (não refazer)
 
 - **Sem correção, o caminho está limpo.** `"me lembra de tomar remédio amanhã às nove"` →
@@ -324,3 +479,15 @@ INV5 CAPTURA-LEGITIMA-DESVIADA = 0 de 24
 7. **O guard de duplicata não existe.** Antes de qualquer edição falada de verdade, decidir o
    que fazer quando ela fala de um remédio que já existe — criar segunda série é o dano que o
    próprio código já reconhece (`HomeScreen.kt:913`).
+8. **A disfluência (Parte C) é a que mais machuca, e a de fix mais estrutural.** A1 e A2 são a
+   **mesma causa raiz** (adjacência dos qualificadores da hora: `trailingMinutes`/`TRAILING_PERIOD`
+   exigem `range.first == after`) e a **única classe que entrega valor errado com o Salvar
+   pronto**. O fix proposto é consumir os qualificadores por **janela com as muletas
+   removidas**, não por colagem — o que toca o núcleo do `extractTime`. Recomendo tratar
+   primeiro, e depois do fix **remedir a faixa 7–11 especificamente**: é ela que fica
+   `amb=false` hoje (1–6 já escala) e é onde o erro de 12 h passa calado.
+9. **`noPeriod` / `PERIOD_PHRASE` é decisão embutida no fix do item 8.** Hoje o período é
+   procurado no **texto inteiro**, o que mantém `noPeriod=false` mesmo com o qualificador
+   solto. O caso legítimo que ele protege é `"hoje à noite às nove"` (não virar ambíguo).
+   Recomendo: quando o qualificador **não está colado** na hora, marcar `amb=true` — o app já
+   tem o caminho seguro e ela prefere confirmar a receber o remédio na hora errada.

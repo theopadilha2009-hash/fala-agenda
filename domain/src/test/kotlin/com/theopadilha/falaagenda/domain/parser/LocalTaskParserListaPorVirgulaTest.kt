@@ -75,11 +75,40 @@ class LocalTaskParserListaPorVirgulaTest {
 
     @Test
     fun virgulaColadaJaPreservavaOsDoisItensENaoPodeRegredir() {
-        // Com a vírgula colada não há token com pontuação na borda — o defeito do lote não ocorre
-        // (o doc da caçada registra isso). O que este teste prende é o invariante: os dois itens
-        // continuam no título. A vírgula interna é o token cru, fora do escopo deste lote.
+        // Com a vírgula colada e DOIS itens não há token com pontuação na borda — o defeito do lote
+        // não ocorre (o doc da caçada registra isso). O que este teste prende é o invariante: os
+        // dois itens continuam no título. A vírgula interna é o token cru, fora do escopo deste
+        // lote; com TRÊS ou mais itens ela ainda derruba o item do meio (ver o teste de declaração
+        // abaixo).
         val draft = parser.parse("comprar pão,leite")
 
         assertThat(draft.title).isEqualTo("Comprar pão,leite")
+    }
+
+    @Test
+    fun virgulaColadaComTresItensAindaPerdeOItemDoMeioDeclaracao() {
+        // DECLARAÇÃO DO QUE AINDA FALTA, não expectativa de sucesso: a vírgula COLADA (sem espaço)
+        // não é token de borda, e o item do meio continua sumindo. É o mesmo defeito por outro
+        // caminho, fora do escopo deste lote. Quando alguém o fechar, este teste muda de propósito.
+        val draft = parser.parse("comprar pão,leite, ovos")
+
+        assertThat(draft.title).isEqualTo("Comprar pão,leite ovos")
+    }
+
+    @Test
+    fun espacoAntesDaVirgulaNaoRetemFiller() {
+        // O `,` solto virava `""` no `leftover` (o `isNotBlank()` roda antes do trim). `""` nunca
+        // casa por igualdade, mas `folded.startsWith("")` é sempre true: ele roubava o casamento da
+        // primeira palavra que chegava, e o filler sobrevivia no título.
+        assertThat(parser.parse("lembrar de comprar pão , leite").title).isEqualTo("Comprar pão leite")
+        assertThat(parser.parse("anotar pão , leite").title).isEqualTo("Pão leite")
+        assertThat(parser.parse("marcar médico , dentista").title).isEqualTo("Médico dentista")
+    }
+
+    @Test
+    fun espacoAntesDaVirgulaNaoDeixaEspacoDuploNoTitulo() {
+        val draft = parser.parse("comprar pão , leite")
+
+        assertThat(draft.title).isEqualTo("Comprar pão leite")
     }
 }

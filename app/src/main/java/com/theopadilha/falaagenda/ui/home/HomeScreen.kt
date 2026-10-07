@@ -88,6 +88,7 @@ import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.speech.unwrapActivity
 import com.theopadilha.falaagenda.ui.AgendaFormat
 import com.theopadilha.falaagenda.ui.DraftSaver
+import com.theopadilha.falaagenda.ui.TRUNCATED_NOTICE
 import com.theopadilha.falaagenda.ui.capture.QuickConfirmDialog
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.PulsingMic
@@ -1019,15 +1020,6 @@ internal fun mayQuickConfirm(
     now: Instant,
     zone: ZoneId,
 ): Boolean = !truncated && draft.canQuickConfirm(now, zone)
-
-/**
- * O que o microfone diz quando foi o app que parou de ouvir. Primeira pessoa de propósito:
- * o corte não é dela — o texto veio de um parcial ou do prazo de escuta, não do fim da fala
- * (ver `VoiceCaptureController.finishWith`). O convite a falar de novo é a saída; sem ele o
- * aviso só contaria o problema.
- */
-internal const val TRUNCATED_NOTICE =
-    "Ouvi só uma parte. Parei de ouvir antes do fim — fale de novo se faltou algo."
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable

@@ -13,6 +13,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
@@ -22,11 +23,14 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceEngine
 import com.theopadilha.falaagenda.speech.VoiceState
+import com.theopadilha.falaagenda.ui.FalaAgendaRoot
+import com.theopadilha.falaagenda.ui.TRUNCATED_NOTICE
 import com.theopadilha.falaagenda.ui.theme.FalaAgendaTheme
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -182,6 +186,108 @@ class RecadoCortadoTest {
         val rascunho = rascunho()
 
         assertThat(mayQuickConfirm(rascunho, truncated = true, agora, zone)).isFalse()
+    }
+
+    /**
+     * O aviso de corte tem de chegar na tela onde ela decide se o recado está certo.
+     *
+     * O buraco do PR: todo recado cortado tem texto não-vazio, então ele produz rascunho e a
+     * home navega para a confirmação — e o `NavHost` só compõe o destino atual. O aviso, que
+     * vivia só na `MicDock` da home, saía da composição no mesmo instante. Ela lia "Você
+     * disse: "Tomar"" na tela onde aperta "Salvar", sem nenhuma menção ao corte: a queixa
+     * original de novo, com o aviso existindo só por um intervalo.
+     *
+     * O caminho é o de verdade: a fala inteira atravessa o controller, o parse roda no
+     * `HomeViewModel` e a navegação acontece. Um teste que parasse na home não prenderia
+     * nada — foi exatamente ele que deixou este buraco passar.
+     */
+    @Test
+    fun oAvisoDeCorteChegaNaTelaOndeElaConfirma() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        val container = AppContainer(context)
+        // Sem o onboarding a raiz abre nele em vez da home, e o recado nunca chegaria na
+        // confirmação. A tela de boas-vindas não é o assunto deste teste.
+        runBlocking { container.settings.setOnboardingComplete() }
+
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                FalaAgendaRoot(container = container)
+            }
+        }
+        compose.waitForIdle()
+
+        // A escuta de verdade, com o motor parando no meio: o parcial "tomar" é o recado.
+        container.voice.start(context)
+        idle()
+        val engine = shadowOf(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
+        engine.triggerOnReadyForSpeech(Bundle())
+        engine.triggerOnPartialResults(
+            Bundle().apply {
+                putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("tomar"))
+            },
+        )
+        engine.triggerOnError(SpeechRecognizer.ERROR_NO_MATCH)
+
+        // O parse (local, sem IA) e a navegação: a tela de confirmação é a que a espera
+        // termina mostrando, e é ela que o teste precisa alcançar.
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText(TRUNCATED_NOTICE).fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Estar na confirmação é parte do que se afirma: o aviso da `MicDock` da home também
+        // casa com o texto, e um teste que parasse aqui passaria com o app ainda na home —
+        // exatamente o buraco que este caso existe para fechar. A tela onde ela confirma é a
+        // que tem o título e o "Você disse" do recado cortado, e é nela que o aviso tem de
+        // estar; a `MicDock` da home já saiu da composição.
+        compose.onNodeWithText("Confira antes de salvar").assertIsDisplayed()
+        compose.onNodeWithText("Você disse: “tomar”").assertIsDisplayed()
+        compose.onNodeWithText(TRUNCATED_NOTICE).assertIsDisplayed()
+    }
+
+    /**
+     * O recado inteiro **não** pode levar o aviso para a confirmação.
+     *
+     * O caminho do recado cortado e o do recado inteiro passam pelo mesmo `onDraftReady` da
+     * home — a marca não pode ser do caminho, e sim da escuta que produziu aquele rascunho.
+     * Um `true` fixo ali faria toda fala normal chegar na confirmação dizendo que o app parou
+     * de ouvir, o que é uma mentira nova no lugar do silêncio antigo.
+     */
+    @Test
+    fun oRecadoInteiroNaoLevaOAvisoParaATelaOndeElaConfirma() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        val container = AppContainer(context)
+        runBlocking { container.settings.setOnboardingComplete() }
+
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                FalaAgendaRoot(container = container)
+            }
+        }
+        compose.waitForIdle()
+
+        container.voice.start(context)
+        idle()
+        val engine = shadowOf(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
+        engine.triggerOnReadyForSpeech(Bundle())
+        engine.triggerOnPartialResults(
+            Bundle().apply {
+                putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("tomar"))
+            },
+        )
+        // O fim normal da fala: o motor devolve o texto, e ele não veio de um parcial.
+        engine.triggerOnEndOfSpeech()
+        engine.triggerOnResults(
+            Bundle().apply {
+                putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("tomar"))
+            },
+        )
+
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Confira antes de salvar").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        compose.onNodeWithText("Você disse: “tomar”").assertIsDisplayed()
+        compose.onNodeWithText(TRUNCATED_NOTICE).assertDoesNotExist()
     }
 
     /** O caminho normal continua igual: quem decide é o `canQuickConfirm` de sempre. */

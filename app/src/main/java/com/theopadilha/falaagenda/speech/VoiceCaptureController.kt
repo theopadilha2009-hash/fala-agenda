@@ -76,6 +76,21 @@ class VoiceCaptureController(
     /**
      * O prazo venceu. O que já veio reconhecido não se joga fora: perder a fala no meio do
      * recado é pior que ouvir de novo. Sem parcial, aí sim é o erro de sempre.
+     *
+     * O prazo vencido marca **todo** parcial como cortado, e é possível que o recado estivesse
+     * inteiro: o endpointer do Kaldi não avisou dentro dos 20 s (`LISTENING_TIMEOUT_MS`), e o
+     * texto que ficou é o último parcial. Ela é então convidada a "falar de novo se faltou
+     * algo" sem ter faltado nada.
+     *
+     * Não dá para distinguir os dois casos com o que existe aqui. "O parcial está completo" não
+     * tem sinal: o `partialResult` do Vosk devolve o mesmo texto durante a pausa e depois dela,
+     * e um resultado final que não chegou é, por definição, um resultado que não temos. A única
+     * testemunha seria o próprio endpointer — que é justamente quem calou.
+     *
+     * E as duas leituras erradas não custam o mesmo. Marcar um recado íntegro manda ela conferir
+     * um texto que já está certo: um convite a mais, que o aviso deixa claro que é opcional.
+     * Não marcar um recado cortado é o defeito medido: o parcial "tomar" passa por recado
+     * inteiro e vira uma tarefa que ela não disse. Fica o custo menor.
      */
     private fun giveUpOnTimeout(error: Int) {
         val heard = _ui.value.partial.trim()

@@ -92,6 +92,19 @@ fun FalaAgendaRoot(
     // Recado em andamento: girar o aparelho no meio do rascunho não pode jogar fora
     // nem o que foi ditado nem a tarefa que estava sendo editada.
     var draft by rememberSaveable(stateSaver = DraftSaver) { mutableStateOf<ParsedTaskDraft?>(null) }
+    // O recado que o app cortou vai junto com o rascunho, e não só na `MicDock` da home.
+    //
+    // A `MicDock` sai da composição no instante em que a confirmação abre — o `NavHost` só
+    // compõe o destino atual —, e era lá que o aviso vivia. Ela então lia "Você disse:
+    // "Tomar"" na tela onde aperta "Salvar", sem nenhuma menção ao corte: a queixa original
+    // de novo, com o aviso existindo só enquanto o parse rodava.
+    //
+    // Viaja separado do `ParsedTaskDraft` de propósito: o `DraftSaver` é o formato salvo no
+    // Bundle e o rascunho é montado em quatro lugares que nada sabem de fala (a edição, o
+    // "Repetir amanhã", o QuickRemind, a tela de escrever) — um campo novo no modelo obrigaria
+    // todos eles a responder uma pergunta que não é deles. Aqui é um booleano só, do lado de
+    // quem ouviu.
+    var draftTruncated by rememberSaveable { mutableStateOf(false) }
     // A tarefa editada é guardada pelo id e reencontrada na agenda: o item inteiro não
     // cabe no Bundle e, relido da agenda, volta sempre com o estado do banco.
     var editingItemId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -156,6 +169,7 @@ fun FalaAgendaRoot(
     // no aviso: a tela de confirmação, com o rascunho dela.
     val openForEdit: (AgendaItem) -> Unit = { item ->
         editingItemId = item.occurrence.id
+        draftTruncated = false
         draft = ParsedTaskDraft(
             title = item.series.title,
             localDate = item.occurrence.localDate,
@@ -251,6 +265,15 @@ fun FalaAgendaRoot(
                 },
                 onDraftReady = {
                     editingItemId = null
+                    // O recado que o app cortou leva a marca para a confirmação. Lida da
+                    // escuta de agora: `consumeFinal` já zerou o `finalText`, mas preservou o
+                    // `truncated` justamente para este momento — a escuta seguinte é outra, e
+                    // a marca não se acumula de um recado para o próximo.
+                    //
+                    // O caminho da caixa rápida (ver `mayQuickConfirm`) não passa por aqui
+                    // quando o recado é íntegro, e quando passa é porque foi cortado: os dois
+                    // desfechos da home chegam neste ponto com a mesma leitura da escuta.
+                    draftTruncated = container.voice.ui.value.truncated
                     draft = it
                     nav.navigate("confirm") {
                         launchSingleTop = true
@@ -352,6 +375,9 @@ fun FalaAgendaRoot(
                 key(current, editingItemId) {
                     ConfirmDraftScreen(
                         initial = current,
+                        // O corte vem daqui, e não do rascunho: é na tela onde ela aperta
+                        // "Salvar" que ele precisa estar visível (ver `draftTruncated`).
+                        truncated = draftTruncated,
                         // A gravação *desta* tela — e não o `busy` do ViewModel, que também
                         // fica verdadeiro para a escrita de outra tela: com ele, a tela presa
                         // aqui mostrava "Salvando…" por causa de uma gravação que não era dela.
@@ -576,6 +602,19 @@ fun FalaAgendaRoot(
         }
     }
 }
+
+/**
+ * O que a tela diz quando foi o app que parou de ouvir. Primeira pessoa de propósito: o
+ * corte não é dela — o texto veio de um parcial ou do prazo de escuta, não do fim da fala
+ * (ver `VoiceCaptureController.finishWith`). O convite a falar de novo é a saída; sem ele o
+ * aviso só contaria o problema.
+ *
+ * Mora aqui, e não na home, porque as duas telas em que o recado cortado aparece precisam
+ * dizer a mesma coisa: a `MicDock` enquanto o parse roda, e a confirmação — onde ela de fato
+ * decide — depois. Uma frase só, dois lugares.
+ */
+internal const val TRUNCATED_NOTICE =
+    "Ouvi só uma parte. Parei de ouvir antes do fim — fale de novo se faltou algo."
 
 /**
  * A leitura da agenda falhou com a tela de edição aberta — a morte do processo no meio da

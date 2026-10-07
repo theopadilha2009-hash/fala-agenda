@@ -52,6 +52,7 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.toPtBrShort
 import com.theopadilha.falaagenda.ui.AgendaFormat
+import com.theopadilha.falaagenda.ui.TRUNCATED_NOTICE
 import com.theopadilha.falaagenda.ui.components.PrimaryButton
 import com.theopadilha.falaagenda.ui.components.QuietCard
 import com.theopadilha.falaagenda.ui.components.SecondaryButton
@@ -68,6 +69,14 @@ fun ConfirmDraftScreen(
     initial: ParsedTaskDraft,
     onCancel: () -> Unit,
     onSave: (ParsedTaskDraft) -> Unit,
+    /**
+     * O recado veio de uma fala que o app cortou. É **esta** tela que decide se o recado
+     * está certo — é aqui que ela lê o que foi entendido e aperta "Salvar" —, e o aviso que
+     * só existia na `MicDock` da home saía da composição no instante da navegação.
+     *
+     * Falso na edição de uma tarefa da agenda: ali não houve fala nenhuma.
+     */
+    truncated: Boolean = false,
     saving: Boolean = false,
     editing: Boolean = false,
     occurrenceStatus: OccurrenceStatus? = null,
@@ -165,6 +174,21 @@ fun ConfirmDraftScreen(
             )
             if (initial.transcript.isNotBlank()) {
                 Text("Você disse: “${initial.transcript}”", style = MaterialTheme.typography.bodyMedium)
+            }
+            // O aviso vem logo abaixo do que o app entendeu, que é onde ele explica por que
+            // o texto acima pode estar pela metade. Sem ele, "Você disse: “Tomar”" é a
+            // queixa original: o recado cortado passando por recado inteiro na tela onde ela
+            // aperta "Salvar".
+            //
+            // Sem `liveRegion`: a leitura de tela já anuncia o conteúdo do destino novo, e o
+            // anúncio do corte aconteceu na `MicDock` no instante em que ele existiu — dois
+            // anúncios da mesma frase, um em cima do outro, é pior que o silêncio.
+            if (truncated) {
+                Text(
+                    TRUNCATED_NOTICE,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             if (initial.ambiguous) {
                 Text(

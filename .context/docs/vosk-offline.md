@@ -26,8 +26,23 @@ motor melhor depois.
   prova de que a extração preservou o que existia.
 - **`VoskSpeechSource`**: microfone cru (16 kHz, mono, PCM 16 bits) direto no Vosk, em
   thread própria porque o `AudioRecord` bloqueia. `acceptWaveForm` devolve `true` quando
-  o Vosk entende que a fala acabou — não há "parar" da nossa parte, e é por isso que o
-  fim do recado é mais rápido que os 2800 ms de silêncio do motor do sistema.
+  o endpointer do Kaldi acha silêncio — mas isso é um **aviso**, não uma ordem: o
+  recognizer segue decodificando, e quem fecha o recado é o `EndOfSpeechPause`.
+
+  Até o PR #72 o aviso era aceito na hora, e aí sim o fim do recado era mais rápido que
+  os 2800 ms de silêncio do motor do sistema — rápido demais. A regra que dispara primeiro
+  (`--endpoint.rule2.min-trailing-silence`) fecha com 0,5 s de silêncio depois de uma
+  palavra que parece final, e "tomar… remédio… de pressão" pausado entregava "tomar" como
+  recado inteiro. Agora o recado só fecha quando o silêncio já dura `MINIMUM_PAUSE_MS`
+  (2,5 s) contados do primeiro aviso, e o total depende de qual regra disparou (fonte em
+  `kaldi/src/online2/online-endpoint.h:141-148`): ~3,0 s para fala confiante (rule2, 0,5 s),
+  ~3,5 s para a hesitante (rule3, 1,0 s) e até ~4,5 s quando nada foi reconhecido como
+  final (rule4, 2,0 s).
+
+  Ou seja: **o offline agora é mais lento que o motor do sistema** para fechar o recado, e
+  isso é a correção, não uma regressão. Os 2800 ms do `SystemSpeechSource` são o mesmo
+  limiar de silêncio no meio da frase, aplicado pelo motor do aparelho — o Vosk não tinha
+  equivalente, e o app não pode ser pior no motor que é o preferido.
 - **`VoskModel`** + **`VoskOfflineSpeech`**: o modelo (53 MB) não vai no APK nem no git.
   O motor offline só existe quando o diretório está completo.
 - **`VoiceEngine`**: `OFFLINE_VOSK` entrou na frente de todos, e há uma regra nova — se o
@@ -77,7 +92,9 @@ controle ao motor do sistema, e que o modelo pela metade não passa por instalad
 
 Fica por provar, em aparelho: se o `libvosk.so` carrega sob `useLegacyPackaging = true`
 (a razão dessa flag é justamente o JNA achar a lib dele), o comportamento do endpointer
-do Vosk com a fala real dela, e a precisão do `vosk-model-small-pt-0.3` comparada ao
+do Vosk com a fala real dela — incluindo **qual** das regras do Kaldi dispara na fala
+devagar e pausada, que é o que decide se a espera total é 3,0 s ou 4,5 s (ver o bloco do
+`VoskSpeechSource` acima) — e a precisão do `vosk-model-small-pt-0.3` comparada ao
 motor do sistema.
 
 ## Pendências

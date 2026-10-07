@@ -241,9 +241,33 @@ class LocalTaskParser(
             if (conectorSemCentavos(text, m)) return null
             val bruto = centsFromNumber(m.groupValues[1]) ?: return@let
             val principal = escalaEmCentavos(bruto, m.groupValues[2]) ?: return@let
-            val parcela = reaisFromSpoken(m) ?: return@let
+            val parcela = reaisFromSpoken(m.groupValues[3], m.groupValues[4], m.groupValues[5])
+                ?: return@let
             // As duas parcelas somadas não podem estourar o `Long`: o valor fica nulo e a fala
             // inteira vai para o título, em vez de virar dinheiro pela metade.
+            if (parcela > Long.MAX_VALUE - principal) return null
+            return withCentavos(principal + parcela, text, m)
+        }
+        // O espelho do ramo acima: a escala por EXTENSO e a parcela em DÍGITO ("dois mil e 500
+        // reais", "mil e 500 reais"). Sem ele o numérico re-ancorava no pedaço depois do "e" e
+        // gravava R$500,00 no lugar de R$2.500,00, com o "dois mil" ainda no título — o número
+        // errado, `qc=true`, que a caixa rápida confirma em um toque. Vem antes do numérico pela
+        // mesma razão do [VALOR_COMPOSTO].
+        VALOR_COMPOSTO_EXTENSO.find(text)?.let { m ->
+            // O dígito que o próprio valor recusou antes da escala ("30.50 mil e 500 reais") não
+            // pode virar dinheiro pelo pedaço que sobrou — mesma porta do guard do extenso.
+            if (precedidoDeDigito(text, m)) return null
+            if (conectorSemCentavos(text, m)) return null
+            // Sem o extenso do principal a própria escala é o número dito: "mil e 500" é 1×mil.
+            val extenso = m.groupValues[1]
+            val bruto = if (extenso.isEmpty()) {
+                100L
+            } else {
+                (numberFromWords(TextNormalizer.compactSpaces(extenso)) ?: return@let) * 100
+            }
+            val principal = escalaEmCentavos(bruto, m.groupValues[2]) ?: return@let
+            // Sem parcela por extenso aqui: ela é sempre o dígito do grupo 3.
+            val parcela = reaisFromSpoken(m.groupValues[3], m.groupValues[4], "") ?: return@let
             if (parcela > Long.MAX_VALUE - principal) return null
             return withCentavos(principal + parcela, text, m)
         }
@@ -376,13 +400,11 @@ class LocalTaskParser(
      * malformado ("30.50") em vez de inventar uma leitura —, e a escala depois dele ("500 mil") é
      * aplicada por fora.
      */
-    private fun reaisFromSpoken(m: MatchResult): Long? {
-        val numero = m.groupValues[3]
+    private fun reaisFromSpoken(numero: String, escala: String?, extenso: String): Long? {
         if (numero.isNotEmpty()) {
             val cents = centsFromNumber(numero) ?: return null
-            return escalaEmCentavos(cents, m.groupValues[4])
+            return escalaEmCentavos(cents, escala)
         }
-        val extenso = m.groupValues[5]
         if (extenso.isEmpty()) return null
         return (numberFromWords(TextNormalizer.compactSpaces(extenso)) ?: return null) * 100
     }
@@ -2100,6 +2122,27 @@ class LocalTaskParser(
             """\b($BR_NUMBER)\s*(mil|milhao|milhoes)\s+e\s+""" +
                 """(?:($BR_NUMBER)\s*(mil|milhao|milhoes)?|((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*))""" +
                 """\s+(?:de\s+)?(?:reais|real)\b""",
+        )
+
+        /**
+         * O espelho do [VALOR_COMPOSTO]: a escala dita por EXTENSO e a parcela que fecha o valor em
+         * DÍGITO ("dois mil e 500 reais", "mil e 500 reais", "um milhão e 500 reais"). Só o lado
+         * dígito+extenso tinha ramo próprio, e o outro gravava R$500,00 com o principal no título.
+         *
+         * A parcela é SÓ em dígito — de propósito. Com a alternativa de parcela por extenso, o
+         * extenso+extenso que o [REAIS_EXTENSO] lia como um número só ("mil e quinhentos milhoes de
+         * reais" = 1,5 bilhão) passava a ser lido como principal+parcela, e o principal opcional
+         * ancorava na escala sozinha: gravava R$500.001.000,00, com `qc=true` e sem nota. O lado
+         * dígito não sofre disso porque o [VALOR_COMPOSTO] casa primeiro e não deixa este ramo ver
+         * a fala. Os grupos repetem a ordem daquele — 1 o extenso do principal, 2 a escala dele,
+         * 3-4 a parcela em dígito com a escala dela.
+         *
+         * O extenso do principal é OPCIONAL porque a própria escala pode ser o número dito: em
+         * "mil e 500 reais" não há palavra antes do "mil", e o principal é 1× a escala.
+         */
+        private val VALOR_COMPOSTO_EXTENSO = Regex(
+            """\b((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*)?\s*(mil|milhao|milhoes)\s+e\s+""" +
+                """($BR_NUMBER)\s*(mil|milhao|milhoes)?\s+(?:de\s+)?(?:reais|real)\b""",
         )
 
         /**

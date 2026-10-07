@@ -224,28 +224,59 @@ class LocalTaskParser(
      * reais". Vira centavos em `amountCents` — o campo já era renderizado na confirmação
      * (`QuickConfirmDialog`) e somado no mês (`MonthInsights`), e nenhum caminho o preenchia.
      *
-     * O número por extenso é lido da direita para a esquerda, como se fala: "cento e vinte" são
-     * 120 e não 20 com "cento" solto. Sem o valor, não inventa nada — devolve nulo.
+     * A leitura só vale quando é inequívoca. "30.50" é ambíguo entre decimal e milhar malformado,
+     * "tres reais e vinte" tem um conector que não fecha, "dois contos de réis" não é a unidade de
+     * reais: nesses casos o valor fica nulo e o texto fica no título — inventar dinheiro que a
+     * caixa rápida confirma em silêncio é a pior classe de defeito deste projeto.
      */
     private fun extractAmount(text: String): AmountHit? {
         REAIS_NUMERIC.find(text)?.let { m ->
-            val raw = m.groupValues.drop(1).firstOrNull { it.isNotBlank() } ?: return@let
-            val cents = centsFromNumber(raw) ?: return@let
+            val numero = m.groups[1] ?: m.groups[3] ?: m.groups[5] ?: return@let
+            val escala = m.groups[2] ?: m.groups[4] ?: m.groups[6]
+            if (conectorSemCentavos(text, m)) return null
+            val cents = (centsFromNumber(numero.value) ?: return@let) * escalaMultiplier(escala?.value)
             return withCentavos(cents, text, m)
         }
-        REAIS_EXTENSO.find(text)?.let { m ->
-            val cents = (numberFromWords(m.groupValues[1]) ?: return@let) * 100
+        // Antes do extenso: "meio mil reais" é R$500, e sem este ramo o extenso casaria só o
+        // "mil reais" e gravaria R$1.000 (o dobro).
+        MEIO_MIL_ESCALA.find(text)?.let { m ->
+            val cents = escalaMultiplier(m.groupValues[1]) * 50L
             return withCentavos(cents, text, m)
         }
         MEIO_REAL.find(text)?.let { m ->
             return AmountHit(50, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
         }
+        REAIS_EXTENSO.find(text)?.let { m ->
+            if (conectorSemCentavos(text, m)) return null
+            val cents = (numberFromWords(m.groupValues[1]) ?: return@let) * 100
+            return withCentavos(cents, text, m)
+        }
+        MIL_ESCALA.find(text)?.let { m ->
+            val cents = (centsFromNumber(m.groupValues[1]) ?: return@let) *
+                escalaMultiplier(m.groupValues[2]) * 100
+            return AmountHit(cents, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
+        }
         return null
+    }
+
+    /**
+     * O conector "e" logo depois do valor, sem a palavra "centavos": "tres reais e vinte" não diz
+     * se o "vinte" são centavos que ela não nomeou ou outra coisa. Com o conector opcional dentro
+     * do casamento, o "e vinte" era engolido e sumia do título sem virar valor — perda dupla.
+     * Sem a palavra "centavos" fechando o casamento, não extrai.
+     */
+    private fun conectorSemCentavos(text: String, reais: MatchResult): Boolean {
+        val tail = text.substring(reais.range.last + 1)
+        if (CENTAVOS.containsMatchIn(tail)) return false
+        return CONECTOR_NUMERO.containsMatchIn(tail)
     }
 
     /**
      * "quinze reais e cinquenta centavos": o valor são 15,50, não 15,00 — e o "cinquenta centavos"
      * não pode sobrar no título. Os centavos vêm colados no "e", logo depois do valor.
+     *
+     * O "reais" que repete o cifrão ("R$ 1.234,56 reais") não precisa de limpeza própria: a
+     * alternativa do cifrão em [REAIS_NUMERIC] já o consome no `(?:reais|real)?` do fim.
      */
     private fun withCentavos(cents: Long, text: String, reais: MatchResult): AmountHit {
         var total = cents
@@ -265,13 +296,33 @@ class LocalTaskParser(
         raw.toLongOrNull() ?: numberFromWords(TextNormalizer.compactSpaces(raw))
 
     /**
-     * "1.500" e "1.234,56" são milhar por ponto e decimal por vírgula, não decimais com ponto:
-     * sem tirar o ponto antes de converter, "15.000" virava 0 centavos e "1.234,56" virava R$1,23.
+     * "1.500" e "1.234,56" são milhar por ponto e decimal por vírgula. Só o ponto de milhar
+     * (exatamente 3 dígitos, e nunca depois da vírgula) sai: "30.50" é ambíguo entre 30,50 e um
+     * 30.500 malformado, e tirar o ponto dele inventava R$30,00 (no cifrão) ou R$50,00 (em "30.50
+     * reais"). Na dúvida, o valor não é extraído e a palavra fica no título.
      */
-    private fun centsFromNumber(raw: String): Long? =
-        raw.replace(".", "").replace(',', '.').toBigDecimalOrNull()?.movePointRight(2)?.toLong()
+    private fun centsFromNumber(raw: String): Long? {
+        val inteiro = raw.substringBefore(',')
+        if (inteiro.substringAfter('.', "").let { it.isNotEmpty() && it.length != 3 }) return null
+        if (!inteiro.matches(Regex("""\d{1,3}(?:\.\d{3})*"""))) return null
+        return raw.replace(".", "").replace(',', '.').toBigDecimalOrNull()?.movePointRight(2)?.toLong()
+    }
 
-    /** "cento e vinte e cinco" = 125. Nulo quando não há número nenhum para ler. */
+    /** "milhão"/"mil" por extenso depois do número em dígito: "15 mil" são 15.000. */
+    private fun escalaMultiplier(escala: String?): Long = when (escala) {
+        null, "" -> 1L
+        "mil" -> 1000L
+        "milhao", "milhoes" -> 1_000_000L
+        else -> 1L
+    }
+
+    /**
+     * "cento e vinte e cinco" = 125; "um milhão e duzentos mil" = 1.200.000. Nulo quando não há
+     * número nenhum para ler.
+     *
+     * "milhão" escala o que vem antes (e o que já foi somado), como "mil" — sem ele o motor
+     * re-ancorava em "duzentos mil" e gravava R$200 mil para "um milhão e duzentos mil reais".
+     */
     private fun numberFromWords(phrase: String): Long? {
         var total = 0L
         var current = 0L
@@ -279,6 +330,11 @@ class LocalTaskParser(
         for (word in phrase.split(" ")) {
             when {
                 word == "e" -> Unit
+                word == "milhao" || word == "milhoes" -> {
+                    total = (total + (if (current == 0L) 1L else current)) * 1_000_000
+                    current = 0
+                    sawNumber = true
+                }
                 word == "mil" -> {
                     total += (if (current == 0L) 1L else current) * 1000
                     current = 0
@@ -1072,14 +1128,17 @@ class LocalTaskParser(
         // `remaining` ("todo dia 5 caminhar" sobra "5 caminhar"), então a leitura é sobre a frase
         // original. As palavras de hora por extenso ("oito") continuam saindo quando sozinhas.
         val words = TextNormalizer.compactSpaces(remaining).split(" ")
-        val dataEHora = dateTimeDigits(original)
+        val dataEHora = dateTimeDigitPositions(original)
         val leftover = words.filterIndexed { index, word ->
             word.isNotBlank() &&
                 (word !in FILLERS || (word == "meia" && words.getOrNull(index + 1) == "duzia")) &&
-                !word.matches(Regex("\\d{1,2}h(?:\\d{1,2}|oras?)?|\\d{1,2}:\\d{2}")) &&
-                !takeDateTimeDigit(word, dataEHora)
+                !word.matches(Regex("\\d{1,2}h(?:\\d{1,2}|oras?)?|\\d{1,2}:\\d{2}"))
         }.toMutableList()
-        val rebuilt = original.split(Regex("\\s+")).filter { word ->
+        // O dígito que a frase usou como data, hora ou recorrência sai AQUI, pela posição na frase
+        // original — é a única em que o contexto ("dia 5", "8 da manhã") ainda existe, e a posição
+        // não se confunde com a da quantidade quando as duas são o mesmo número ("2 caixas às 2h").
+        val rebuilt = original.split(Regex("\\s+")).filterIndexed { index, word ->
+            if (index in dataEHora) return@filterIndexed false
             val folded = TextNormalizer.fold(word).trim(',', '.', '!', '?')
             val idx = leftover.indexOfFirst { it == folded || folded.startsWith(it) }
             if (idx >= 0) {
@@ -1097,30 +1156,33 @@ class LocalTaskParser(
     }
 
     /**
-     * Os dígitos que a frase usa como data, hora ou recorrência — "dia 5", "8 da manhã", "12 em
-     * ponto", "20h". Contados, porque a mesma frase pode falar o mesmo número em dois papéis.
+     * As posições na frase ORIGINAL (por palavra) dos dígitos que ela usa como data, hora ou
+     * recorrência — "dia 5", "8 da manhã", "12 em ponto", "20h".
+     *
+     * A identidade é a POSIÇÃO, não o valor: "comprar 2 caixas às 2h" tem o mesmo "2" nos dois
+     * papéis, e um contador por valor gastava a única unidade no "2h" e comia o "2 caixas" junto.
+     * O resultado mudava só por causa do "h" ("comprar 2 caixas às 2" preservava) — a mesma frase,
+     * dois títulos. Por posição, o "h" não muda mais nada.
      */
-    private fun dateTimeDigits(original: String): MutableMap<String, Int> {
-        val counts = mutableMapOf<String, Int>()
-        DATE_TIME_DIGIT.findAll(TextNormalizer.fold(original)).forEach { m ->
-            m.groupValues.drop(1).filter { it.isNotBlank() }.forEach { digit ->
-                counts[digit] = (counts[digit] ?: 0) + 1
-            }
+    private fun dateTimeDigitPositions(original: String): MutableSet<Int> {
+        val folded = TextNormalizer.fold(original)
+        val positions = mutableSetOf<Int>()
+        DATE_TIME_DIGIT.findAll(folded).forEach { m ->
+            val group = (1..m.groups.size - 1).firstOrNull { g ->
+                m.groups[g]?.value?.isNotBlank() == true
+            } ?: return@forEach
+            positions += palavraDoIndice(folded, m.groups[group]!!.range.first)
         }
-        return counts
+        return positions
     }
 
-    /**
-     * Tira do título o dígito que NÃO é quantidade. Quantidade é o número do que ela contou ("2
-     * caixas", "12 ovos"); o que sobra de uma data ou de uma hora já é título errado.
-     */
-    private fun takeDateTimeDigit(word: String, counts: MutableMap<String, Int>): Boolean {
-        val bare = word.trim(',', '.', '!', '?')
-        if (!bare.matches(Regex("\\d{1,2}"))) return false
-        val left = counts[bare] ?: return false
-        if (left == 0) return false
-        counts[bare] = left - 1
-        return true
+    /** O índice da palavra (separada por espaço) que contém a posição [index] do texto dobrado. */
+    private fun palavraDoIndice(text: String, index: Int): Int {
+        var palavra = 0
+        for (i in 0 until index) {
+            if (text[i].isWhitespace() && (i == 0 || !text[i - 1].isWhitespace())) palavra++
+        }
+        return palavra
     }
 
     private fun extractWeekDays(text: String): Set<DayOfWeek> {
@@ -1254,6 +1316,9 @@ class LocalTaskParser(
 
         /** O valor falado, palavra a palavra: "cento e vinte e cinco" = 125. */
         private val NUMBER_WORDS = mapOf(
+            // "meio" vale zero no léxico: o que ele multiplica é a escala ("meio milhão"), lida em
+            // [MEIO_MIL_ESCALA]. Sem a entrada, o "meio" sobraria no título.
+            "meio" to 0,
             "um" to 1, "uma" to 1,
             "dois" to 2, "duas" to 2,
             "tres" to 3,
@@ -1293,10 +1358,11 @@ class LocalTaskParser(
 
         /**
          * As palavras que formam um valor falado, da maior para a menor — "quatrocentos" antes de
-         * "quatro", senão a alternância pararia no prefixo.
+         * "quatro", senão a alternância pararia no prefixo. "milhão" entra aqui, e não só no motor:
+         * sem ele o casamento de "um milhão e duzentos mil reais" começava em "duzentos".
          */
         private val NUMBER_WORD_ALT: String =
-            (NUMBER_WORDS.keys + listOf("cem", "cento", "mil"))
+            (NUMBER_WORDS.keys + listOf("cem", "cento", "mil", "milhao", "milhoes"))
                 .distinct()
                 .sortedByDescending { it.length }
                 .joinToString("|")
@@ -1305,28 +1371,55 @@ class LocalTaskParser(
          * O número do valor em pt-BR: "120", "30,50", "1.500", "1.234,56". O milhar por ponto vem
          * primeiro porque é o mais específico — sem ele, "15.000 reais" era lido como "000" (a
          * tarefa entrava com 0 centavos) e "R$ 1.234,56" como "1.23" (R$1,23).
+         *
+         * As bordas (`(?<![\d.,])` / `(?![\d.,])`) prendem o número inteiro: sem elas, "30.50 reais"
+         * casava só o "50" (o "30." era descartado) e virava R$50,00 — o re-ancorar no pedaço do
+         * número, que é o defeito que este valor não pode ter.
          */
-        private const val BR_NUMBER = """\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?"""
+        private const val BR_NUMBER =
+            """(?<![\d.,])(?:\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?)(?![\d.,])"""
 
         /**
          * "120 reais", "R$ 30", "rs 30": o valor em dígito. O "R$" (e o "rs" que o reconhecimento
          * costuma devolver) sozinho já é dinheiro — sem o segundo grupo, "pagar R$ 30" ficava com o
          * "R$" pendurado no título e sem valor nenhum.
+         *
+         * O grupo 2/4/6 é a escala opcional ("15 mil", "1,5 milhão"): "quinze mil reais" sem ela
+         * casaria só o "quinze". "meio milhão" tem ramo próprio ([MEIO_MILHAO]).
          */
         private val REAIS_NUMERIC = Regex(
-            """\b($BR_NUMBER)\s*(?:reais|real|contos?)\b""" +
-                """|\br\s*\$\s*($BR_NUMBER)""" +
-                """|\brs\s+($BR_NUMBER)""",
+            """\b($BR_NUMBER)\s*(?:(mil|milhao|milhoes)\s+(?:de\s+)?)?(?:reais|real)\b""" +
+                """|\br\s*\$\s*($BR_NUMBER)\s*(?:(mil|milhao|milhoes)\s+(?:de\s+)?)?(?:reais|real)?\b""" +
+                """|\brs\s+($BR_NUMBER)\s*(?:(mil|milhao|milhoes)\s+(?:de\s+)?)?(?:reais|real)?\b""",
         )
 
         /**
          * "cento e vinte reais", "mil e duzentos reais", "dois mil e quinhentos reais": o valor por
          * extenso. O conector "e" é opcional entre as palavras — "dois mil" é justaposto na fala e,
          * exigindo o "e", o motor re-ancorava em "mil e quinhentos" e gravava 1500 em vez de 2500.
+         *
+         * O "de" opcional cobre "um milhão de reais"; "contos" saiu (ver [MEIO_REAL]): a leitura do
+         * conto antigo (mil réis) e a coloquial (um real) não cabem na mesma frase sem inventar.
          */
         private val REAIS_EXTENSO = Regex(
-            """\b((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*)\s+(?:reais|real|contos?)\b""",
+            """\b((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*)\s+(?:de\s+)?(?:reais|real)\b""",
         )
+
+        /**
+         * "meio milhão de reais" (500 mil) e "meio mil reais" (500): o "meio" é o multiplicador da
+         * escala, e fica fora da alternância de palavras (senão casaria "meio real" = 50 centavos).
+         * Vem antes do extenso, que sem ele casaria só o "milhão"/"mil" e gravaria o dobro.
+         */
+        private val MEIO_MIL_ESCALA = Regex("""\bmeio\s+(mil|milhao|milhoes)\b(?:\s+de)?\s*(?:reais|real)?\b""")
+
+        /**
+         * "15 mil": o escalar por extenso logo depois do número em dígito, sem "reais" — o valor
+         * está no "mil", não no que vem depois. [escalaMultiplier] lê o escalar.
+         */
+        private val MIL_ESCALA = Regex("""\b($BR_NUMBER)\s+(mil|milhao|milhoes)\b""")
+
+        /** O "e <número>" logo depois do valor: centavos que ela não nomeou (ver `conectorSemCentavos`). */
+        private val CONECTOR_NUMERO = Regex("""\s+e\s+(?:$NUMBER_WORD_ALT)\b|\s+e\s+\d{1,2}\b""")
 
         /** "e cinquenta centavos": os centavos falados depois do valor em reais. */
         private val CENTAVOS = Regex(

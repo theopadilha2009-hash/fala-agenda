@@ -296,4 +296,112 @@ class LocalTaskParserValoresEFaixasTest {
         assertThat(draft.title).isEqualTo("Remédio")
         assertThat(draft.notes.joinToString()).contains("intervalo")
     }
+
+    // ---- Review adversarial: o valor só quando a leitura é inequívoca ----
+
+    @Test
+    fun pontoQueNaoEMilharNaoViraValor() {
+        // "30.50" não é 30,50 (decimal) nem 30.500 (milhar): as duas leituras são plausíveis e o
+        // parser não escolhe por conta própria. Antes o "R$ 30.50" virava R$30,00 e o "30.50 reais"
+        // virava R$50,00 — dinheiro inventado com a caixa rápida confirmando em silêncio.
+        val cifrao = parser.parse("pagar R$ 30.50 amanhã às 10h")
+        assertThat(cifrao.amountCents).isNull()
+        assertThat(cifrao.title).contains("30.50")
+
+        val porExtenso = parser.parse("pagar 30.50 reais amanhã às 10h")
+        assertThat(porExtenso.amountCents).isNull()
+        assertThat(porExtenso.title).contains("30.50")
+
+        // O ponto de milhar (exatamente 3 dígitos) e a vírgula decimal continuam valendo.
+        assertThat(parser.parse("pagar R$ 30,50 amanhã às 10h").amountCents).isEqualTo(3050L)
+        assertThat(parser.parse("pagar R$ 0,50 amanhã às 10h").amountCents).isEqualTo(50L)
+        assertThat(parser.parse("pagar 15.000,00 reais amanhã às 10h").amountCents).isEqualTo(1500000L)
+    }
+
+    @Test
+    fun quantidadeComOMesmoDigitoDaHoraFicaNoTitulo() {
+        // A quantidade e a hora com o MESMO dígito: é aqui que o contador por VALOR errava. O
+        // "2h" gastava a única unidade do "2" e o filtro comia o "2 caixas" junto. A contagem é
+        // por ocorrência (posição na frase), então o "h" não muda mais o resultado.
+        listOf(
+            "comprar 2 caixas às 2h amanhã",
+            "comprar 2 caixas às 2 amanhã",
+            "comprar 8 caixas às 8h amanhã",
+            "comprar 4 caixas às 4 em ponto amanhã",
+            "comprar 3 caixas às 3 da tarde amanhã",
+        ).forEach { frase ->
+            val quantidade = frase.split(" ")[1]
+            assertThat(parser.parse(frase).title).isEqualTo("Comprar $quantidade caixas")
+        }
+
+        // A mesma frase com e sem o "h" tem que dar o mesmo título.
+        assertThat(parser.parse("comprar 2 caixas às 2h amanhã").title)
+            .isEqualTo(parser.parse("comprar 2 caixas às 2 amanhã").title)
+    }
+
+    @Test
+    fun milhaoEscalaOMilhar() {
+        // "um milhão e duzentos mil reais" gravava R$200.000,00: "milhão" não estava na alternância
+        // nem no motor, então o casamento re-ancorava em "duzentos mil".
+        val umMilhaoEDuzentosMil = parser.parse("pagar um milhão e duzentos mil reais amanhã às 10h")
+        assertThat(umMilhaoEDuzentosMil.amountCents).isEqualTo(120000000L)
+        assertThat(umMilhaoEDuzentosMil.title).isEqualTo("Pagar")
+
+        val umMilhao = parser.parse("pagar um milhão de reais amanhã às 10h")
+        assertThat(umMilhao.amountCents).isEqualTo(100000000L)
+        assertThat(umMilhao.title).isEqualTo("Pagar")
+
+        val meioMilhao = parser.parse("pagar meio milhão de reais amanhã às 10h")
+        assertThat(meioMilhao.amountCents).isEqualTo(50000000L)
+        assertThat(meioMilhao.title).isEqualTo("Pagar")
+
+        val umEMeioMilhao = parser.parse("pagar 1,5 milhão de reais amanhã às 10h")
+        assertThat(umEMeioMilhao.amountCents).isEqualTo(150000000L)
+        assertThat(umEMeioMilhao.title).isEqualTo("Pagar")
+
+        // O escalar em dígito ("15 mil") também é valor inequívoco.
+        val quinzeMil = parser.parse("pagar 15 mil reais amanhã às 10h")
+        assertThat(quinzeMil.amountCents).isEqualTo(1500000L)
+        assertThat(quinzeMil.title).isEqualTo("Pagar")
+    }
+
+    @Test
+    fun conectorSemCentavosNaoInventaValor() {
+        // "tres reais e vinte": sem a palavra "centavos", o "e vinte" não é centavo e o valor não é
+        // inequívoco. Antes gravava 300 e o "vinte" saía do título sem virar nada (perda dupla).
+        val draft = parser.parse("pagar tres reais e vinte amanhã às 10h")
+        assertThat(draft.amountCents).isNull()
+        assertThat(draft.title).contains("vinte")
+
+        // Com a palavra "centavos" o casamento é fechado, e o valor é o que ela disse.
+        assertThat(parser.parse("pagar quinze reais e cinquenta centavos amanhã às 10h").amountCents)
+            .isEqualTo(1550L)
+    }
+
+    @Test
+    fun meioMilViraQuinhentosReais() {
+        // "meio mil reais" gravava R$1.000,00: o "meio" ficava fora do casamento e só o "mil reais"
+        // virava valor — o dobro do que ela disse.
+        val draft = parser.parse("pagar meio mil reais amanhã às 10h")
+        assertThat(draft.amountCents).isEqualTo(50000L)
+        assertThat(draft.title).isEqualTo("Pagar")
+    }
+
+    @Test
+    fun contosDeReisNaoViramDoisReais() {
+        // "dois contos de réis" gravava R$2,00, com o "réis" sobrando no título. "Conto" não é a
+        // unidade de reais (e "dois contos de fadas" não é dinheiro nenhum): o parser não escolhe
+        // entre o conto antigo e o coloquial — devolve null e deixa o texto no título.
+        val draft = parser.parse("pagar dois contos de réis amanhã às 10h")
+        assertThat(draft.amountCents).isNull()
+        assertThat(draft.title).contains("contos")
+    }
+
+    @Test
+    fun reaisDuplicadoDepoisDoCifraoNaoSobraNoTitulo() {
+        // "R$ 1.234,56 reais": o "reais" escrito depois do cifrão ficava pendurado no título.
+        val draft = parser.parse("pagar R$ 1.234,56 reais amanhã às 10h")
+        assertThat(draft.amountCents).isEqualTo(123456L)
+        assertThat(draft.title).isEqualTo("Pagar")
+    }
 }

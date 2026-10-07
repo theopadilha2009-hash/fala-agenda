@@ -8,6 +8,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.res.Resources
+import android.media.AudioManager
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.reminders.ActionResponse
@@ -45,6 +46,18 @@ class NotificationHelperTest {
         shadowOf(ApplicationProvider.getApplicationContext<Application>())
             .grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         shadowOf(gerente).setNotificationsEnabled(true)
+    }
+
+    /**
+     * Deixa o eixo do APARELHO fora do caminho: com o volume de alarme zerado — o default do
+     * Robolectric — o veredito é [NotificationHelper.ReminderAlerts.APARELHO_MUDO] e os testes
+     * daqui, que medem o CANAL, parariam de dizer o que querem dizer. O aparelho audível é o
+     * pressuposto destes casos, e explicitá-lo é o que separa "o canal está certo" de "o som
+     * sai" — que é a pergunta do `OracleSanidadeTest`.
+     */
+    private fun aparelhoAudivel() {
+        val audio = contexto.getSystemService(AudioManager::class.java)
+        audio.setStreamVolume(AudioManager.STREAM_ALARM, audio.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
     }
 
     @Test
@@ -103,6 +116,7 @@ class NotificationHelperTest {
     @Test
     fun canalAltoNaoEhSilencioso() {
         liberarNotificacoes()
+        aparelhoAudivel()
         criarCanal(NotificationManager.IMPORTANCE_HIGH)
 
         assertThat(NotificationHelper.remindersWillBeSilent(contexto)).isFalse()
@@ -182,6 +196,7 @@ class NotificationHelperTest {
     @Test
     fun canalAltoComPermissaoEhAvisoQueFunciona() {
         liberarNotificacoes()
+        aparelhoAudivel()
         criarCanal(NotificationManager.IMPORTANCE_HIGH)
 
         assertThat(NotificationHelper.reminderAlerts(contexto))

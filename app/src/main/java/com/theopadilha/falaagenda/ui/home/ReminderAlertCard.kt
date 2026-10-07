@@ -28,6 +28,20 @@ internal fun reminderAlertCard(alerts: ReminderAlerts): ReminderAlertCard? = whe
         text = "Assim o lembrete pode passar despercebido. Deixe os avisos do Fala Agenda com som.",
         button = "Arrumar o som do aviso",
     )
+    // O canal está certo e é o aparelho que não deixa soar. O texto diz onde mexer sem nomear
+    // "canal" nem "stream" — ela não tem por que saber como o aplicativo chama o aviso. Não culpa
+    // ninguém: o volume do alarme costuma ficar no mínimo sem ninguém notar, e é por isso que o
+    // cartão existe.
+    //
+    // O caminho apontado é o botão, e não a tecla de volume do lado do celular: fora do toque de
+    // um alarme, a tecla mexe no volume de mídia, e mandá-la apertar ali não subiria o volume que
+    // o lembrete usa. O botão abre os Ajustes de som, onde o volume do alarme tem o controle
+    // próprio — e o texto diz "do alarme" porque é esse o nome que ela conhece do despertador.
+    ReminderAlerts.APARELHO_MUDO -> ReminderAlertCard(
+        title = "O volume do alarme está no mínimo",
+        text = "Assim o lembrete aparece na tela, mas não faz barulho. Toque abaixo e aumente o volume do alarme.",
+        button = "Aumentar o volume",
+    )
 }
 
 /** O que o toque no cartão precisa abrir. */
@@ -37,6 +51,9 @@ internal enum class AlertFix {
 
     /** O canal foi rebaixado ou desligado: os Ajustes do canal, que é onde o som mora. */
     OPEN_CHANNEL_SETTINGS,
+
+    /** O canal está certo e o volume do aparelho não: os Ajustes de som, que é onde se sobe. */
+    OPEN_SOUND_SETTINGS,
 }
 
 /**
@@ -51,11 +68,16 @@ internal enum class AlertFix {
  * permissão é negada de partida e nunca houve pedido. Adivinhar antes mandava direto aos
  * Ajustes, e o diálogo do sistema nunca aparecia. Quem não tem mais diálogo para mostrar
  * responde na hora, e é [needsNotificationSettings] que decide o resto.
+ *
+ * O aparelho mudo vai aos Ajustes de SOM, e não aos do canal: o canal está alto, com som de
+ * alarme — o que falta é o volume do celular. Mandá-la de novo à mesma tela do canal "sem som"
+ * seria um botão que não conserta nada.
  */
 internal fun alertFix(alerts: ReminderAlerts): AlertFix? = when (alerts) {
     ReminderAlerts.OK -> null
     ReminderAlerts.OFF -> AlertFix.ASK_NOTIFICATIONS
     ReminderAlerts.QUIET -> AlertFix.OPEN_CHANNEL_SETTINGS
+    ReminderAlerts.APARELHO_MUDO -> AlertFix.OPEN_SOUND_SETTINGS
 }
 
 /**

@@ -32,6 +32,10 @@ import org.robolectric.shadows.ShadowTextToSpeech
  * não tem por onde emitir. Quem já avisa que o aparelho está mudo é o cartão da home
  * (`ReminderAlerts.APARELHO_MUDO`); o que faltava era o caminho da voz parar de mentir.
  *
+ * A outra metade — a tentativa seguir de pé — tem arquivo próprio: [VozMudaAindaPedeAFalaTest]. Ela
+ * ficou sem quem a prendesse na primeira versão deste trabalho, e o review mediu o custo disso: o
+ * atalho "economizar a síntese" no aparelho mudo derrubava o contrato com a suíte inteira verde.
+ *
  * O motor é o de **verdade** ([VozDoAparelho]) sobre o `ShadowTextToSpeech`, e o stream é o de
  * verdade: o que o teste move é o volume do `STREAM_ALARM`, que é o fato do aparelho. O `aoFalar`
  * que o serviço usa é lido do **efeito** — o título que está de fato na barra —, e não de um

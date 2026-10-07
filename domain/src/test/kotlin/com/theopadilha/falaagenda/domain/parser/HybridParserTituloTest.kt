@@ -115,4 +115,22 @@ class HybridParserTituloTest {
         assertThat(draft.notes.joinToString()).doesNotContain("mudou o nome")
         assertThat(draft.notes.joinToString()).doesNotContain("chamou")
     }
+
+    /**
+     * O doc da classe promete que a troca de título "não passa por nenhuma tela" porque
+     * `canQuickConfirm` é verdadeiro — era o que fazia o cartão nascer "Compromisso" em silêncio.
+     *
+     * Sem esta asserção o doc afirmava um mecanismo que nenhum caso prendia: se a IA deixasse o
+     * rascunho ambíguo (ou faltando campo), a troca de título voltaria a aparecer na tela de
+     * confirmação e o defeito descrito aqui seria outro — invisível para a suíte.
+     */
+    @Test
+    fun oRascunhoDoDefeitoSalvaEmSilencio() = runBlocking {
+        val draft = hybrid(iaComTituloGenerico()).parse("levar a Maria no médico dia 25")
+        val agora = clock.instant()
+
+        assertThat(draft.isComplete).isTrue()
+        assertThat(draft.ambiguous).isFalse()
+        assertThat(draft.canQuickConfirm(agora, zone)).isTrue()
+    }
 }

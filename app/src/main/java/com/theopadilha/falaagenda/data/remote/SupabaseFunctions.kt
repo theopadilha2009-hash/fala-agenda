@@ -105,6 +105,13 @@ private val JSON = "application/json; charset=utf-8".toMediaType()
 private const val NOTA_FAIXA_INVALIDA =
     "A ajuda extra devolveu uma data fora do calendário. Ficou sem essa parte."
 
+/** A mesma ideia, para os dois campos que a IA devolve como texto: `local_date` e `local_time`. */
+private const val NOTA_DATA_ILEGIVEL =
+    "A ajuda extra devolveu uma data que não deu para entender. Ficou sem essa parte."
+
+private const val NOTA_HORA_ILEGIVEL =
+    "A ajuda extra devolveu um horário que não deu para entender. Ficou sem essa parte."
+
 /** O mês só existe em `1..12`; o dia só existe em `1..31`. Fora disso é dado da IA, não um pedido. */
 private fun faixaDaRecorrencia(
     dayOfMonth: Int?,
@@ -114,6 +121,18 @@ private fun faixaDaRecorrencia(
     val mes = monthOfYear?.takeIf { it in 1..12 }
     return dia to mes
 }
+
+/**
+ * A regra anual só é uma recorrência com **mês e dia**. Faltando um dos dois, ela é metade de uma:
+ * `RecurrenceRule.describePtBr()` a descreve como `"Todo 5 de ?"`, e é esse texto que a caixa de
+ * confirmação e o cartão mostram para ela.
+ *
+ * Descartar só o campo fora da faixa trocava a queda da home (`DateTimeException` na composição)
+ * por um texto quebrado na tela — a melhora que não termina o serviço. O `kind` cai junto, e a
+ * nota que já explica o descarte passa a explicar a regra inteira.
+ */
+private fun kindCoerente(kind: RecurrenceKind, dia: Int?, mes: Int?): RecurrenceKind =
+    if (kind == RecurrenceKind.YEARLY && (dia == null || mes == null)) RecurrenceKind.NONE else kind
 
 /**
  * A nota de quando a data pedida existe na faixa, mas não **naquele mês** — "todo dia 30 de
@@ -161,18 +180,27 @@ private data class ParseResponse(
 ) {
     fun toDraft(transcript: String): ParsedTaskDraft {
         val (dia, mes) = faixaDaRecorrencia(recurrence.dayOfMonth, recurrence.monthOfYear)
-        val kind = runCatching { RecurrenceKind.valueOf(recurrence.kind.uppercase()) }.getOrDefault(RecurrenceKind.NONE)
+        val kindLido = runCatching { RecurrenceKind.valueOf(recurrence.kind.uppercase()) }.getOrDefault(RecurrenceKind.NONE)
+        val kind = kindCoerente(kindLido, dia, mes)
         // As notas entram aqui, na fronteira, e não no domínio: só a IA produz a faixa inválida,
         // e é aqui que se sabe que o número veio dela. O rascunho local nunca chega com 13.
         val faixaDescartada = dia != recurrence.dayOfMonth || mes != recurrence.monthOfYear
+        // O mesmo para a data e a hora: `LocalDate.parse("2026-02-30")` estourava e o `catch` do
+        // `HybridParser` jogava fora o rascunho da IA inteiro — a data que ela tinha acertado e a
+        // nota do descarte junto. Aqui o valor ilegível vira ausente, que é o "não foi dito" que
+        // o app já sabe tratar, e a nota diz qual das duas partes ficou de fora.
+        val data = localDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        val hora = localTime?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
         val notasDoRecorrencia = buildList {
             if (faixaDescartada) add(NOTA_FAIXA_INVALIDA)
+            if (localDate != null && data == null) add(NOTA_DATA_ILEGIVEL)
+            if (localTime != null && hora == null) add(NOTA_HORA_ILEGIVEL)
             notaDoDiaQueNaoExisteNoMes(dia, mes, kind)?.let { add(it) }
         }
         return ParsedTaskDraft(
             title = title,
-            localDate = localDate?.let { LocalDate.parse(it) },
-            localTime = localTime?.let { LocalTime.parse(it) },
+            localDate = data,
+            localTime = hora,
             recurrence = RecurrenceRule(
                 kind = kind,
                 weekDays = recurrence.weekDays.mapNotNull { runCatching { DayOfWeek.valueOf(it.uppercase()) }.getOrNull() }.toSet(),

@@ -59,11 +59,16 @@ class RespostaDaIaForaDaFaixaTest {
         http = OkHttpClient(),
     )
 
-    private fun respostaCom(mes: String, dia: String): String = """
+    private fun respostaCom(
+        mes: String,
+        dia: String,
+        localDate: String = "\"2026-10-25\"",
+        localTime: String = "\"10:00\"",
+    ): String = """
         {
           "title": "Compromisso",
-          "local_date": "2026-10-25",
-          "local_time": "10:00",
+          "local_date": $localDate,
+          "local_time": $localTime,
           "recurrence": {
             "kind": "YEARLY",
             "week_days": [],
@@ -77,8 +82,17 @@ class RespostaDaIaForaDaFaixaTest {
         }
     """.trimIndent()
 
-    private fun parseDoServidor(mes: String, dia: String) = runBlocking {
-        server.enqueue(MockResponse().setBody(respostaCom(mes, dia)).setHeader("Content-Type", "application/json"))
+    private fun parseDoServidor(
+        mes: String,
+        dia: String,
+        localDate: String = "\"2026-10-25\"",
+        localTime: String = "\"10:00\"",
+    ) = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setBody(respostaCom(mes, dia, localDate, localTime))
+                .setHeader("Content-Type", "application/json"),
+        )
         cliente().parse(
             transcript = "todo dia 5 de maio",
             nowIso = "2026-10-06T13:00:00Z",
@@ -104,8 +118,51 @@ class RespostaDaIaForaDaFaixaTest {
     }
 
     /**
+     * A regra anual sem um dos dois campos não é uma recorrência — é metade de uma, e o texto que
+     * ela produz na tela é `"Todo 5 de ?"` (ver `RecurrenceRule.describePtBr`). Descartar o mês
+     * sem mexer no `kind` trocava a queda da home por um texto quebrado na tela dela.
+     *
+     * A asserção é a **ausência** do `?` no texto real que a tela mostra — o resumo da caixa
+     * rápida passa por `describePtBr()` (`AgendaFormat.promiseOfChoice`), não por uma cópia.
+     */
+    @Test
+    fun anualSemMesRebaixaParaNONEESomeOTextoQuebrado() {
+        val draft = parseDoServidor(mes = "13", dia = "5")
+
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+        assertThat(draft.recurrence.describePtBr()).doesNotContain("?")
+        assertThat(draft.recurrence.describePtBr()).isEqualTo("Única")
+    }
+
+    /** O espelho: `day_of_month` inválido com mês válido virava `"Todo ? de maio"`. */
+    @Test
+    fun anualSemDiaRebaixaParaNONEESomeOTextoQuebrado() {
+        val draft = parseDoServidor(mes = "5", dia = "32")
+
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+        assertThat(draft.recurrence.describePtBr()).doesNotContain("?")
+        assertThat(draft.recurrence.describePtBr()).isEqualTo("Única")
+    }
+
+    /** Mês `0`, negativo e `99` também caem, e também não podem sobrar como texto quebrado. */
+    @Test
+    fun mesForaDaFaixaEmQualquerBordaRebaixaParaNONE() {
+        listOf("0", "-1", "99").forEach { mes ->
+            val draft = parseDoServidor(mes = mes, dia = "5")
+
+            assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+            assertThat(draft.recurrence.describePtBr()).doesNotContain("?")
+        }
+    }
+
+    /**
      * O caso que derrubava a home, ponta a ponta: o rascunho que sai do cliente não pode
      * estourar quando a caixa de confirmação rápida calcula a primeira ocorrência na composição.
+     *
+     * `FirstOccurrence.date` é `LocalDate` **não-nulo** — asserir `isNotNull()` passava com
+     * qualquer regra, inclusive a que inventava `2027-10-05`. O que o teste promete é que a faixa
+     * inválida não inventa dia nenhum: sem mês utilizável a regra anual deixa de existir
+     * (`kind = NONE`) e a data escolhida é a que vale.
      */
     @Test
     fun oRascunhoDaFaixaInvalidaNaoDerrubaOCalculoDaPrimeiraOcorrencia() {
@@ -119,7 +176,8 @@ class RespostaDaIaForaDaFaixaTest {
             now = java.time.Instant.parse("2026-10-06T13:00:00Z"),
         )
 
-        assertThat(first.date).isNotNull()
+        assertThat(first.date).isEqualTo(LocalDate.of(2026, 10, 25))
+        assertThat(first.movedBecause).isNull()
     }
 
     /** Meses `0` e negativos também vêm do modelo, e também têm de cair. */
@@ -203,6 +261,60 @@ class RespostaDaIaForaDaFaixaTest {
                 locale = "pt-BR",
             )
         }
+        assertThat(draft.notes).isEmpty()
+    }
+
+    /**
+     * O campo ao lado: `local_date`/`local_time` são o mesmo dado não confiável, e eram o mesmo
+     * padrão de conversão sem rede — `LocalDate.parse("2026-02-30")` e `LocalTime.parse("25:00")`
+     * estouram `DateTimeParseException`.
+     *
+     * Hoje quem engole é o `catch` do `HybridParser`, que devolve o rascunho local inteiro e
+     * joga fora a data e a hora que a IA tinha acertado — a nota do descarte, junto. O caminho
+     * certo é o mesmo do campo de recorrência: o valor inválido vira ausente e a nota aparece.
+     */
+    @Test
+    fun dataQueNaoDaParaLerViraAusenteEAvisa() {
+        listOf("2026-02-30", "21/08/2026", "lixo").forEach { data ->
+            val draft = parseDoServidor(mes = "5", dia = "5", localDate = "\"$data\"")
+
+            assertThat(draft.localDate).isNull()
+            assertThat(draft.notes).containsExactly(
+                "A ajuda extra devolveu uma data que não deu para entender. Ficou sem essa parte.",
+            )
+        }
+    }
+
+    /** O horário inválido é o mesmo defeito: `25:00` e `9h` não são `LocalTime`. */
+    @Test
+    fun horaQueNaoDaParaLerViraAusenteEAvisa() {
+        listOf("25:00", "9h", "lixo").forEach { hora ->
+            val draft = parseDoServidor(mes = "5", dia = "5", localTime = "\"$hora\"")
+
+            assertThat(draft.localTime).isNull()
+            assertThat(draft.notes).containsExactly(
+                "A ajuda extra devolveu um horário que não deu para entender. Ficou sem essa parte.",
+            )
+        }
+    }
+
+    /** A data e a hora válidas seguem intactas: o fix é rede, não troca de comportamento. */
+    @Test
+    fun dataEHoraValidasPassamIntactas() {
+        val draft = parseDoServidor(mes = "5", dia = "5")
+
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 10, 25))
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(10, 0))
+        assertThat(draft.notes).isEmpty()
+    }
+
+    /** `null` é o "não foi dito" legítimo da IA e não pode virar nota. */
+    @Test
+    fun dataEHoraNulasNaoViramNota() {
+        val draft = parseDoServidor(mes = "5", dia = "5", localDate = "null", localTime = "null")
+
+        assertThat(draft.localDate).isNull()
+        assertThat(draft.localTime).isNull()
         assertThat(draft.notes).isEmpty()
     }
 }

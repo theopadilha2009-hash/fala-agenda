@@ -56,6 +56,18 @@ enum class UnsupportedKind {
      * chute é o pior desfecho possível. Reconhecido, não executado.
      */
     ERASE,
+
+    /**
+     * "cancela o médico, não, o dentista": ela se corrigiu no meio da fala, e o alvo ficou
+     * ambíguo.
+     *
+     * O que vem depois do conector pode ser a tarefa ("o dentista"), o dia ("hoje"), a hora
+     * ("às três") ou nada — e o classificador é puro, sem a agenda na mão, então não tem como
+     * decidir. Agir sobre o alvo que ela DESCARTou é o pior desfecho deste aplicativo: no
+     * remédio, concluir o alvo errado é dose errada registrada; no cancelamento, apaga a tarefa
+     * errada e a certa fica. Reconhecido, não executado.
+     */
+    CORRECTION,
 }
 
 /**
@@ -80,6 +92,50 @@ object SpeechIntentClassifier {
             ?: cancel(folded)
             ?: SpeechIntent.Capture
     }
+
+    /**
+     * O que ela disse DEPOIS de se corrigir.
+     *
+     * Ela fala, percebe que errou e se corrige sem parar de falar: "cancela o médico, não, o
+     * dentista". O classificador agia sobre o alvo que ela DESCARTou — `Cancel(target=medico)` —
+     * e o app apagava o médico; em **275 de 300** casos do catálogo isso aconteceu
+     * (`cacada-fala-2026-10-07-correcao.md`, seção P1). No `Complete` o dano é maior: concluir o
+     * remédio errado é dose errada registrada.
+     *
+     * Um conector de correção é uma fronteira: o que vem ANTES dele foi descartado por ela, e o
+     * alvo que o app pode usar é o de DEPOIS. O classificador não decide o desfecho sozinho
+     * porque o que vem depois pode ser a tarefa ("o dentista"), o dia ("hoje"), a hora ("às
+     * três") ou nada — e ele é puro, sem a agenda na mão. Medido no oráculo: em **405 de 810**
+     * casos do espaço `verbo × conector × alvo` o corrigido é um alvo de tarefa de verdade e
+     * nos outros 405 é um dia, uma hora ou nada. Metade não decide, e escolher no chute é o pior
+     * desfecho — o app prefere escalar a adivinhar (ver a doutrina de `HybridParser`: "duas
+     * expressões de tempo discordam ⇒ escala"). Por isso o desfecho é o mesmo do "apaga isso":
+     * reconhecer e não executar.
+     *
+     * O gatilho é o conector, não o verbo: sem conector nada muda (a frase sem correção continua
+     * exatamente como hoje), e uma frase que nunca foi comando — "me lembra de comprar pão, não,
+     * leite" — continua sendo captura, porque a checagem só acontece depois de um gatilho abrir a
+     * fala.
+     */
+    private fun hasCorrection(rest: String): Boolean = CORRECTION_CUE.containsMatchIn(rest)
+
+    /**
+     * Os conectores com que ela se corrige, medidos todos no catálogo. O espaço em branco entre
+     * as vírgulas é flexível porque o reconhecedor pontua de formas diferentes — a mesma fala
+     * chega ", não,", ", nao" e "nao," —, e um conector que escapasse deixaria a frase agir sobre
+     * o alvo descartado, calada.
+     *
+     * As alternativas que não têm vírgula (o "melhor", o "errei", o "digo") podem abrir o
+     * conector ou fechar a primeira vírgula: em `, melhor, ` o motor casa "melhor" no ponto em
+     * que o `, ` seguinte já foi consumido, e a âncora `(^|,)` não vale ali. Por isso cada
+     * alternativa é cercada por `(^|[\s,])` e `([\s,]|$)` — nenhuma delas é palavra de conteúdo
+     * de tarefa (ver a prova no oráculo: as capturas legítimas "muda o óleo do carro", "troca a
+     * lâmpada da sala" e "me lembra de trocar o remédio" continuam sendo captura).
+     */
+    private val CORRECTION_CUE = Regex(
+        "(^|[\\s,])(nao|quer dizer|digo|na verdade|melhor|errei|ao inves disso|em vez disso)" +
+            "([\\s,]|$)",
+    )
 
     /**
      * O preâmbulo que pode anteceder o comando: a interjeição e a cortesia com que ela começa
@@ -211,6 +267,9 @@ object SpeechIntentClassifier {
     private fun complete(folded: String): SpeechIntent? {
         val rest = withoutFiller(folded)
         val hit = opensWith(jaFiz, rest) ?: opensWith(conclui, rest) ?: return null
+        if (hasCorrection(rest.substring(hit.range.last + 1))) {
+            return SpeechIntent.Unknown(UnsupportedKind.CORRECTION)
+        }
         return SpeechIntent.Complete(targetAfter(rest, hit.range.last + 1))
     }
 
@@ -227,6 +286,9 @@ object SpeechIntentClassifier {
     private fun cancel(folded: String): SpeechIntent? {
         val rest = withoutFiller(folded)
         val hit = opensWith(cancela, rest) ?: return null
+        if (hasCorrection(rest.substring(hit.range.last + 1))) {
+            return SpeechIntent.Unknown(UnsupportedKind.CORRECTION)
+        }
         return SpeechIntent.Cancel(targetAfter(rest, hit.range.last + 1))
     }
 
@@ -336,6 +398,12 @@ object SpeechIntentClassifier {
         val target = targetAfter(rest, hit.range.last + 1)
         // Sem alvo ("apaga", "deleta") não há o que casar: é captura, como sempre foi.
         if (target.isEmpty()) return null
+        // "apaga o remédio, não, o de pressão": o terceiro caminho destrutivo. Quem decide o
+        // desfecho aqui é a agenda (ver [SpeechIntent.EraseNamed]), e com o alvo descartado ela
+        // apagaria a tarefa errada — a mesma classe de dano do [cancel] e do [complete].
+        if (hasCorrection(folded.substring(hit.range.last + 1))) {
+            return SpeechIntent.Unknown(UnsupportedKind.CORRECTION)
+        }
         // Um demonstrativo sozinho não nomeia nada — é o "apaga isso" escrito de outro jeito, e
         // o desfecho é o mesmo: reconhecer e não executar, nunca procurar uma tarefa "essa".
         if (target in DEMONSTRATIVOS) return SpeechIntent.Unknown(UnsupportedKind.ERASE)

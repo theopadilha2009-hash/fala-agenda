@@ -64,13 +64,14 @@ class RespostaDaIaForaDaFaixaTest {
         dia: String,
         localDate: String = "\"2026-10-25\"",
         localTime: String = "\"10:00\"",
+        kind: String = "YEARLY",
     ): String = """
         {
           "title": "Compromisso",
           "local_date": $localDate,
           "local_time": $localTime,
           "recurrence": {
-            "kind": "YEARLY",
+            "kind": "$kind",
             "week_days": [],
             "day_of_month": $dia,
             "month_of_year": $mes
@@ -87,10 +88,11 @@ class RespostaDaIaForaDaFaixaTest {
         dia: String,
         localDate: String = "\"2026-10-25\"",
         localTime: String = "\"10:00\"",
+        kind: String = "YEARLY",
     ) = runBlocking {
         server.enqueue(
             MockResponse()
-                .setBody(respostaCom(mes, dia, localDate, localTime))
+                .setBody(respostaCom(mes, dia, localDate, localTime, kind))
                 .setHeader("Content-Type", "application/json"),
         )
         cliente().parse(
@@ -193,13 +195,84 @@ class RespostaDaIaForaDaFaixaTest {
         val janeiro = parseDoServidor(mes = "1", dia = "1")
         assertThat(janeiro.recurrence.monthOfYear).isEqualTo(1)
         assertThat(janeiro.recurrence.dayOfMonth).isEqualTo(1)
-        assertThat(janeiro.notes.joinToString()).doesNotContain("fora do calendário")
+        // F-3: `doesNotContain` sobre lista vazia passa trivialmente — e "não avisou nada" era
+        // exatamente o defeito. A asserção é a lista vazia, não a ausência de uma frase nela.
+        assertThat(janeiro.notes).isEmpty()
 
         val dezembro = parseDoServidor(mes = "12", dia = "31")
         assertThat(dezembro.recurrence.monthOfYear).isEqualTo(12)
         assertThat(dezembro.recurrence.dayOfMonth).isEqualTo(31)
         assertThat(dezembro.recurrence.kind).isEqualTo(RecurrenceKind.YEARLY)
-        assertThat(dezembro.notes.joinToString()).doesNotContain("fora do calendário")
+        assertThat(dezembro.notes).isEmpty()
+    }
+
+    /**
+     * F-1, o achado que reprovou o PR: o `kindCoerente` rebaixava o `YEARLY` sem mês/dia e **não
+     * cobria o `MONTHLY`**.
+     *
+     * `{"kind":"MONTHLY","day_of_month":null}` é **conformante ao schema**
+     * (`supabase/functions/_shared/openai.ts`: `type: ["integer","null"]`, e `minimum`/`maximum`
+     * não mordem em `null`) — não é preciso o modelo alucinar. O `describePtBr()` renderizava
+     * `"Todo dia ? do mês"`, o `faixaDescartada` ficava falso (`null != null` é `false`, então nem
+     * nota aparecia) e a caixa "Pode salvar?" mostrava o texto quebrado com `canQuickConfirm = true`
+     * — o caminho do salvamento com um toque, com o texto errado já à vista.
+     */
+    @Test
+    fun mensalSemDiaRebaixaParaNONEESomeOTextoQuebrado() {
+        val draft = parseDoServidor(mes = "null", dia = "null", kind = "MONTHLY")
+
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+        assertThat(draft.recurrence.describePtBr()).isEqualTo("Única")
+        assertThat(draft.recurrence.describePtBr()).doesNotContain("?")
+        assertThat(draft.notes.joinToString()).contains("não disse o dia")
+    }
+
+    /**
+     * O `MONTHLY` sem dia **salva em silêncio** — é o agravante que fez o achado ser P2 e não P3.
+     * A asserção prende o mecanismo: `isComplete` e `canQuickConfirm` verdadeiros sobre uma regra
+     * que teria ido para a tela como `"Todo dia ? do mês"`.
+     */
+    @Test
+    fun oMensalSemDiaEraOCaminhoDoSalvamentoSilencioso() {
+        val draft = parseDoServidor(mes = "null", dia = "null", kind = "MONTHLY")
+        val agora = java.time.Instant.parse("2026-10-06T13:00:00Z")
+
+        assertThat(draft.isComplete).isTrue()
+        assertThat(draft.ambiguous).isFalse()
+        assertThat(draft.canQuickConfirm(agora, ZoneId.of("America/Sao_Paulo"))).isTrue()
+    }
+
+    /** O mensal com o dia presente continua mensal, e sem nota nova. */
+    @Test
+    fun mensalComDiaContinuaMensalSemNota() {
+        val draft = parseDoServidor(mes = "null", dia = "15", kind = "MONTHLY")
+
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.MONTHLY)
+        assertThat(draft.recurrence.describePtBr()).isEqualTo("Todo dia 15 do mês")
+        assertThat(draft.notes).isEmpty()
+    }
+
+    /**
+     * O campo fora da faixa **já tem** nota ("fora do calendário"), e a nota nova não pode vir
+     * junto: duas frases para o mesmo descarte.
+     */
+    @Test
+    fun mensalComDiaForaDaFaixaUsaSoANotaDeFaixa() {
+        val draft = parseDoServidor(mes = "null", dia = "32", kind = "MONTHLY")
+
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+        assertThat(draft.notes.joinToString()).contains("fora do calendário")
+        assertThat(draft.notes.joinToString()).doesNotContain("não disse o dia")
+    }
+
+    /** O mesmo caminho do `YEARLY`: faltando o mês, a nota nova aparece e a de faixa não. */
+    @Test
+    fun anualSemMesTambemDeixaANotaDaRecorrenciaIncompleta() {
+        val draft = parseDoServidor(mes = "null", dia = "5")
+
+        assertThat(draft.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
+        assertThat(draft.notes.joinToString()).contains("não disse a data")
+        assertThat(draft.notes.joinToString()).doesNotContain("fora do calendário")
     }
 
     /**

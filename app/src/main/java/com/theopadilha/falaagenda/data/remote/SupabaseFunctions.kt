@@ -123,16 +123,43 @@ private fun faixaDaRecorrencia(
 }
 
 /**
- * A regra anual só é uma recorrência com **mês e dia**. Faltando um dos dois, ela é metade de uma:
- * `RecurrenceRule.describePtBr()` a descreve como `"Todo 5 de ?"`, e é esse texto que a caixa de
- * confirmação e o cartão mostram para ela.
+ * A regra que a IA devolve só é uma recorrência se tiver os campos que ela **descreve** — a
+ * pergunta é `RecurrenceRule.isCoherent`, no domínio, e não uma condição escrita de novo aqui.
  *
- * Descartar só o campo fora da faixa trocava a queda da home (`DateTimeException` na composição)
- * por um texto quebrado na tela — a melhora que não termina o serviço. O `kind` cai junto, e a
- * nota que já explica o descarte passa a explicar a regra inteira.
+ * A versão anterior perguntava só pelo `YEARLY` (`dia == null || mes == null`) e o `MONTHLY` ficou
+ * de fora: `{"kind":"MONTHLY","day_of_month":null}` é **conformante ao schema**
+ * (`supabase/functions/_shared/openai.ts`: `type: ["integer","null"]`, e `minimum`/`maximum` não
+ * mordem em `null`), então nem é preciso o modelo alucinar. O `describePtBr()` renderizava
+ * `"Todo dia ? do mês"` na caixa "Pode salvar?" com `canQuickConfirm = true` — o texto quebrado no
+ * caminho do salvamento com um toque. Copiada, a condição deixou um `kind` inteiro de fora; vinda
+ * do domínio, o `kind` novo já nasce coberto.
+ *
+ * Faltando o campo, a regra cai para `NONE` e a nota explica — a recorrência **deixa de repetir**
+ * (ver a nota e o relatório do lote: é decisão de produto, entre "texto quebrado" e "regra errada").
  */
 private fun kindCoerente(kind: RecurrenceKind, dia: Int?, mes: Int?): RecurrenceKind =
-    if (kind == RecurrenceKind.YEARLY && (dia == null || mes == null)) RecurrenceKind.NONE else kind
+    if (RecurrenceRule(kind = kind, dayOfMonth = dia, monthOfYear = mes).isCoherent) {
+        kind
+    } else {
+        RecurrenceKind.NONE
+    }
+
+/**
+ * A nota de quando a IA disse que a regra repete e **não disse o campo que ela precisa** — o
+ * `MONTHLY` sem dia e o `YEARLY` sem mês ou sem dia. O campo não veio fora da faixa (aí a nota é a
+ * de baixo); ele simplesmente não veio.
+ *
+ * Sem esta nota a perda da recorrência seria invisível: a caixa mostraria "Única" para uma fala em
+ * que ela pediu "todo mês", e ela não teria como saber que a ajuda extra deixou a metade de fora.
+ * A frase não culpa ela e não fala em erro de calendário, porque aqui não houve erro — houve
+ * omissão.
+ */
+private fun notaDaRecorrenciaIncompleta(kindLido: RecurrenceKind): String = when (kindLido) {
+    RecurrenceKind.MONTHLY ->
+        "A ajuda extra disse que repete todo mês, mas não disse o dia. Ficou sem repetir."
+    else ->
+        "A ajuda extra disse que repete todo ano, mas não disse a data. Ficou sem repetir."
+}
 
 /**
  * A nota de quando a data pedida existe na faixa, mas não **naquele mês** — "todo dia 30 de
@@ -167,8 +194,14 @@ private data class ParseBody(
     val locale: String,
 )
 
+/**
+ * `internal`, e não `private`: o teste de fronteira precisa decodificar a resposta pelo mesmo
+ * `Json.decodeFromString(ParseResponse.serializer()).toDraft(...)` que a produção usa, e o caminho
+ * pela rede (24300 casos num `MockWebServer`) custaria minutos. A visibilidade é a única coisa que
+ * muda aqui — a conversão e a serialização são as mesmas.
+ */
 @Serializable
-private data class ParseResponse(
+internal data class ParseResponse(
     val title: String = "",
     @SerialName("local_date") val localDate: String? = null,
     @SerialName("local_time") val localTime: String? = null,
@@ -193,6 +226,10 @@ private data class ParseResponse(
         val hora = localTime?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
         val notasDoRecorrencia = buildList {
             if (faixaDescartada) add(NOTA_FAIXA_INVALIDA)
+            // A regra rebaixada **sem** campo fora da faixa: a IA disse que repete e não disse o
+            // campo. A de cima já explica esse caso (o campo veio, só não existe no calendário), e
+            // as duas juntas seriam duas frases para o mesmo descarte.
+            if (kind != kindLido && !faixaDescartada) add(notaDaRecorrenciaIncompleta(kindLido))
             if (localDate != null && data == null) add(NOTA_DATA_ILEGIVEL)
             if (localTime != null && hora == null) add(NOTA_HORA_ILEGIVEL)
             notaDoDiaQueNaoExisteNoMes(dia, mes, kind)?.let { add(it) }
@@ -220,7 +257,7 @@ private data class ParseResponse(
 }
 
 @Serializable
-private data class ParseRecurrence(
+internal data class ParseRecurrence(
     val kind: String = "NONE",
     @SerialName("week_days") val weekDays: List<String> = emptyList(),
     @SerialName("day_of_month") val dayOfMonth: Int? = null,

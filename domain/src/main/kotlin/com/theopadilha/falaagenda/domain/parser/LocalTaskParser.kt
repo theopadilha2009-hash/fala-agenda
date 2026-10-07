@@ -687,8 +687,16 @@ class LocalTaskParser(
             // a hora que ela acabou de falar. Sem hora dita, continua pedindo — não inventamos.
             val clockHit = extractClock(rest)
             if (clockHit?.time != null) {
+                // A primeira dose dita preenche a hora, mas o INTERVALO continua sendo um intervalo:
+                // a série "de 8 em 8 horas" não é uma tarefa única. Sem isto o rascunho saía
+                // ambiguous=false/notes=[] e a caixa rápida gravava uma vez só, sem nunca dizer que
+                // tinha ignorado o intervalo. Espelha o ramo irmão do intervalo em DIAS (`extractTime`):
+                // mesma marcação, mesma família de nota.
+                val note = "“${m.value}” é um intervalo, não um horário do dia. Confirme o horário da primeira dose."
                 return clockHit.copy(
                     remaining = TextNormalizer.compactSpaces(STARTS_AT.replace(clockHit.remaining, " ")),
+                    ambiguous = true,
+                    note = listOfNotNull(clockHit.note, note).joinToString(" "),
                 )
             }
             return TimeHit(

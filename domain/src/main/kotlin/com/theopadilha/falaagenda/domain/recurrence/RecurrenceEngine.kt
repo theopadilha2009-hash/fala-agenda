@@ -11,8 +11,19 @@ object RecurrenceEngine {
     /**
      * Ajusta dia 29/30/31 ao último dia válido do mês.
      * 29 de fevereiro em ano não bissexto cai em 28 de fevereiro.
+     *
+     * Mês fora de `1..12` devolve **nulo**, não estoura. A faixa inválida não é erro de
+     * programação: é dado que entrou de fora. O schema do LLM
+     * (`supabase/functions/_shared/openai.ts`) declara `month_of_year` como `integer` sem
+     * `minimum`/`maximum`, e o modelo devolve `0`, `13` ou negativo. O `YearMonth.of` estourava
+     * `DateTimeException`, e quem chamava era `DraftSchedule.firstOccurrence` **na composição** da
+     * caixa de confirmação rápida: a home caía, sem error boundary e num caminho em que a tela de
+     * confirmação nem aparece. Nulo aqui é o mesmo contrato de campo ausente do resto do domínio
+     * (`dayOfMonth`/`monthOfYear` nulos já significam "não foi dito"), e quem chama decide o que
+     * fazer: [firstOnOrAfter] trata como não informado, e `DraftSchedule` cai na data escolhida.
      */
-    fun clampToValidDate(year: Int, month: Int, dayOfMonth: Int): LocalDate {
+    fun clampToValidDate(year: Int, month: Int, dayOfMonth: Int): LocalDate? {
+        if (month !in 1..12) return null
         val ym = YearMonth.of(year, month)
         val day = dayOfMonth.coerceIn(1, ym.lengthOfMonth())
         return ym.atDay(day)
@@ -25,12 +36,17 @@ object RecurrenceEngine {
      * a série anual cai no bissexto seguinte, e o dia existe em algum ano.
      */
     fun dayExistsInMonth(dayOfMonth: Int, month: Int): Boolean {
+        if (month !in 1..12) return false
         if (dayOfMonth !in 1..31) return false
         if (dayOfMonth == 29 && month == 2) return true
         return dayOfMonth <= YearMonth.of(2001, month).lengthOfMonth()
     }
 
-    fun yearlyDate(year: Int, month: Int, dayOfMonth: Int): LocalDate {
+    /**
+     * A data da regra anual. Nula quando o mês não existe — a faixa inválida vem de fora e não
+     * pode virar exceção no meio de um toque; ver [clampToValidDate] para o porquê.
+     */
+    fun yearlyDate(year: Int, month: Int, dayOfMonth: Int): LocalDate? {
         if (month == 2 && dayOfMonth == 29) {
             return if (YearMonth.of(year, 2).isLeapYear) {
                 LocalDate.of(year, 2, 29)
@@ -64,7 +80,11 @@ object RecurrenceEngine {
                 nextMonthly(from, desired)
             }
             RecurrenceKind.YEARLY -> {
-                val month = rule.monthOfYear ?: seriesStart.monthValue
+                // Mês fora da faixa é dado ruim de fora (a IA devolve `13`), não um pedido de
+                // "todo dia 5 do mês 13". Tratado como ausente, cai no mês da própria série —
+                // o mesmo destino do campo nulo, em vez do `DateTimeException` que derrubava a
+                // home. Ver [clampToValidDate].
+                val month = rule.monthOfYear?.takeIf { it in 1..12 } ?: seriesStart.monthValue
                 val day = rule.dayOfMonth ?: seriesStart.dayOfMonth
                 nextYearly(from, month, day)
             }
@@ -121,7 +141,7 @@ object RecurrenceEngine {
         var month = from.monthValue
         repeat(14) {
             val candidate = clampToValidDate(year, month, desiredDay)
-            if (!candidate.isBefore(from)) return candidate
+            if (candidate != null && !candidate.isBefore(from)) return candidate
             if (month == 12) {
                 month = 1
                 year += 1
@@ -136,7 +156,7 @@ object RecurrenceEngine {
         var year = from.year
         repeat(3) {
             val candidate = yearlyDate(year, month, day)
-            if (!candidate.isBefore(from)) return candidate
+            if (candidate != null && !candidate.isBefore(from)) return candidate
             year += 1
         }
         throw DateTimeException("Não foi possível calcular ocorrência anual")

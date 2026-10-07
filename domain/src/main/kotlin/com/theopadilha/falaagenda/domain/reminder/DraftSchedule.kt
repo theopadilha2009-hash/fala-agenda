@@ -67,6 +67,14 @@ object DraftSchedule {
      * não repete com `seriesStart` antes do piso, e aqui os dois argumentos são a mesma data. Fica
      * como rede: se o motor ganhar um caso nulo novo, a tela mostra a data escolhida em vez de
      * estourar no meio de um toque.
+     *
+     * Esta função roda **na composição** da caixa de confirmação rápida, e é por isso que ela é a
+     * última rede do defeito que derrubava a home: `RecurrenceRule` pode chegar com
+     * `monthOfYear = 13` vindo da IA, e o `RecurrenceEngine` respondia isso com `DateTimeException`
+     * no meio de um toque, sem error boundary acima. O motor não estoura mais (ver
+     * `RecurrenceEngine.clampToValidDate`), mas a rede fica: a regra que não der para calcular
+     * devolve a data escolhida em vez de derrubar a tela — a mesma escolha do `?: chosenDate`
+     * logo abaixo, e nunca um `runCatching` cego que engoliria um erro de programação.
      */
     fun firstOccurrence(
         rule: RecurrenceRule,

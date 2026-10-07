@@ -22,6 +22,7 @@ class LocalTaskParserValoresEFaixasTest {
     )
     private val parser = LocalTaskParser(clock)
 
+
     // ---- Faixa: o compromisso é no INÍCIO, nunca na hora de término ----
 
     @Test
@@ -149,6 +150,80 @@ class LocalTaskParserValoresEFaixasTest {
         assertThat(draft.title).isEqualTo("Comprar duas caixas leite")
     }
 
+    // ---- O review: multiplicador antes de "mil" e separador de milhar por ponto ----
+
+    @Test
+    fun valorPorExtensoComMultiplicadorAntesDeMil() {
+        // "dois mil e quinhentos" é justaposto, sem o "e" entre "dois" e "mil". A repetição do
+        // regex só aceitava o "e", então o motor re-ancorava em "mil e quinhentos" e gravava
+        // R$1.500,00 em vez de R$2.500,00 — e a caixa rápida confirmava sozinha.
+        val doisMilQuinhentos = parser.parse("pagar dois mil e quinhentos reais amanhã às 10h")
+        assertThat(doisMilQuinhentos.amountCents).isEqualTo(250000L)
+        assertThat(doisMilQuinhentos.title).isEqualTo("Pagar")
+        assertThat(doisMilQuinhentos.canQuickConfirm(clock.instant(), zone)).isTrue()
+
+        assertThat(parser.parse("pagar dois mil reais amanhã às 10h").amountCents).isEqualTo(200000L)
+        assertThat(parser.parse("pagar tres mil reais amanhã às 10h").amountCents).isEqualTo(300000L)
+        assertThat(parser.parse("pagar dez mil reais amanhã às 10h").amountCents).isEqualTo(1000000L)
+        assertThat(parser.parse("pagar quinhentos mil reais amanhã às 10h").amountCents).isEqualTo(50000000L)
+        assertThat(parser.parse("pagar mil duzentos reais amanhã às 10h").amountCents).isEqualTo(120000L)
+    }
+
+    @Test
+    fun valorEmDigitoComSeparadorDeMilharPorPonto() {
+        // "15.000 reais" entrava com amountCents=0 — o ponto era lido como decimal e a captura
+        // parava em "15.00" (não numérico). O título ainda guardava o "15.000".
+        val quinzeMil = parser.parse("pagar 15.000 reais amanhã às 10h")
+        assertThat(quinzeMil.amountCents).isEqualTo(1500000L)
+        assertThat(quinzeMil.title).isEqualTo("Pagar")
+
+        // "R$ 1.234,56": o ramo do cifrão parava em "1.23" e gravava R$1,23.
+        val cifrao = parser.parse("pagar R$ 1.234,56 amanhã às 10h")
+        assertThat(cifrao.amountCents).isEqualTo(123456L)
+        assertThat(cifrao.title).isEqualTo("Pagar")
+
+        assertThat(parser.parse("pagar R$ 1.500 amanhã às 10h").amountCents).isEqualTo(150000L)
+        assertThat(parser.parse("pagar 1.200 reais amanhã às 10h").amountCents).isEqualTo(120000L)
+
+        // A vírgula decimal já funcionava e não pode regredir.
+        assertThat(parser.parse("pagar 30,50 reais amanhã às 10h").amountCents).isEqualTo(3050L)
+    }
+
+    // ---- O review: centavos falados, "meio real" e "rs 30" ----
+
+    @Test
+    fun centavosFaladosSomamAoValorESaemDoTitulo() {
+        // "quinze reais e cinquenta centavos" gravava 1500 e deixava "cinquenta centavos" no título.
+        val draft = parser.parse("pagar quinze reais e cinquenta centavos amanhã às 10h")
+        assertThat(draft.amountCents).isEqualTo(1550L)
+        assertThat(draft.title).isEqualTo("Pagar")
+
+        assertThat(parser.parse("pagar 15 reais e 50 centavos amanhã às 10h").amountCents).isEqualTo(1550L)
+    }
+
+    @Test
+    fun meioRealViraCinquentaCentavos() {
+        val draft = parser.parse("pagar meio real amanhã às 10h")
+        assertThat(draft.amountCents).isEqualTo(50L)
+        assertThat(draft.title).isEqualTo("Pagar")
+    }
+
+    @Test
+    fun rsPorExtensoDoReconhecimentoViraValor() {
+        // O Vosk às vezes devolve "rs 30" no lugar de "R$ 30"; antes não virava valor nenhum.
+        val draft = parser.parse("pagar rs 30 amanhã às 10h")
+        assertThat(draft.amountCents).isEqualTo(3000L)
+        assertThat(draft.title).isEqualTo("Pagar")
+    }
+
+    @Test
+    fun valorPorExtensoComFemininoAntesDeMil() {
+        // "trezentas" existe no léxico do parser mas não no regex: a frase ficava sem valor.
+        val draft = parser.parse("pagar duas mil e trezentas reais amanhã às 10h")
+        assertThat(draft.amountCents).isEqualTo(230000L)
+        assertThat(draft.title).isEqualTo("Pagar")
+    }
+
     // ---- Quantidade por dígito e "meia dúzia" ----
 
     @Test
@@ -169,6 +244,34 @@ class LocalTaskParserValoresEFaixasTest {
         // Antes: title="Comprar dúzia ovos" — o dobro do que ela pediu.
         val draft = parser.parse("comprar meia dúzia de ovos amanhã às 10h")
         assertThat(draft.title).isEqualTo("Comprar meia dúzia ovos")
+    }
+
+    @Test
+    fun digitoJaInterpretadoNaoVoltaParaOTitulo() {
+        // O alvo 3 ("2 caixas" fica no título) preservava também o dígito que o parser JÁ usou como
+        // dia, hora ou recorrência. Os valores esperados são os títulos do `main` (fbebfa9) medidos
+        // com este mesmo relógio de 2026-08-20 10:00 — a regressão é o PR tê-los mudado.
+        val doMain = mapOf(
+            "todo dia 5 caminhar" to "Caminhar",
+            "tomar remédio 8 da manhã" to "Tomar remédio",
+            "amanhã consulta dia 5 de manhã" to "Consulta dia",
+            "todo dia 5 da tarde" to "",
+            "toda semana 5 da tarde" to "Toda semana",
+            "tomar remédio todo dia 5 da tarde" to "Tomar remédio",
+            "pagar conta no dia 25 e no dia 30" to "Pagar conta dia dia",
+            "tomar remédio às 8 em ponto e às 20h" to "Tomar remédio ponto",
+            "marcar médico às 10 em ponto e dentista às 15h" to "Médico ponto dentista",
+            "amanhã reunião dia 12 em ponto" to "Reunião dia ponto",
+        )
+        doMain.forEach { (frase, tituloNoMain) ->
+            assertThat(parser.parse(frase).title).isEqualTo(tituloNoMain)
+        }
+
+        // A quantidade genuína continua no título — é o alvo 3, e não pode regredir de volta.
+        assertThat(parser.parse("comprar 2 caixas de leite amanhã às 10h").title)
+            .isEqualTo("Comprar 2 caixas leite")
+        assertThat(parser.parse("levar 3 remédios amanhã às 10h").title).isEqualTo("Levar 3 remédios")
+        assertThat(parser.parse("comprar 12 ovos amanhã às 10h").title).isEqualTo("Comprar 12 ovos")
     }
 
     // ---- Intervalo com a primeira dose dita ----

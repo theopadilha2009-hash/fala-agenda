@@ -229,16 +229,47 @@ class LocalTaskParser(
      */
     private fun extractAmount(text: String): AmountHit? {
         REAIS_NUMERIC.find(text)?.let { m ->
-            val raw = m.groupValues[1].ifBlank { m.groupValues[2] }
-            val cents = raw.replace(',', '.').toBigDecimalOrNull()?.movePointRight(2)?.toLong() ?: return@let
-            return AmountHit(cents, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
+            val raw = m.groupValues.drop(1).firstOrNull { it.isNotBlank() } ?: return@let
+            val cents = centsFromNumber(raw) ?: return@let
+            return withCentavos(cents, text, m)
         }
         REAIS_EXTENSO.find(text)?.let { m ->
             val cents = (numberFromWords(m.groupValues[1]) ?: return@let) * 100
-            return AmountHit(cents, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
+            return withCentavos(cents, text, m)
+        }
+        MEIO_REAL.find(text)?.let { m ->
+            return AmountHit(50, TextNormalizer.compactSpaces(text.replace(m.value, " ")))
         }
         return null
     }
+
+    /**
+     * "quinze reais e cinquenta centavos": o valor são 15,50, não 15,00 — e o "cinquenta centavos"
+     * não pode sobrar no título. Os centavos vêm colados no "e", logo depois do valor.
+     */
+    private fun withCentavos(cents: Long, text: String, reais: MatchResult): AmountHit {
+        var total = cents
+        val removido = StringBuilder(reais.value)
+        CENTAVOS.find(text.substring(reais.range.last + 1))?.let { tail ->
+            val extra = centsFromSpoken(tail.groupValues[1])
+            if (extra != null && extra in 0..99) {
+                total += extra
+                removido.append(tail.value)
+            }
+        }
+        return AmountHit(total, TextNormalizer.compactSpaces(text.replace(removido.toString(), " ")))
+    }
+
+    /** Os centavos ditos em dígito ("50") ou por extenso ("cinquenta e cinco"). */
+    private fun centsFromSpoken(raw: String): Long? =
+        raw.toLongOrNull() ?: numberFromWords(TextNormalizer.compactSpaces(raw))
+
+    /**
+     * "1.500" e "1.234,56" são milhar por ponto e decimal por vírgula, não decimais com ponto:
+     * sem tirar o ponto antes de converter, "15.000" virava 0 centavos e "1.234,56" virava R$1,23.
+     */
+    private fun centsFromNumber(raw: String): Long? =
+        raw.replace(".", "").replace(',', '.').toBigDecimalOrNull()?.movePointRight(2)?.toLong()
 
     /** "cento e vinte e cinco" = 125. Nulo quando não há número nenhum para ler. */
     private fun numberFromWords(phrase: String): Long? {
@@ -1035,14 +1066,18 @@ class LocalTaskParser(
         WEEKDAY_ANY.containsMatchIn(clause.trimEnd().substringAfterLast(' '))
 
     private fun extractTitle(remaining: String, original: String): String {
-        // O filtro apaga só o que tem cara de hora ("8h", "8h30", "8:30"), não qualquer número:
-        // "comprar 2 caixas" perdia o "2" e o título dizia "Comprar caixas". As palavras de hora
-        // por extenso ("oito") continuam saindo quando sozinhas, senão a hora virava título.
+        // O filtro apaga o que tem cara de hora ("8h", "8h30", "8:30") e o dígito que a frase já
+        // usou como dia, hora ou recorrência — mas preserva a quantidade que ela contou ("comprar
+        // 2 caixas"), que o filtro antigo comia junto. O contexto do dígito não sobrevive no
+        // `remaining` ("todo dia 5 caminhar" sobra "5 caminhar"), então a leitura é sobre a frase
+        // original. As palavras de hora por extenso ("oito") continuam saindo quando sozinhas.
         val words = TextNormalizer.compactSpaces(remaining).split(" ")
+        val dataEHora = dateTimeDigits(original)
         val leftover = words.filterIndexed { index, word ->
             word.isNotBlank() &&
                 (word !in FILLERS || (word == "meia" && words.getOrNull(index + 1) == "duzia")) &&
-                !word.matches(Regex("\\d{1,2}h(?:\\d{1,2}|oras?)?|\\d{1,2}:\\d{2}"))
+                !word.matches(Regex("\\d{1,2}h(?:\\d{1,2}|oras?)?|\\d{1,2}:\\d{2}")) &&
+                !takeDateTimeDigit(word, dataEHora)
         }.toMutableList()
         val rebuilt = original.split(Regex("\\s+")).filter { word ->
             val folded = TextNormalizer.fold(word).trim(',', '.', '!', '?')
@@ -1059,6 +1094,33 @@ class LocalTaskParser(
             return title.replaceFirstChar { if (it.isLowerCase()) it.titlecase(locale) else it.toString() }
         }
         return ""
+    }
+
+    /**
+     * Os dígitos que a frase usa como data, hora ou recorrência — "dia 5", "8 da manhã", "12 em
+     * ponto", "20h". Contados, porque a mesma frase pode falar o mesmo número em dois papéis.
+     */
+    private fun dateTimeDigits(original: String): MutableMap<String, Int> {
+        val counts = mutableMapOf<String, Int>()
+        DATE_TIME_DIGIT.findAll(TextNormalizer.fold(original)).forEach { m ->
+            m.groupValues.drop(1).filter { it.isNotBlank() }.forEach { digit ->
+                counts[digit] = (counts[digit] ?: 0) + 1
+            }
+        }
+        return counts
+    }
+
+    /**
+     * Tira do título o dígito que NÃO é quantidade. Quantidade é o número do que ela contou ("2
+     * caixas", "12 ovos"); o que sobra de uma data ou de uma hora já é título errado.
+     */
+    private fun takeDateTimeDigit(word: String, counts: MutableMap<String, Int>): Boolean {
+        val bare = word.trim(',', '.', '!', '?')
+        if (!bare.matches(Regex("\\d{1,2}"))) return false
+        val left = counts[bare] ?: return false
+        if (left == 0) return false
+        counts[bare] = left - 1
+        return true
     }
 
     private fun extractWeekDays(text: String): Set<DayOfWeek> {
@@ -1190,27 +1252,6 @@ class LocalTaskParser(
         /** "começando amanhã às 8h": a primeira dose do intervalo foi dita. */
         private val STARTS_AT = Regex("""\bcomec(?:ando|a|ar)\b""")
 
-        /**
-         * "120 reais", "R$ 30": o valor em dígito. O "R$" sozinho já é dinheiro — sem o segundo
-         * grupo, "pagar R$ 30" ficava com o "R$" pendurado no título e sem valor nenhum.
-         */
-        private val REAIS_NUMERIC = Regex(
-            """\b(\d+(?:[.,]\d{1,2})?)\s*(?:reais|real|contos?)\b""" +
-                """|\br\s*\$\s*(\d+(?:[.,]\d{1,2})?)""",
-        )
-
-        /** "cento e vinte reais", "mil e duzentos reais": o valor por extenso. */
-        private val REAIS_EXTENSO = Regex(
-            """\b((?:um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|catorze|""" +
-                """quatorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta|quarenta|cinquenta|""" +
-                """sessenta|setenta|oitenta|noventa|cem|cento|duzentos|trezentos|quatrocentos|""" +
-                """quinhentos|seiscentos|setecentos|oitocentos|novecentos|mil)(?:\s+e\s+(?:um|uma|dois|""" +
-                """duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|catorze|quatorze|""" +
-                """quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta|quarenta|cinquenta|sessenta|""" +
-                """setenta|oitenta|noventa|cem|cento|duzentos|trezentos|quatrocentos|quinhentos|""" +
-                """seiscentos|setecentos|oitocentos|novecentos|mil))*)\s+(?:reais|real|contos?)\b""",
-        )
-
         /** O valor falado, palavra a palavra: "cento e vinte e cinco" = 125. */
         private val NUMBER_WORDS = mapOf(
             "um" to 1, "uma" to 1,
@@ -1248,6 +1289,64 @@ class LocalTaskParser(
             "setecentos" to 700, "setecentas" to 700,
             "oitocentos" to 800, "oitocentas" to 800,
             "novecentos" to 900, "novecentas" to 900,
+        )
+
+        /**
+         * As palavras que formam um valor falado, da maior para a menor — "quatrocentos" antes de
+         * "quatro", senão a alternância pararia no prefixo.
+         */
+        private val NUMBER_WORD_ALT: String =
+            (NUMBER_WORDS.keys + listOf("cem", "cento", "mil"))
+                .distinct()
+                .sortedByDescending { it.length }
+                .joinToString("|")
+
+        /**
+         * O número do valor em pt-BR: "120", "30,50", "1.500", "1.234,56". O milhar por ponto vem
+         * primeiro porque é o mais específico — sem ele, "15.000 reais" era lido como "000" (a
+         * tarefa entrava com 0 centavos) e "R$ 1.234,56" como "1.23" (R$1,23).
+         */
+        private const val BR_NUMBER = """\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?"""
+
+        /**
+         * "120 reais", "R$ 30", "rs 30": o valor em dígito. O "R$" (e o "rs" que o reconhecimento
+         * costuma devolver) sozinho já é dinheiro — sem o segundo grupo, "pagar R$ 30" ficava com o
+         * "R$" pendurado no título e sem valor nenhum.
+         */
+        private val REAIS_NUMERIC = Regex(
+            """\b($BR_NUMBER)\s*(?:reais|real|contos?)\b""" +
+                """|\br\s*\$\s*($BR_NUMBER)""" +
+                """|\brs\s+($BR_NUMBER)""",
+        )
+
+        /**
+         * "cento e vinte reais", "mil e duzentos reais", "dois mil e quinhentos reais": o valor por
+         * extenso. O conector "e" é opcional entre as palavras — "dois mil" é justaposto na fala e,
+         * exigindo o "e", o motor re-ancorava em "mil e quinhentos" e gravava 1500 em vez de 2500.
+         */
+        private val REAIS_EXTENSO = Regex(
+            """\b((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*)\s+(?:reais|real|contos?)\b""",
+        )
+
+        /** "e cinquenta centavos": os centavos falados depois do valor em reais. */
+        private val CENTAVOS = Regex(
+            """\s+e\s+((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*|\d{1,2})\s+centavos?\b""",
+        )
+
+        /** "meio real": cinquenta centavos — a única fração falada com o nome do dinheiro. */
+        private val MEIO_REAL = Regex("""\bmeio\s+(?:real|contos?)\b""")
+
+        /**
+         * Onde o dígito é data, hora ou recorrência, e não uma quantidade: "dia 5", "semana 5",
+         * "8 da manhã", "12 em ponto", "20h", "25/12". Casa na frase ORIGINAL — o contexto já foi
+         * comido do `remaining` quando o título é montado.
+         */
+        private val DATE_TIME_DIGIT = Regex(
+            """\b(\d{1,2})\s*h(?:oras?)?\b""" +
+                """|\b(?:dias?|semanas?|mes(?:es)?|anos?)\s+(\d{1,2})\b""" +
+                """|\b(\d{1,2})\s+em\s+ponto\b""" +
+                """|\b(\d{1,2})\s+(?:da|de|do|na)\s+(?:manha|tarde|noite|madrugada)\b""" +
+                """|\b(\d{1,2})[/-](\d{1,2})\b""",
         )
 
         /** "daqui a duas horas e meia": o "e meia" depois do valor relativo vale 30 minutos. */

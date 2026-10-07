@@ -47,9 +47,10 @@ class AlarmeQueFalaTest {
             texto: String,
             id: String,
             aoTerminar: (String) -> Unit,
-        ) {
+        ): Boolean {
             falas += texto
             terminam += aoTerminar
+            return true
         }
 
         /** A [i]-ésima fala chegou ao fim, como o motor avisaria pelo `onDone`. */

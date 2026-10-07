@@ -48,6 +48,16 @@ class LembreteFaladoService : Service() {
 
         var criarVoz: (Context) -> SintetizadorDeVoz = { VozDoAparelho(it) }
 
+        /**
+         * A costura do primeiro plano, e o mesmo motivo do [criarVoz]: o Robolectric nunca recusa
+         * um `startForeground`. Sem esta porta, o caminho da recusa — o único em que o serviço
+         * recusa um disparo com uma voz de outro no ar — não teria como ser exercitado. O padrão é
+         * o de verdade; quem troca é o teste.
+         */
+        var subirEmPrimeiroPlano: (LembreteFaladoService) -> Boolean = {
+            it.tentarSubirEmPrimeiroPlano()
+        }
+
         fun intentPara(context: Context, occurrenceId: String, titulo: String): Intent =
             Intent(context, LembreteFaladoService::class.java).apply {
                 putExtra(AlarmIds.EXTRA_OCCURRENCE_ID, occurrenceId)
@@ -101,12 +111,17 @@ class LembreteFaladoService : Service() {
         // depois, o primeiro disparo saía com o id vazio, e o toque dela caía num id que não
         // existe — a home respondia "Esta tarefa não está mais na agenda" para a tarefa que estava
         // tocando naquele momento.
+        val anterior = ocorrenciaEmCurso
         ocorrenciaEmCurso = occurrenceId
         // E a afirmação de que está falando não atravessa disparos: quem a levanta é
         // [anunciarQueEstaFalando], quando a fala sai. Sem este zero aqui, o segundo disparo
         // nascia dizendo que estava falando por conta do primeiro.
         vozFalando = false
-        if (!subirEmPrimeiroPlano()) {
+        if (!subirEmPrimeiroPlano(this)) {
+            // O primeiro plano recusou este disparo: ele não assume o posto. Sem isto o toque na
+            // notificação da voz que ainda está falando abria a ocorrência do disparo que acabou
+            // de falhar — o toque dela cairia na tarefa errada.
+            ocorrenciaEmCurso = anterior
             sairSeNaoHavoz()
             return START_NOT_STICKY
         }
@@ -120,8 +135,11 @@ class LembreteFaladoService : Service() {
             // é pedida: motor que nunca sobe deixava a notificação afirmando "Avisando em voz
             // alta" durante todo o prazo, sem uma fala sequer.
             aoFalar = { anunciarQueEstaFalando() },
-            // Só o encerramento do aviso que ainda está no ar derruba o serviço: um disparo novo
-            // substitui o anterior, e a conta atrasada do velho não pode calar a voz nova.
+            // O encerramento que derruba o serviço tem que ser o do aviso que ainda está no ar.
+            // Hoje isto é uma segunda trava: o `abandonarOAnterior` acima já tira do `Handler` a
+            // conta do aviso velho e o abandona antes de o novo assumir, então o velho nem chega a
+            // pedir o encerramento. Fica assim de propósito — é a invariante escrita no código, e o
+            // review mediu que, sem ela E sem o `abandonarOAnterior`, dois testes caem.
             aoEncerrar = { encerrado -> if (aviso === encerrado) encerrar() },
         )
         aviso = novo
@@ -189,7 +207,7 @@ class LembreteFaladoService : Service() {
      * não adianta falar: a frase seria cortada no meio pelo processo morrendo, e uma frase cortada
      * é pior que o silêncio — ela ouviria "Está na hora do seu..." e nada mais.
      */
-    private fun subirEmPrimeiroPlano(): Boolean = try {
+    internal fun tentarSubirEmPrimeiroPlano(): Boolean = try {
         NotificationHelper.ensureChannelVoz(this)
         startForeground(ID_DA_NOTIFICACAO_DA_VOZ, notificacao())
         true

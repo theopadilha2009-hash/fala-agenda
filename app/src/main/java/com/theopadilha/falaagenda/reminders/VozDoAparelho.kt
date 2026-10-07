@@ -154,14 +154,26 @@ internal class VozDoAparelho(context: Context) : SintetizadorDeVoz {
         if (disponivel) bloco(true) else pronto = bloco
     }
 
-    override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit) {
-        val tts = motor ?: return
+    override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit): Boolean {
+        val tts = motor ?: return false
         this.aoTerminar = aoTerminar
-        try {
-            tts.speak(texto, TextToSpeech.QUEUE_ADD, Bundle(), id)
+        return try {
+            // O `speak` é sincrono na recusa: ele devolve o código de erro na hora e não fala nada.
+            // Um motor com a voz corrompida, um idioma listado sem dado de fala, o motor ocupado —
+            // o mesmo caminho que o `catch` abaixo, só que sem exceção. Sem olhar o retorno, o fim
+            // da fala era avisado e a barra anunciava uma voz que não existiu.
+            val resultado = tts.speak(texto, TextToSpeech.QUEUE_ADD, Bundle(), id)
+            if (resultado == TextToSpeech.ERROR) {
+                Log.w(TAG, "O motor recusou a fala $id")
+                aoTerminar(id)
+                false
+            } else {
+                true
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Não foi possível falar a fala $id", e)
             aoTerminar(id)
+            false
         }
     }
 

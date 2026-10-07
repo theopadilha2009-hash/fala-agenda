@@ -42,7 +42,8 @@ class LembreteFaladoServiceTest {
     private val ocorrencia = "remedio:2026-10-07"
     private val titulo = "Tomar remédio"
 
-    private class VozDeMentira : SintetizadorDeVoz {
+    private class VozDeMentira(private val recusaAFrase: Boolean = false) : SintetizadorDeVoz {
+        /** As falas que **saíram**. A recusa não entra aqui: não houve som nenhum. */
         val falas = mutableListOf<String>()
         var paradas = 0
         var soltadas = 0
@@ -56,9 +57,16 @@ class LembreteFaladoServiceTest {
         /** O `onInit` do aparelho chegou, com a resposta que o teste escolheu. */
         fun ficouPronto(sabeFalar: Boolean = true) = esperando!!.invoke(sabeFalar)
 
-        override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit) {
+        override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit): Boolean {
+            if (recusaAFrase) {
+                // O caminho do `catch` do `speak` no [VozDoAparelho]: o motor sobe, recusa a frase
+                // e avisa o fim sem ter dito nada.
+                aoTerminar(id)
+                return false
+            }
             falas += texto
             terminam += aoTerminar
+            return true
         }
 
         fun terminouA(i: Int) = terminam[i]("fala-$i")
@@ -80,11 +88,12 @@ class LembreteFaladoServiceTest {
     @After
     fun devolverOCriadorDeVoz() {
         LembreteFaladoService.criarVoz = { VozDoAparelho(it) }
+        LembreteFaladoService.subirEmPrimeiroPlano = { it.tentarSubirEmPrimeiroPlano() }
     }
 
     /** Um serviço de verdade, com um motor de mentira por disparo, e o relógio na mão do teste. */
-    private fun subirOServico(): ServiceController<LembreteFaladoService> {
-        LembreteFaladoService.criarVoz = { VozDeMentira().also { vozes += it } }
+    private fun subirOServico(recusaAFrase: Boolean = false): ServiceController<LembreteFaladoService> {
+        LembreteFaladoService.criarVoz = { VozDeMentira(recusaAFrase).also { vozes += it } }
         val intent = LembreteFaladoService.intentPara(contexto, ocorrencia, titulo)
         val servico = Robolectric.buildService(LembreteFaladoService::class.java, intent).create()
         servico.get().onStartCommand(intent, 0, 1)
@@ -326,6 +335,13 @@ class LembreteFaladoServiceTest {
         subirOServico()
         // O motor nunca fica pronto: nem `onInit`, nem uma fala.
 
+        // A outra metade da mesma regra, e é ela que impede o conserto por omissão: antes de a
+        // fala sair, o título é o nome do canal — neutro, e o mesmo que ela vê nos Ajustes. Sem
+        // esta asserção positiva, esvaziar o título neutro passava: a barra ficava sem título
+        // nenhum e as duas metades do D1 continuavam verdes.
+        assertThat(titulosNaBarra())
+            .contains(contexto.getString(R.string.notification_channel_voice))
+
         val violacoes = amostrarOBarraco()
 
         assertThat(voz.falas).isEmpty()
@@ -346,8 +362,114 @@ class LembreteFaladoServiceTest {
         assertThat(afirmaQueEstaFalando()).isTrue()
     }
 
+    /**
+     * O motor **sobe** — o `quandoPronto(true)` passa, o idioma está lá — e mesmo assim a frase não
+     * sai: o `speak` devolve erro e o [VozDoAparelho] avisa o fim pelo `catch`, sem ter falado nada.
+     * É voz corrompida, idioma listado sem dado de fala, motor ocupado.
+     *
+     * O `aoFalar()` do [AvisoFalado] disparava quando o motor **aceitava** a frase, não quando ela
+     * saía. Neste caminho a barra anunciava "Avisando em voz alta" com zero falas — para ela,
+     * indistinguível de "o áudio nunca funciona", com o aplicativo dizendo na cara dela que falou.
+     * O D1 fechou só a metade do motor que não sobe; esta é a outra metade, e é a que o defeito
+     * original do D1 também ocupava.
+     *
+     * A amostragem é fina no começo por causa disto: a recusa volta na hora, e a mentira vive entre
+     * o instante 0 e o primeiro ciclo do motor. O oráculo é o efeito — a tela disse que falou ⇒
+     * alguma fala saiu —, e não uma linha do serviço.
+     */
+    @Test
+    fun aBarraNaoDizQueEstaFalandoQuandoOMotorRecusaAFrase() {
+        subirOServico(recusaAFrase = true)
+        voz.ficouPronto()
+        assertThat(voz.falas).isEmpty()
+
+        val violacoes = amostrarOBarraco()
+
+        assertThat(falasQueSaíram()).isEqualTo(0)
+        assertThat(violacoes).isEmpty()
+    }
+
+    /**
+     * Dois lembretes em sequência. O primeiro fala, e a barra diz que está falando — verdade. O
+     * segundo dispara e o motor dele **não sobe**: a barra do segundo nascia afirmando que estava
+     * falando por conta do primeiro, a mesma mentira que o D1 existe para matar, agora atravessando
+     * disparos.
+     *
+     * O reset de `vozFalando` no `onStartCommand` é o que impede isso, e sem este teste nenhum
+     * prendia o reset: apagá-lo deixava a suíte inteira verde.
+     */
+    @Test
+    fun aBarraNaoAfirmaQueEstaFalandoNoSegundoDisparoPorContaDoPrimeiro() {
+        val servico = subirOServico()
+        voz.ficouPronto()
+        assertThat(voz.falas).hasSize(1)
+        assertThat(afirmaQueEstaFalando()).isTrue()
+
+        // O segundo lembrete, e o motor dele nunca fica pronto: nenhuma fala do segundo sai.
+        servico.get().onStartCommand(intentDo("remedioB:2026-10-07"), 0, 2)
+        assertThat(vozes).hasSize(2)
+        val vozNova = voz
+        assertThat(vozNova.falas).isEmpty()
+
+        // A afirmação do primeiro não pode valer para o segundo. O que se assere é o **efeito** na
+        // barra: o título de "falando" não está lá, e sim o neutro, porque a voz do segundo — a
+        // única que interessa agora — não saiu. Sem o reset, o segundo nascia com o título do
+        // primeiro e a barra mentia sobre a voz que ainda nem tinha tentado falar.
+        assertThat(afirmaQueEstaFalando()).isFalse()
+        assertThat(titulosNaBarra())
+            .contains(contexto.getString(R.string.notification_channel_voice))
+    }
+
+    /**
+     * O `startForeground` do disparo novo falha e existe uma voz viva na barra. O pedido ruim sai
+     * pela [sairSeNaoHavoz] sem parar nada — a voz que está falando continua —, mas o disparo que
+     * falhou já tinha sobrescrito a ocorrência em curso: o toque na notificação da voz que ainda
+     * está falando abriria a tarefa do disparo que nunca subiu.
+     *
+     * O caminho é raro (o `startForeground` só é recusado com o primeiro plano negado pelo sistema),
+     * e é justamente por isso que ele precisa de teste: é o único em que o serviço ignora um disparo
+     * e mantém outro no ar ao mesmo tempo.
+     */
+    @Test
+    fun oPrimeiroPlanoRecusadoNaoRoubaATarefaDoToqueDaVozQueEstaFalando() {
+        val anterior = "remedioA:2026-10-07"
+        val recusado = "remedioB:2026-10-07"
+        LembreteFaladoService.criarVoz = { VozDeMentira().also { vozes += it } }
+        val servico = Robolectric.buildService(LembreteFaladoService::class.java, intentDo(anterior))
+            .create()
+        servico.get().onStartCommand(intentDo(anterior), 0, 1)
+        voz.ficouPronto()
+        assertThat(tarefaDoToqueDaVoz(servico)).isEqualTo(anterior)
+
+        LembreteFaladoService.subirEmPrimeiroPlano = { false }
+        servico.get().onStartCommand(intentDo(recusado), 0, 2)
+
+        // O disparo recusado nem chegou a construir motor: ele não assumiu nada.
+        assertThat(vozes).hasSize(1)
+        // E a voz do primeiro continua no ar — o pedido ruim não a derruba.
+        assertThat(shadowOf(servico.get()).isStoppedBySelf).isFalse()
+        assertThat(voz.soltadas).isEqualTo(0)
+
+        // A voz que estava falando repete. É aqui que a ocorrência em curso volta a ser lida: a
+        // notificação é remontada no `anunciarQueEstaFalando`, e é ela que monta o `PendingIntent`
+        // do toque. Com o disparo recusado ainda no campo, o toque dela cairia na tarefa errada.
+        voz.terminouA(0)
+        avancarOrelogio(PAUSA_ENTRE_AS_FALAS_MS + 1)
+        assertThat(voz.falas).hasSize(2)
+
+        assertThat(tarefaDoToqueDaVoz(servico)).isEqualTo(anterior)
+    }
+
     private fun intentDo(occurrenceId: String) =
         LembreteFaladoService.intentPara(contexto, occurrenceId, titulo)
+
+    /** A tarefa que a notificação da voz abre hoje, lida do `PendingIntent` que está na barra. */
+    private fun tarefaDoToqueDaVoz(servico: ServiceController<LembreteFaladoService>): String? {
+        val notificacao = shadowOf(servico.get()).lastForegroundNotification
+        assertThat(notificacao).isNotNull()
+        return shadowOf(notificacao.contentIntent).savedIntent
+            .getStringExtra(AlarmIds.EXTRA_OCCURRENCE_ID)
+    }
 
     /** O título que está de fato na barra, e não o que o serviço guardou por último. */
     private fun titulosNaBarra(): List<String> =
@@ -358,18 +480,26 @@ class LembreteFaladoServiceTest {
     private fun afirmaQueEstaFalando(): Boolean =
         titulosNaBarra().contains(contexto.getString(R.string.reminder_speaking_title))
 
+    /** As falas que **saíram** de fato, somando os motores de todos os disparos do teste. */
+    private fun falasQueSaíram(): Int = vozes.sumOf { it.falas.size }
+
     /**
      * Amostra a barra ao longo do prazo inteiro do aviso e devolve os instantes em que ela
      * afirmou que estava falando sem nenhuma fala ter saído.
+     *
+     * Os instantes do começo são **finos** de propósito. O defeito que esta amostragem existe para
+     * pegar vive entre o instante 0 e o primeiro ciclo do motor (a recusa volta na hora, e o
+     * `aoFalar()` antigo vinha logo depois): uma amostragem em 0 e 1 s passa por cima da janela
+     * inteira e dá verde num código que mente. O resto do prazo continua coberto, em passos largos.
      */
     private fun amostrarOBarraco(): List<Long> {
         val violacoes = mutableListOf<Long>()
         var decorrido = 0L
         val prazo = prazoTotalDaFalaMs(contexto.getString(R.string.reminder_spoken, titulo))
-        for (instante in listOf(0L, 1_000L, 3_000L, prazo - 500, prazo + 500)) {
+        for (instante in listOf(0L, 250L, 500L, 700L, 1_000L, 3_000L, prazo - 500, prazo + 500)) {
             avancarOrelogio(instante - decorrido)
             decorrido = instante
-            if (afirmaQueEstaFalando() && voz.falas.isEmpty()) violacoes += instante
+            if (afirmaQueEstaFalando() && falasQueSaíram() == 0) violacoes += instante
         }
         return violacoes
     }

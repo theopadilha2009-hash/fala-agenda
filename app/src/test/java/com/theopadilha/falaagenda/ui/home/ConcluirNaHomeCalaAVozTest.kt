@@ -68,7 +68,7 @@ class ConcluirNaHomeCalaAVozTest {
 
         fun ficouPronto() = esperando?.invoke(true)
 
-        override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit) = Unit
+        override fun falar(texto: String, id: String, aoTerminar: (String) -> Unit) = true
 
         override fun parar() {
             paradas++

@@ -9,18 +9,14 @@ import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
+import com.theopadilha.falaagenda.TestViewModelScopeRule
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.ui.theme.FalaAgendaTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
-import org.junit.After
-import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
@@ -40,7 +36,6 @@ import org.robolectric.shadows.ShadowAlarmManager
  * O teste sobe a home de verdade: o cartão é um `item` do `LazyColumn`, e é a posição dele na
  * composição que prova que ele chegou à tela.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [34],
@@ -50,20 +45,19 @@ import org.robolectric.shadows.ShadowAlarmManager
 )
 class HomeAlarmHealthCardTest {
 
+    private val escopo = TestViewModelScopeRule()
+    private val compose = createComposeRule()
+
+    /**
+     * A regra do escopo é a mais EXTERNA de propósito: é o `after()` do `ComposeContentTestRule`
+     * que descarta a composição, e é esse gesto que leva a assinatura da `agendaUi` a zero e arma
+     * o `WhileSubscribed(5_000)`. Cancelar antes dele deixaria o timer nascer depois do
+     * cancelamento, e ele voltaria a cruzar a fronteira do teste. Ver [TestViewModelScopeRule].
+     */
     @get:Rule
-    val compose = createComposeRule()
+    val regras: RuleChain = RuleChain.outerRule(escopo).around(compose)
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
-
-    @Before
-    fun setUp() {
-        Dispatchers.setMain(Dispatchers.Unconfined)
-    }
-
-    @After
-    fun tearDown() {
-        Dispatchers.resetMain()
-    }
 
     private fun bateriaRestrita(restrita: Boolean) {
         shadowOf(context.getSystemService(PowerManager::class.java))
@@ -98,7 +92,7 @@ class HomeAlarmHealthCardTest {
     fun bateriaRestritaChegaAteACartaoDaHome() {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         bateriaRestrita(restrita = true)
-        val viewModel = HomeViewModel(AppContainer(context))
+        val viewModel = escopo.rastrear(HomeViewModel(AppContainer(context)))
 
         comporHome(viewModel)
 
@@ -125,7 +119,7 @@ class HomeAlarmHealthCardTest {
     fun semAlarmeExatoOCartaoDoAtrasoChegaAteAHome() {
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
         bateriaRestrita(restrita = false)
-        val viewModel = HomeViewModel(AppContainer(context))
+        val viewModel = escopo.rastrear(HomeViewModel(AppContainer(context)))
 
         comporHome(viewModel)
 
@@ -143,7 +137,7 @@ class HomeAlarmHealthCardTest {
     fun semProblemaNaoHaCartaoNaHome() {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         bateriaRestrita(restrita = false)
-        val viewModel = HomeViewModel(AppContainer(context))
+        val viewModel = escopo.rastrear(HomeViewModel(AppContainer(context)))
 
         comporHome(viewModel)
 

@@ -13,17 +13,14 @@ import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.model.TaskOccurrence
 import com.theopadilha.falaagenda.domain.model.TaskSeries
+import com.theopadilha.falaagenda.TestViewModelScopeRule
 import com.theopadilha.falaagenda.ui.AgendaFormat
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
-import org.junit.After
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -43,7 +40,6 @@ import java.time.LocalTime
  * metade — a caixa fechar, a tela navegar, o erro aparecer com o rascunho no lugar — é da
  * composição, e esta suíte não roda Compose.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [34],
@@ -53,22 +49,24 @@ import java.time.LocalTime
 )
 class HomeDraftSaveOutcomeTest {
 
+    /**
+     * Dona do `Dispatchers.Main` e do escopo do `HomeViewModel`. O `setMain` é da regra e é o
+     * mesmo de antes (sem confinamento: cada passo do ViewModel acontece na hora, e o teste espera
+     * o que é de IO de verdade — o banco — em vez de fingir um relógio); o que muda é o
+     * cancelamento no fim do caso, sem o qual o `WhileSubscribed(5_000)` e o `withContext(IO)` do
+     * `init` cruzam a fronteira do teste. Ver [TestViewModelScopeRule].
+     */
+    @get:Rule
+    val escopo = TestViewModelScopeRule()
+
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var container: AppContainer
     private lateinit var viewModel: HomeViewModel
 
     @Before
     fun setUp() {
-        // Sem confinamento: cada passo do ViewModel acontece na hora, e o teste espera o
-        // que é de IO de verdade (o banco) em vez de fingir um relógio.
-        Dispatchers.setMain(Dispatchers.Unconfined)
         container = AppContainer(context)
-        viewModel = HomeViewModel(container)
-    }
-
-    @After
-    fun tearDown() {
-        Dispatchers.resetMain()
+        viewModel = escopo.rastrear(HomeViewModel(container))
     }
 
     @Test

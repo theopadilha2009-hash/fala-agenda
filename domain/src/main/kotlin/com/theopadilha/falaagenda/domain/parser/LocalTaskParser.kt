@@ -1695,11 +1695,22 @@ class LocalTaskParser(
         // original. As palavras de hora por extenso ("oito") continuam saindo quando sozinhas.
         val words = TextNormalizer.compactSpaces(remaining).split(" ")
         val dataEHora = dateTimeDigitPositions(original)
+        // A pontuação do token vive nos dois lados do casamento: o `folded` já vinha limpo, mas
+        // aqui o `leftover` guardava a palavra com a vírgula colada ("pão,"). Nenhum casamento, e o
+        // item da lista sumia do título em silêncio ("comprar pão, leite" virava "Comprar leite",
+        // `ambiguous=false`, sem nota). Limpar o `leftover` na MESMA medida do `folded` faz a lista
+        // falada por vírgula sobreviver inteira.
+        //
+        // O `.filter { it.isNotEmpty() }` é obrigatório, não zelo: o `word.isNotBlank()` acima roda
+        // ANTES do trim, então um `,` solto ("comprar pão , leite") passa pelo filtro e vira `""`.
+        // O `""` nunca casa por igualdade, mas `folded.startsWith("")` é SEMPRE true — ele rouba o
+        // casamento da primeira palavra que chega e a deixa sobreviver como filler no título
+        // ("lembrar de comprar pão , leite" virava "Lembrar comprar pão leite").
         val leftover = words.filterIndexed { index, word ->
             word.isNotBlank() &&
                 (word !in FILLERS || (word == "meia" && words.getOrNull(index + 1) == "duzia")) &&
                 !word.matches(Regex("\\d{1,2}h(?:\\d{1,2}|oras?)?|\\d{1,2}:\\d{2}"))
-        }.toMutableList()
+        }.map { it.trim(',', '.', '!', '?') }.filter { it.isNotEmpty() }.toMutableList()
         // O dígito que a frase usou como data, hora ou recorrência sai AQUI, pela posição na frase
         // original — é a única em que o contexto ("dia 5", "8 da manhã") ainda existe, e a posição
         // não se confunde com a da quantidade quando as duas são o mesmo número ("2 caixas às 2h").
@@ -1713,7 +1724,7 @@ class LocalTaskParser(
             } else {
                 false
             }
-        }
+        }.map { it.trim(',', '.', '!', '?') }
         val title = rebuilt.joinToString(" ").trim().trim(',', '.', '!')
         if (title.isNotBlank()) {
             return title.replaceFirstChar { if (it.isLowerCase()) it.titlecase(locale) else it.toString() }

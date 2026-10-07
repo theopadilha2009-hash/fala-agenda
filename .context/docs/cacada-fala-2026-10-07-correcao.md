@@ -307,14 +307,20 @@ INV5 CAPTURA-LEGITIMA-DESVIADA = 0 de 24
 4. **O prefixo `"não é X, é Y"` no título**: hoje a negação entra no nome da tarefa. Se o
    fix tirar, some junto com ela a informação de que era uma correção — decidir se cabe uma
    nota.
-5. **Editar por voz (Parte B) — o fix é grande ou pequeno?** O desfecho seguro **já existe**:
-   `Unknown(CHANGE)` → *"Ainda não sei mudar uma tarefa falando. Toque na tarefa na lista
-   para editar."* O caminho barato é **alargar o reconhecimento de mudança** para os verbos
-   que faltam (`troca`, `corrige`, `atualiza`, `altera`, `ajusta`) e para o `muda` + artigo —
-   o que transforma "cria tarefa nova calada" em "diz que não sabe e não cria nada".
-   Recomendo **esse** primeiro: é pequeno, reversível e fecha o P0 dos dois alarmes. Fazer a
-   edição de verdade (mudar a série existente) é feature nova, com decisão de produto sobre
-   qual série casar e o que fazer com as doses já passadas.
-6. **O guard de duplicata não existe.** Antes de qualquer edição falada, decidir o que fazer
-   quando ela fala de um remédio que já existe — criar segunda série é o dano que o próprio
-   código já reconhece (`HomeScreen.kt:913`).
+5. **Editar por voz (Parte B) — o fix é pequeno, mas tem uma armadilha.** O desfecho seguro
+   **já existe**: `Unknown(CHANGE)` → *"Ainda não sei mudar uma tarefa falando. Toque na
+   tarefa na lista para editar."* O caminho barato é alargar o reconhecimento de mudança —
+   mas **alargar os verbos sozinho é uma regressão**: `"troca a lâmpada da sala"` viraria
+   `Unknown(CHANGE)` e ela **não conseguiria criar** essa tarefa (as 24 capturas legítimas
+   medidas hoje passam justamente porque `troca` não é reconhecido).
+   O sinal que separa os dois é o **valor novo na frase**: `"muda o remédio pra nove"` traz
+   alvo **e** valor; `"troca a lâmpada da sala"` não traz valor nenhum. Regra proposta:
+   **verbo de edição + objeto + valor novo (hora/data) ⇒ `Unknown(CHANGE)`**; sem o valor,
+   continua `Capture` (como hoje). Recomendo medir essa regra contra as 24 capturas legítimas
+   **antes** de implementar — se alguma for roubada, a regra está errada.
+6. **Editar de verdade (mudar a série existente) é feature nova**, não fix: exige decisão de
+   produto sobre qual série casar e o que fazer com as doses já passadas. Não cabe no mesmo
+   lote do item 5.
+7. **O guard de duplicata não existe.** Antes de qualquer edição falada de verdade, decidir o
+   que fazer quando ela fala de um remédio que já existe — criar segunda série é o dano que o
+   próprio código já reconhece (`HomeScreen.kt:913`).

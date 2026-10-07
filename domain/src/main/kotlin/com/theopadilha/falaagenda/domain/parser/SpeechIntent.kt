@@ -251,15 +251,27 @@ object SpeechIntentClassifier {
     // cancelamento com o alvo literal "isso" e respondia "não achei nenhuma tarefa com esse
     // nome" — quando o certo é dizer que ainda não sabe apagar falando.
     //
-    // "isso/isto" sempre; "essa/esse" só quando NÃO há substantivo depois (fim da fala). O
-    // demonstrativo seguido de nome ("apaga ESSA consulta") NOMEIA o alvo, e tratá-lo como
-    // ERASE sem nome mandava a fala para o beco do "ainda não sei apagar falando" enquanto
-    // "apaga o remédio" apagava — a mesma assimetria que o "cancela essa consulta" já tinha
-    // resolvido do outro lado. Sem nome depois, "apaga essa" continua sendo apagar no escuro.
+    // Só "isso/isto" aqui. "essa/esse" não cabem numa regex que olha a forma da frase: o que
+    // separa "apaga essa" (apagar no escuro) de "apaga ESSA consulta" (o demonstrativo NOMEIA o
+    // alvo) é ter ou não um substantivo DEPOIS, e o reconhecedor gruda pontuação e cortesia
+    // nesse fim — "apaga essa." e "apaga essa, por favor" escapavam de qualquer âncora de fim
+    // de string e voltavam para a captura, criando a tarefa "Apaga essa". A decisão é do alvo
+    // já limpo, em [eraseNamed] (ver [DEMONSTRATIVOS]).
     private val apagaIsso = Regex(
-        "\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto)\\b" +
-            "|\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(essa|esse)\\s*$",
+        "\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto)\\b",
     )
+
+    /**
+     * O demonstrativo sozinho não nomeia alvo nenhum: "apaga essa" aponta para algo que só ela
+     * vê na tela, e escolher no chute é o pior desfecho. O veredito é tomado sobre o alvo já
+     * limpo — depois da pontuação que o reconhecedor gruda e da cortesia que fecha a fala —,
+     * porque é isso que sobra dito: "apaga essa." e "apaga essa, por favor" são o mesmo pedido
+     * que "apaga isso", e o caminho é o mesmo (reconhecer e não executar).
+     *
+     * "isso/isto" entram junto por simetria: eles nunca chegam aqui (o ramo [apagaIsso] os
+     * pega antes), mas um demonstrativo só é um demonstrativo só — a lista é uma.
+     */
+    private val DEMONSTRATIVOS = setOf("essa", "esse", "isso", "isto")
 
     // Só os pronomes "isso/isto": eles não têm substantivo depois, então não nomeiam alvo
     // nenhum. "cancela essa consulta" fica de fora de propósito — "essa consulta" É o alvo, e
@@ -296,7 +308,11 @@ object SpeechIntentClassifier {
         val hit = opensWith(apagaNomeado, rest) ?: return null
         val target = targetAfter(rest, hit.range.last + 1)
         // Sem alvo ("apaga", "deleta") não há o que casar: é captura, como sempre foi.
-        return if (target.isEmpty()) null else SpeechIntent.EraseNamed(target)
+        if (target.isEmpty()) return null
+        // Um demonstrativo sozinho não nomeia nada — é o "apaga isso" escrito de outro jeito, e
+        // o desfecho é o mesmo: reconhecer e não executar, nunca procurar uma tarefa "essa".
+        if (target in DEMONSTRATIVOS) return SpeechIntent.Unknown(UnsupportedKind.ERASE)
+        return SpeechIntent.EraseNamed(target)
     }
 
     // --- alvo ------------------------------------------------------------------------
@@ -317,11 +333,15 @@ object SpeechIntentClassifier {
      *
      * A cortesia SEM vírgula ("cancela o médico por favor") não é cortada por nenhuma dessas
      * pontuações: ela entrava como palavra significativa do alvo e a maioria estrita devolvia
-     * `None`. [stripTrailingCourtesy] tira esse rabo.
+     * `None`. [stripTrailingCourtesy] tira esse rabo — e ANTES do artigo, porque o artigo pode
+     * ser justamente o que separa o alvo da cortesia: em "apaga essa por favor" o "essa " saía
+     * como artigo, o alvo sobrava começando em "por favor" e o rabo — sem espaço à frente, já
+     * que a cortesia ficou no começo da string — era cortado no meio (" favor"), deixando o alvo
+     * `por`. Tirando o rabo primeiro, o alvo é só o demonstrativo, que é o que ela disse.
      */
     private fun targetAfter(folded: String, from: Int): String =
-        stripTrailingCourtesy(
-            stripLeadingArticles(
+        stripLeadingArticles(
+            stripTrailingCourtesy(
                 folded.substring(from).trim().trim(',', '.', '!', '?', ';', ':', ' ').substringBefore(',').trim(),
             ),
         )
@@ -334,9 +354,13 @@ object SpeechIntentClassifier {
      *
      * "sim", "ok", "beleza" e "tá" entram pelo mesmo motivo: confirmam o pedido, não nomeiam a
      * tarefa. Só o rabo é cortado — a cortesia no meio do alvo não é tocada.
+     *
+     * O início do rabo é `(^|\s+)`, e não `\s+`: depois de o artigo sair, a cortesia pode ficar
+     * colada no começo do alvo ("apaga essa por favor" → "por favor"), e aí um `\s+` obrigatório
+     * fazia o motor casar a alternativa CURTA no meio — " favor" — e devolver `por`.
      */
     private val TRAILING_COURTESY = Regex(
-        "\\s+(por favor|por gentileza|favor|obrigada|obrigado|sim|ok|beleza|ta)\\s*$",
+        "(^|\\s+)(por favor|por gentileza|favor|obrigada|obrigado|sim|ok|beleza|ta)\\s*$",
     )
 
     private fun stripTrailingCourtesy(text: String): String =

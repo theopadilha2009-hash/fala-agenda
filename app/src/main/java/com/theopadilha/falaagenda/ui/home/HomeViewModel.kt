@@ -907,13 +907,12 @@ class HomeViewModel(
      * nascia o rascunho "Apaga remédio". Apagar uma MISSED é seguro: o contrato do
      * `deleteOccurrence` é uma DATA (mais o tombstone), nunca a série.
      *
-     * Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)
-     * materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia "já
-     * tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não funcionava. A
-     * ocorrência eleita é a pendente mais próxima (a mais urgente), que é justamente a data que
-     * `complete` e `deleteOccurrence` já tratam. A não realizada só entra quando a série não
-     * tem NENHUMA pendente: com as duas na agenda, eleger a de ontem concluiria ou apagaria a
-     * data errada — a pendente é a que ela vê como "a tarefa".
+     * Mas ela não é alvo no MESMO nível: quem tem pendente na agenda responde sozinho. O
+     * histórico é um segundo turno, que só acontece quando nenhuma pendente casa com o alvo —
+     * "cancela o remédio" com a dose de amanhã na agenda E um "Remédio do coração" esquecido há
+     * um mês em "Não realizadas" devolvia "tem mais de uma tarefa com esse nome" e não cancelava
+     * NADA: uma tarefa velha de outra série envenenava a fala mais usada. O mesmo vale para o
+     * `apaga`, que é o irmão deste caminho; por isso os dois lados estão presos em teste.
      */
     private suspend fun lookupTarget(
         target: String,
@@ -926,18 +925,44 @@ class HomeViewModel(
             return null
         }
         val abertas = sections.today + sections.upcoming
-        val porSerie = (abertas + sections.missed)
-            .groupBy { it.series.id }
-            .mapValues { (_, daSerie) ->
-                val pendentes = daSerie.filter { it.occurrence.status == OccurrenceStatus.PENDING }
-                (pendentes.ifEmpty { daSerie }).minBy { it.occurrence.scheduledAt }
-            }
-        val candidates = porSerie.values.map {
-            SpeechCandidate(id = it.occurrence.id, title = it.series.title)
-        }
-        val itemById = porSerie.values.associateBy { it.occurrence.id }
-        return SpeechTargetMatcher.resolve(target, candidates) to itemById
+        val daVez = eleitasPorSerie(abertas)
+        val soVivas = SpeechTargetMatcher.resolve(target, candidatos(daVez))
+        // "None" é o único caso que desce para o histórico: o alvo não casa nenhuma pendente.
+        // Ambiguidade entre pendentes é decisão que fica onde está — perguntar é a resposta
+        // certa, e o histórico não pode calar a pergunta.
+        if (soVivas != SpeechTargetResolution.None) return soVivas to itensPorId(daVez)
+        val comHistorico = eleitasPorSerie(abertas + sections.missed)
+        return SpeechTargetMatcher.resolve(target, candidatos(comHistorico)) to
+            itensPorId(comHistorico)
     }
+
+    /**
+     * Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)
+     * materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia "já
+     * tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não funcionava.
+     *
+     * A ocorrência eleita é a que a tela mostra como a MAIS RELEVANTE daquela série: a pendente
+     * mais próxima (a mais urgente, e justamente a data que `complete` e `deleteOccurrence` já
+     * tratam) e, sem nenhuma pendente, a não realizada que está EM CIMA em "Não realizadas" —
+     * o `TaskRepository` ordena essa seção por `missedAt` descendente. Eleger ali a mais VELHA
+     * (o que o `minBy { scheduledAt }` cru fazia) é a pior forma deste defeito: ela olha a linha
+     * de cima, fala "já tomei o remédio" e o app conclui a data de baixo, calado.
+     */
+    private fun eleitasPorSerie(itens: List<AgendaItem>): List<AgendaItem> =
+        itens.groupBy { it.series.id }.values.map { daSerie ->
+            val pendentes = daSerie.filter { it.occurrence.status == OccurrenceStatus.PENDING }
+            pendentes.minByOrNull { it.occurrence.scheduledAt }
+                ?: daSerie.maxWith(
+                    compareBy({ it.occurrence.missedAt }, { it.occurrence.scheduledAt }),
+                )
+        }
+
+    private fun candidatos(itens: List<AgendaItem>) = itens.map {
+        SpeechCandidate(id = it.occurrence.id, title = it.series.title)
+    }
+
+    private fun itensPorId(itens: List<AgendaItem>) =
+        itens.associateBy { it.occurrence.id }
 
     /**
      * O que o app reconheceu e ainda não sabe fazer. Diz em português de gente e aponta o

@@ -4,12 +4,15 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.data.local.toEntity
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.OccurrenceIds
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.model.TaskOccurrence
+import com.theopadilha.falaagenda.domain.model.TaskSeries
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.filter
@@ -19,15 +22,17 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.ZoneId
 
 /**
  * A fala passa pela camada de intenção antes de virar tarefa.
@@ -51,6 +56,7 @@ class FalaComandoTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var container: AppContainer
     private lateinit var viewModel: HomeViewModel
+    private val hoje: LocalDate = LocalDate.now()
 
     @Before
     fun setUp() {
@@ -290,17 +296,16 @@ class FalaComandoTest {
 
         viewModel.understandSpeech("apaga o remédio")
 
-        // O defeito tem duas caras e a asserção pega a primeira que aparece: sem alvo, a fala
-        // segue o caminho de captura e o rascunho "Apaga remédio" nasce. A espera é curta de
-        // propósito: o parse local responde rápido, e no caminho certo nenhum rascunho vem.
-        val draft = runBlocking {
-            withTimeoutOrNull(2_000L) {
-                viewModel.speech.state.filter { it.draft != null }.first().draft
-            }
-        }
-        assertThat(draft).isNull()
+        // O defeito tem duas caras e as asserções pegam as duas, sem esperar por tempo: o
+        // caminho de captura não publica recado nenhum ("Tarefa excluída." só sai daqui) e
+        // deixaria a ocorrência na agenda. Só DEPOIS de o comando ter terminado é que o estado
+        // da fala é lido — se ele tivesse ido parar no parser, o rascunho "Apaga remédio"
+        // estaria publicado aqui. Um `withTimeoutOrNull { draft != null }` seguido de
+        // `assertThat(draft).isNull()` passava verde mesmo capturando: bastava a captura demorar
+        // mais que o limite para a espera devolver nulo e a asserção "provar" a ausência.
         assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
         assertThat(agenda().find(salvo.occurrence.id)).isNull()
+        assertThat(viewModel.speech.state.value.draft).isNull()
     }
 
     /**
@@ -320,6 +325,149 @@ class FalaComandoTest {
         assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
         assertThat(agenda().find(salvo.occurrence.id)).isNull()
     }
+
+    // --- "Não realizadas": em qual DATA o verbo cai ----------------------------------
+    //
+    // A seção não realizações é uma lista, e a lista tem uma ordem: a mais nova em cima (o
+    // `TaskRepository` ordena por `missedAt` descendente). A eleição do alvo tem de ser a mesma
+    // linha que ela lê. Eleger a mais VELHA é a pior forma deste defeito — ela olha a linha de
+    // cima, fala, e o app age na de baixo, calado.
+
+    /**
+     * Duas doses não realizadas da MESMA série, nenhuma pendente. A série é DAILY e o alvo é
+     * falado: "já tomei o remédio" tem de concluir a dose que a tela mostra em cima.
+     *
+     * Antes: `(pendentes.ifEmpty { daSerie }).minBy { scheduledAt }` elegia exatamente a mais
+     * velha — o último item da lista —, e o "Feito." respondia por uma data que ela não estava
+     * olhando. Não há "Concluir" para não realizada na tela: o toque não desfaz esse engano.
+     */
+    @Test
+    fun jaTomeiElegeANaoRealizadaDoTopoDaLista() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(2), diario())
+        val maisVelha = ocorrenciaNaoRealizada(serie, hoje.minusDays(2))
+        val maisNova = ocorrenciaNaoRealizada(serie, hoje.minusDays(1))
+        semear(serie, listOf(maisVelha, maisNova))
+
+        // O que a tela mostra, na ordem em que mostra: a mais nova em cima.
+        assertThat(naoRealizadasDa(serie)).containsExactly(hoje.minusDays(1), hoje.minusDays(2)).inOrder()
+
+        viewModel.understandSpeech("já tomei o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Feito.")
+        assertThat(statusDa(serie.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.COMPLETED)
+        assertThat(statusDa(serie.id, hoje.minusDays(2))).isEqualTo(OccurrenceStatus.MISSED)
+    }
+
+    /** O mesmo caminho pelo "apaga": a data excluída é a de cima, e a de baixo fica. */
+    @Test
+    fun apagaElegeANaoRealizadaDoTopoDaLista() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(2), diario())
+        semear(
+            serie,
+            listOf(
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(2)),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(1)),
+            ),
+        )
+
+        viewModel.understandSpeech("apaga o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje.minusDays(1)))).isNull()
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje.minusDays(2)))).isNotNull()
+    }
+
+    /**
+     * A não realizada entra como SEGUNDO turno, e não no mesmo pool: com uma pendente viva que
+     * casa o alvo, uma tarefa esquecida em "Não realizadas" não pode derrubar a fala pedindo
+     * para escolher entre as duas.
+     *
+     * O defeito medido: "Tomar remédio" pendente amanhã e "Remédio do coração" não realizada há
+     * um mês. "cancela o remédio" — o caminho mais usado — respondia "Tem mais de uma tarefa com
+     * esse nome" e NÃO CANCELAVA NADA. O comentário prometia que a não realizada só entra quando
+     * a série não tem pendente, e isso vale por série; o pool, porém, era global.
+     */
+    @Test
+    fun naoRealizadaDeOutraSerieNaoEnvenenaOCancelar() {
+        val agendaDeAgora = serie("s-rem", "Tomar remédio", hoje.plusDays(1))
+        val esquecida = serie("s-cor", "Remédio do coração", hoje.minusDays(30))
+        semear(agendaDeAgora, listOf(ocorrenciaPendente(agendaDeAgora, hoje.plusDays(1))))
+        semear(esquecida, listOf(ocorrenciaNaoRealizada(esquecida, hoje.minusDays(30))))
+
+        viewModel.understandSpeech("cancela o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().today + agenda().upcoming).isEmpty()
+        // A esquecida continua onde estava: o alvo era a pendente, e só ela saiu.
+        assertThat(agenda().missed.map { it.series.id }).containsExactly("s-cor")
+    }
+
+    /**
+     * O mesmo pool dividido pelo outro lado — o `concluir`, que compartilha o `lookupTarget` e
+     * é o que impede o conserto do "cancela" de virar defeito no "já tomei".
+     */
+    @Test
+    fun naoRealizadaDeOutraSerieNaoEnvenenaOConcluir() {
+        val agendaDeAgora = serie("s-rem", "Tomar remédio", hoje.plusDays(1))
+        val esquecida = serie("s-cor", "Remédio do coração", hoje.minusDays(30))
+        semear(agendaDeAgora, listOf(ocorrenciaPendente(agendaDeAgora, hoje.plusDays(1))))
+        semear(esquecida, listOf(ocorrenciaNaoRealizada(esquecida, hoje.minusDays(30))))
+
+        viewModel.understandSpeech("já tomei o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Feito.")
+        assertThat(statusDa(agendaDeAgora.id, hoje.plusDays(1))).isEqualTo(OccurrenceStatus.COMPLETED)
+        assertThat(statusDa(esquecida.id, hoje.minusDays(30))).isEqualTo(OccurrenceStatus.MISSED)
+    }
+
+    /** E pelo terceiro verbo que usa o mesmo `lookupTarget`. */
+    @Test
+    fun naoRealizadaDeOutraSerieNaoEnvenenaOApagar() {
+        val agendaDeAgora = serie("s-rem", "Tomar remédio", hoje.plusDays(1))
+        val esquecida = serie("s-cor", "Remédio do coração", hoje.minusDays(30))
+        semear(agendaDeAgora, listOf(ocorrenciaPendente(agendaDeAgora, hoje.plusDays(1))))
+        semear(esquecida, listOf(ocorrenciaNaoRealizada(esquecida, hoje.minusDays(30))))
+
+        viewModel.understandSpeech("apaga o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().today + agenda().upcoming).isEmpty()
+        assertThat(agenda().missed.map { it.series.id }).containsExactly("s-cor")
+    }
+
+    /**
+     * O outro lado do turno, e o que impede o conserto de fechar a porta que o PR abriu: sem
+     * pendente nenhuma com o nome, a não realizada VOLTA a ser alvo — inclusive a esquecida de
+     * outra série, que é o estado normal de uma casa com uma tarefa só atrasada.
+     */
+    @Test
+    fun semPendenteANaoRealizadaVoltaASerAlvo() {
+        val esquecida = serie("s-cor", "Remédio do coração", hoje.minusDays(30))
+        semear(esquecida, listOf(ocorrenciaNaoRealizada(esquecida, hoje.minusDays(30))))
+
+        viewModel.understandSpeech("cancela o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().missed).isEmpty()
+    }
+
+    /**
+     * O demonstrativo pontuado — a fala como o reconhecedor a entrega.
+     *
+     * "apaga essa." voltava a ser um NOME ("essa") em vez de apagar no escuro, o alvo não achava
+     * tarefa nenhuma e a fala seguia para a captura: nascia a tarefa "Apaga essa" e ela
+     * acreditava ter apagado. É a classe de defeito que esta camada existe para consertar,
+     * reintroduzida pela âncora de fim de string do ramo novo.
+     */
+    @Test
+    fun apagaEssaPontuadoNaoViraTarefa() {
+        viewModel.understandSpeech("apaga essa.")
+
+        assertThat(proximoRecado()).contains("Ainda não sei apagar")
+        assertThat(agenda().today + agenda().upcoming).isEmpty()
+        assertThat(viewModel.speech.state.value.draft).isNull()
+    }
+
 
     /**
      * O outro lado, e o que impede a correção de virar defeito: "apaga a luz" NÃO tem alvo na
@@ -379,6 +527,64 @@ class FalaComandoTest {
     private fun statusDa(seriesId: String, data: LocalDate): OccurrenceStatus? =
         agenda().find(OccurrenceIds.of(seriesId, data))?.occurrence?.status
 
+    /** As não realizadas de uma série, na MESMA ordem em que a seção da tela as mostra. */
+    private fun naoRealizadasDa(serie: TaskSeries): List<LocalDate> =
+        agenda().missed.filter { it.series.id == serie.id }.map { it.occurrence.localDate }
+
+    /**
+     * Semeia a agenda pelo banco, e não pelo `saveDraft`: o estado que estes testes medem é o de
+     * um aparelho que já viveu — a dose que o aviso não alcançou, a tarefa esquecida há um mês —
+     * e a API de cadastro só sabe criar a ocorrência de agora. É o mesmo Room que o app lê, e o
+     * `missedAt` entra explícito porque é ele que ordena a seção.
+     */
+    private fun semear(serie: TaskSeries, ocorrencias: List<TaskOccurrence>) = runBlocking {
+        container.db.seriesDao().upsert(serie.toEntity())
+        ocorrencias.forEach { container.db.occurrenceDao().upsert(it.toEntity()) }
+    }
+
+    private fun serie(
+        id: String,
+        titulo: String,
+        inicio: LocalDate,
+        recorrencia: RecurrenceRule = RecurrenceRule(RecurrenceKind.NONE),
+    ) = TaskSeries(
+        id = id,
+        title = titulo,
+        zoneId = ZoneId.systemDefault(),
+        localTime = HORARIO,
+        startLocalDate = inicio,
+        recurrence = recorrencia,
+        createdAt = CRIACAO,
+        updatedAt = CRIACAO,
+    )
+
+    private fun ocorrenciaNaoRealizada(serie: TaskSeries, data: LocalDate): TaskOccurrence {
+        val quando = quando(serie, data)
+        return TaskOccurrence(
+            id = OccurrenceIds.of(serie.id, data),
+            seriesId = serie.id,
+            localDate = data,
+            scheduledAt = quando,
+            status = OccurrenceStatus.MISSED,
+            missedAt = quando.plusSeconds(3_600),
+        )
+    }
+
+    private fun ocorrenciaPendente(serie: TaskSeries, data: LocalDate): TaskOccurrence {
+        val quando = quando(serie, data)
+        return TaskOccurrence(
+            id = OccurrenceIds.of(serie.id, data),
+            seriesId = serie.id,
+            localDate = data,
+            scheduledAt = quando,
+            status = OccurrenceStatus.PENDING,
+            nextReminderAt = quando,
+        )
+    }
+
+    private fun quando(serie: TaskSeries, data: LocalDate): Instant =
+        LocalDateTime.of(data, serie.localTime).atZone(serie.zoneId).toInstant()
+
     private fun esperaAGravacaoTerminar() {
         runBlocking { withTimeout(TEMPO_LIMITE) { viewModel.busy.first { !it } } }
     }
@@ -405,5 +611,7 @@ class FalaComandoTest {
 
     private companion object {
         const val TEMPO_LIMITE = 15_000L
+        val HORARIO: LocalTime = LocalTime.of(8, 30)
+        val CRIACAO: Instant = Instant.parse("2026-08-01T10:00:00Z")
     }
 }

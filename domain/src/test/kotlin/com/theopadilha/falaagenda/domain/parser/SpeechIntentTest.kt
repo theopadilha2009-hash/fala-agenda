@@ -91,6 +91,51 @@ class SpeechIntentTest {
         assertThat(intent("deleta esse")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
     }
 
+    /**
+     * A fala chega PONTUADA — é a premissa do `targetAfter`, que tira a pontuação das duas
+     * pontas porque o reconhecedor a gruda na palavra (ver [pontoFinalNaoFicaNoAlvo]).
+     *
+     * O ramo do demonstrativo sem substantivo exigia fim de string, então o ponto do
+     * reconhecedor desmanchava o "apaga essa": o alvo sobrava como a palavra `essa`, a matcher
+     * não achava tarefa nenhuma com esse nome e a fala voltava para a captura — nascia a tarefa
+     * "Apaga essa" e ela acreditava ter apagado. É exatamente o defeito que esta camada existe
+     * para consertar. O ramo irmão ("isso/isto") nunca teve o problema porque aceita a
+     * pontuação colada.
+     */
+    @Test
+    fun demonstrativoPontuadoContinuaApagarSemNome() {
+        assertThat(intent("apaga essa.")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga essa!")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("deleta esse,")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("exclui isso.")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    /**
+     * "apaga essa por favor": sem a vírgula que o `targetAfter` corta, a cortesia é o rabo do
+     * alvo. O demonstrativo sai na frente do artigo e a cortesia tem de sair DEPOIS — na ordem
+     * inversa o "essa " era comido como artigo, o "por favor" sobrava sozinho e virava o alvo,
+     * e o app procurava uma tarefa chamada "por favor".
+     */
+    @Test
+    fun demonstrativoComCortesiaSemVirgulaNaoViraAlvo() {
+        assertThat(intent("apaga essa por favor"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("deleta esse sim"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    /**
+     * O outro lado da cortesia: com um substantivo depois do demonstrativo o alvo existe, e a
+     * cortesia não pode comer o nome nem virar parte dele. "cancela o médico por favor" — sem
+     * vírgula — é a fala mais provável dela, e o "por favor" não pode virar palavra do alvo.
+     */
+    @Test
+    fun cortesiaSemVirgulaNaoEntraNoAlvo() {
+        assertThat(intent("cancela o médico por favor")).isEqualTo(SpeechIntent.Cancel("medico"))
+        assertThat(intent("apaga o remédio por favor")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+        assertThat(intent("já tomei o remédio por favor")).isEqualTo(SpeechIntent.Complete("remedio"))
+    }
+
     @Test
     fun excluiAConsultaViraApagarPeloNome() {
         assertThat(intent("exclui a consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))

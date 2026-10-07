@@ -93,12 +93,19 @@ object OccurrenceLifecycle {
     /**
      * Se a ocorrência corrente ainda está pendente quando a próxima nasce,
      * marca a anterior como não realizada, cancela cobrança e inicia a nova.
+     *
+     * [fusoDaSerieMudou] diz que o fuso do relógio de agora não é o que a série carrega gravado,
+     * e é o que autoriza a varredura a reescrever o instante de uma ocorrência que não tem
+     * progresso nenhum: o instante dela foi calculado no fuso velho e ficaria deslocado para
+     * sempre (ver `TaskRepository.toTaskSeries`). Sem troca de fuso não há o que realinhar nela —
+     * o horário dela é o que a edição de outra dose preservou de propósito.
      */
     fun advance(
         series: TaskSeries,
         existing: List<TaskOccurrence>,
         now: Instant,
         todayInSeriesZone: LocalDate,
+        fusoDaSerieMudou: Boolean = false,
     ): LifecycleChange {
         if (series.isEnded) {
             val pending = existing.filter { it.status == OccurrenceStatus.PENDING }
@@ -155,8 +162,31 @@ object OccurrenceLifecycle {
             // Data excluída pelo usuário não volta a nascer; a série segue no próximo dia.
             if (!series.isSkipped(dueDate)) upserts += materialize(series, dueDate, now)
         } else if (currentExisting.status == OccurrenceStatus.PENDING) {
-            val refreshed = materialize(series, dueDate, now, currentExisting)
-            if (refreshed != currentExisting) upserts += refreshed
+            // A varredura não reescreve a ocorrência que ainda não tocou e não tem progresso
+            // nenhum: não há o que realinhar nela, e o instante dela é o horário da série
+            // **quando ela foi materializada**. Desde a edição de uma dose de outra data o
+            // horário da série pode ter mudado sem que este dia devesse mudar junto — é o que
+            // preserva a dose de hoje quando ela edita a de amanhã. Realinhar aqui é justamente
+            // o que a fazia tocar 14:00 em silêncio no start seguinte, que é a mesma classe do
+            // defeito de origem ("mudei o horário do remédio de amanhã e o de hoje parou de
+            // tocar").
+            //
+            // A exceção é a troca de fuso do aparelho ([fusoDaSerieMudou]): o instante foi
+            // calculado no fuso velho e a varredura é a única cura dele. Ela não é dedutível
+            // daqui — o instante da ocorrência sozinho não diz com que fuso nem com que horário
+            // da série ele foi escrito, e o que a série carrega gravado é o fuso do dia do
+            // cadastro, que o repositório lê com o fuso de agora (ver `toTaskSeries`).
+            //
+            // Sem progresso não há instante herdado para honrar, e o resto da decisão da
+            // varredura continua valendo: o instante vencido que não foi entregue não vai para o
+            // alarme (ver `valeRearmar`, que é quem o descarta).
+            val semProgresso = currentExisting.lastReminderAt == null &&
+                currentExisting.snoozedUntil == null &&
+                currentExisting.reminderStep == 0
+            if (!semProgresso || fusoDaSerieMudou) {
+                val refreshed = materialize(series, dueDate, now, currentExisting)
+                if (refreshed != currentExisting) upserts += refreshed
+            }
         }
 
         return LifecycleChange(

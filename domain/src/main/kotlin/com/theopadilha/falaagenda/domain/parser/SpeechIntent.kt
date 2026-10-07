@@ -29,6 +29,16 @@ sealed interface SpeechIntent {
      */
     data class Cancel(val target: String) : SpeechIntent
 
+    /**
+     * "apaga o remédio": apagar o que casa com [target]. Diferente de [Cancel], o verbo
+     * ("apaga", "exclui", "deleta", "tira", "remove") também nomeia uma TAREFA de verdade —
+     * "apaga a luz", "tira o lixo", "remove a sujeira" —, e quem decide se a fala é comando
+     * ou recado é a agenda: com alvo, apaga; sem alvo, é captura. O classificador é puro e
+     * não tem a agenda, então ele só reconhece o alvo e deixa o desfecho para quem a tem
+     * (ver `HomeViewModel.understandSpeech`).
+     */
+    data class EraseNamed(val target: String) : SpeechIntent
+
     /** Uma intenção que reconhecemos e ainda NÃO sabemos fazer. */
     data class Unknown(val kind: UnsupportedKind) : SpeechIntent
 }
@@ -66,6 +76,7 @@ object SpeechIntentClassifier {
             // alvo nenhum e tem de cair no caminho do ERASE, não num cancelamento sem nome
             // (que procuraria a tarefa "isso" e não acharia).
             ?: unknown(folded)
+            ?: eraseNamed(folded)
             ?: cancel(folded)
             ?: SpeechIntent.Capture
     }
@@ -239,9 +250,55 @@ object SpeechIntentClassifier {
     // "cancela isso" entra aqui também: é apagar sem dizer o nome. Sem esta linha ele caía no
     // cancelamento com o alvo literal "isso" e respondia "não achei nenhuma tarefa com esse
     // nome" — quando o certo é dizer que ainda não sabe apagar falando.
+    //
+    // Só "isso/isto" aqui. "essa/esse" não cabem numa regex que olha a forma da frase: o que
+    // separa "apaga essa" (apagar no escuro) de "apaga ESSA consulta" (o demonstrativo NOMEIA o
+    // alvo) é ter ou não um substantivo DEPOIS, e o reconhecedor gruda pontuação e cortesia
+    // nesse fim — "apaga essa." e "apaga essa, por favor" escapavam de qualquer âncora de fim
+    // de string e voltavam para a captura, criando a tarefa "Apaga essa". A decisão é do alvo
+    // já limpo, em [eraseNamed] (ver [DEMONSTRATIVOS]).
     private val apagaIsso = Regex(
-        "\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto|essa|esse)\\b",
+        "\\b(apaga|apague|exclui|exclua|deleta|delete)\\s+(isso|isto)\\b",
     )
+
+    /**
+     * A fonte ÚNICA dos determinantes que abrem um alvo: o artigo ("o médico" → "médico") e o
+     * demonstrativo ("essa consulta" → "consulta").
+     *
+     * As duas pontas que precisam da mesma lista — [stripLeadingArticles], que a usa para limpar
+     * o alvo, e [DEMONSTRATIVOS], que decide se o que sobrou é um alvo sem nome — liam de listas
+     * escritas à mão, e elas divergiram: a limpeza conhecia o plural e a família
+     * `este/esta/aquele`, o veredito só o singular. "apaga essa" era reconhecido sem executar e
+     * "apaga essas" virava a tarefa "Apaga essas", calado — a mesma classe do P2-A. Uma lista só
+     * é o que impede a divergência de voltar.
+     *
+     * Os determinantes de DATA ("este sábado", "esta semana", "aquele dia") NÃO são alvo: eles
+     * vêm com substantivo depois ("este sábado" → "sábado"), então nunca chegam sozinhos ao
+     * veredito de [DEMONSTRATIVOS] — que só olha o alvo quando ele é a última coisa dita.
+     */
+    private val DETERMINANTES = setOf(
+        "o", "a", "os", "as", "um", "uma", "meu", "minha", "meus", "minhas",
+        "este", "esta", "estes", "estas", "esse", "essa", "esses", "essas",
+        "aquele", "aquela", "aqueles", "aquelas",
+    )
+
+    /**
+     * O determinante sozinho não nomeia alvo nenhum: "apaga essa" aponta para algo que só ela
+     * vê na tela, e escolher no chute é o pior desfecho. O veredito é tomado sobre o alvo já
+     * limpo — depois da pontuação que o reconhecedor gruda e da cortesia que fecha a fala —,
+     * porque é isso que sobra dito: "apaga essa." e "apaga essa, por favor" são o mesmo pedido
+     * que "apaga isso", e o caminho é o mesmo (reconhecer e não executar).
+     *
+     * Derivado de [DETERMINANTES] — a mesma fonte que limpa o alvo —, e não uma enumeração
+     * paralela: era um `setOf("essa", "esse", ...)` à mão, cobria só o singular e divergia da
+     * outra lista. Ver [DETERMINANTES].
+     *
+     * "isso/isto" entram à parte: eles não são determinantes de alvo (não têm substantivo
+     * depois) e por isso ficam fora de [DETERMINANTES], mas continuam sendo um alvo sem nome.
+     * O ramo [apagaIsso] pega os verbos que ele conhece; os outros de [apagaNomeado]
+     * ("tira isso", "remove isso") chegam aqui e têm de cair no mesmo veredito.
+     */
+    private val DEMONSTRATIVOS: Set<String> = DETERMINANTES + setOf("isso", "isto")
 
     // Só os pronomes "isso/isto": eles não têm substantivo depois, então não nomeiam alvo
     // nenhum. "cancela essa consulta" fica de fora de propósito — "essa consulta" É o alvo, e
@@ -257,6 +314,32 @@ object SpeechIntentClassifier {
                 SpeechIntent.Unknown(UnsupportedKind.ERASE)
             else -> null
         }
+    }
+
+    // --- apagar pelo nome (o alvo decide) --------------------------------------------
+
+    // "apaga o remédio": imperativo dirigido ao app, ABRINDO a fala, com um alvo NOMEADO. O
+    // verbo aqui é ambíguo de propósito — "apaga a luz" e "tira o lixo" são tarefas de
+    // verdade, e não há nada na FORMA da frase que separe um caso do outro. Quem separa é a
+    // agenda: com um alvo que casa, é comando; sem alvo, é recado. Por isso o classificador
+    // (puro) só devolve o alvo, e a decisão fica com quem tem a agenda (ver
+    // `SpeechIntent.EraseNamed` e `HomeViewModel.understandSpeech`).
+    //
+    // O infinitivo fica de fora, como no [cancela]: "me lembra de apagar a luz" é captura.
+    private val apagaNomeado = Regex("\\b(apaga|apague|exclui|exclua|deleta|delete|tira|tire|remove|remova)\\b")
+
+    // O demonstrativo já foi tratado em [unknown] (ERASE sem nome) — aqui só o que NOMEIA o
+    // alvo. O artigo e o resto da frase são do [targetAfter], que também tira a cortesia.
+    private fun eraseNamed(folded: String): SpeechIntent? {
+        val rest = withoutFiller(folded)
+        val hit = opensWith(apagaNomeado, rest) ?: return null
+        val target = targetAfter(rest, hit.range.last + 1)
+        // Sem alvo ("apaga", "deleta") não há o que casar: é captura, como sempre foi.
+        if (target.isEmpty()) return null
+        // Um demonstrativo sozinho não nomeia nada — é o "apaga isso" escrito de outro jeito, e
+        // o desfecho é o mesmo: reconhecer e não executar, nunca procurar uma tarefa "essa".
+        if (target in DEMONSTRATIVOS) return SpeechIntent.Unknown(UnsupportedKind.ERASE)
+        return SpeechIntent.EraseNamed(target)
     }
 
     // --- alvo ------------------------------------------------------------------------
@@ -277,11 +360,15 @@ object SpeechIntentClassifier {
      *
      * A cortesia SEM vírgula ("cancela o médico por favor") não é cortada por nenhuma dessas
      * pontuações: ela entrava como palavra significativa do alvo e a maioria estrita devolvia
-     * `None`. [stripTrailingCourtesy] tira esse rabo.
+     * `None`. [stripTrailingCourtesy] tira esse rabo — e ANTES do artigo, porque o artigo pode
+     * ser justamente o que separa o alvo da cortesia: em "apaga essa por favor" o "essa " saía
+     * como artigo, o alvo sobrava começando em "por favor" e o rabo — sem espaço à frente, já
+     * que a cortesia ficou no começo da string — era cortado no meio (" favor"), deixando o alvo
+     * `por`. Tirando o rabo primeiro, o alvo é só o demonstrativo, que é o que ela disse.
      */
     private fun targetAfter(folded: String, from: Int): String =
-        stripTrailingCourtesy(
-            stripLeadingArticles(
+        stripLeadingArticles(
+            stripTrailingCourtesy(
                 folded.substring(from).trim().trim(',', '.', '!', '?', ';', ':', ' ').substringBefore(',').trim(),
             ),
         )
@@ -294,14 +381,41 @@ object SpeechIntentClassifier {
      *
      * "sim", "ok", "beleza" e "tá" entram pelo mesmo motivo: confirmam o pedido, não nomeiam a
      * tarefa. Só o rabo é cortado — a cortesia no meio do alvo não é tocada.
+     *
+     * O início do rabo é `(^|\s+)`, e não `\s+`: depois de o artigo sair, a cortesia pode ficar
+     * colada no começo do alvo ("apaga essa por favor" → "por favor"), e aí um `\s+` obrigatório
+     * fazia o motor casar a alternativa CURTA no meio — " favor" — e devolver `por`.
+     *
+     * Quem segura [demonstrativoComCortesiaSemVirgulaNaoViraAlvo] é a ORDEM — a cortesia antes do
+     * artigo —, não esta âncora: trocar `(^|\s+)` por `\s+` mantendo a ordem deixa a suíte verde
+     * (as duas metades são redundantes aqui). Não remova a âncora achando que ela é o que
+     * protege; o teste é da ordem.
      */
     private val TRAILING_COURTESY = Regex(
-        "\\s+(por favor|por gentileza|favor|obrigada|obrigado|sim|ok|beleza|ta)\\s*$",
+        "(^|\\s+)(por favor|por gentileza|favor|obrigada|obrigado|sim|ok|beleza|ta)\\s*$",
     )
 
     private fun stripTrailingCourtesy(text: String): String =
         text.replace(TRAILING_COURTESY, "").trim()
 
+    /**
+     * O determinante que abre o alvo e não é parte do nome: o artigo ("o médico" → "médico") e o
+     * demonstrativo ("essa consulta" → "consulta"). Sem o demonstrativo aqui, "apaga essa
+     * consulta" deixava o alvo `essa consulta`, e o `essa` — que não casa título nenhum —
+     * derrubava a maioria estrita: a tarefa existia e o app dizia que não achou.
+     *
+     * "isso/isto" ficam de fora de propósito: eles NÃO têm substantivo depois, então o alvo
+     * seria vazio — e o caminho certo para eles é o ERASE sem nome, não um alvo limpo.
+     *
+     * A alternação sai de [DETERMINANTES] — a mesma lista que decide o alvo sem nome —, do mais
+     * longo para o mais curto: com "a" antes de "as", o motor casaria o prefixo e o `\s+`
+     * seguinte falharia, e ainda que o retrocesso resolvesse, a ordem explícita deixa a
+     * intenção legível.
+     */
+    private val LEADING_DETERMINERS = Regex(
+        "^(" + DETERMINANTES.sortedByDescending { it.length }.joinToString("|") + ")\\s+",
+    )
+
     private fun stripLeadingArticles(text: String): String =
-        text.replaceFirst(Regex("^(o|a|os|as|um|uma|meu|minha|meus|minhas)\\s+"), "").trim()
+        text.replaceFirst(LEADING_DETERMINERS, "").trim()
 }

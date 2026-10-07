@@ -22,17 +22,14 @@ import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.TestViewModelScopeRule
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.ui.theme.FalaAgendaTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
-import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -57,7 +54,6 @@ import java.time.LocalTime
  * importa: existe exatamente um "Concluir" no cartão do atrasado, e tocar nele conclui a
  * tarefa em vez de abrir a edição.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [34],
@@ -70,8 +66,17 @@ import java.time.LocalTime
 )
 class CartaoAtrasadoConcluiTest {
 
+    private val escopo = TestViewModelScopeRule()
+    private val compose = createComposeRule()
+
+    /**
+     * A regra do escopo é a mais EXTERNA de propósito: é o `after()` do `ComposeContentTestRule`
+     * que descarta a composição, e é esse gesto que leva a assinatura da `agendaUi` a zero e arma
+     * o `WhileSubscribed(5_000)`. Cancelar antes dele deixaria o timer nascer depois do
+     * cancelamento, e ele voltaria a cruzar a fronteira do teste. Ver [TestViewModelScopeRule].
+     */
     @get:Rule
-    val compose = createComposeRule()
+    val regras: RuleChain = RuleChain.outerRule(escopo).around(compose)
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var container: AppContainer
@@ -79,13 +84,7 @@ class CartaoAtrasadoConcluiTest {
 
     @Before
     fun setUp() {
-        Dispatchers.setMain(Dispatchers.Unconfined)
         container = AppContainer(context)
-    }
-
-    @After
-    fun tearDown() {
-        Dispatchers.resetMain()
     }
 
     /**
@@ -178,7 +177,7 @@ class CartaoAtrasadoConcluiTest {
         val atrasado = semearAtrasado()
         assertThat(statusDe(atrasado.occurrence.id)).isEqualTo(OccurrenceStatus.MISSED.name)
 
-        comporHome(HomeViewModel(container))
+        comporHome(escopo.rastrear(HomeViewModel(container)))
         esperarOTexto("Tomar remédio das 8h")
         rolarAte("Tomar remédio das 8h")
 
@@ -193,7 +192,7 @@ class CartaoAtrasadoConcluiTest {
     fun toqueNoConcluirDoAtrasadoConcluiSemAbrirAEdicao() {
         val atrasado = semearAtrasado()
 
-        comporHome(HomeViewModel(container))
+        comporHome(escopo.rastrear(HomeViewModel(container)))
         esperarOTexto("Tomar remédio das 8h")
         rolarAte("Tomar remédio das 8h")
 
@@ -217,7 +216,7 @@ class CartaoAtrasadoConcluiTest {
     fun cartaoPendenteContinuaComOConcluir() {
         val pendente = semearPendente("Beber água")
 
-        comporHome(HomeViewModel(container))
+        comporHome(escopo.rastrear(HomeViewModel(container)))
         esperarOTexto("Beber água")
         rolarAte("Beber água")
 
@@ -240,7 +239,7 @@ class CartaoAtrasadoConcluiTest {
         runBlocking { container.tasks.complete(salvo.occurrence.id) }
         assertThat(statusDe(salvo.occurrence.id)).isEqualTo(OccurrenceStatus.COMPLETED.name)
 
-        comporHome(HomeViewModel(container))
+        comporHome(escopo.rastrear(HomeViewModel(container)))
         esperarOTexto("Concluídas")
         rolarAte("Beber água")
 

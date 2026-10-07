@@ -409,7 +409,11 @@ fun ConfirmDraftScreen(
                         onPick = onSnooze,
                     )
                 }
-                if (occurrenceStatus == OccurrenceStatus.MISSED && !isRecurring && onRetry != null) {
+                // O "Fazer hoje" vale também para a rotina: o remédio de todo dia que não foi
+                // avisado tinha só "Concluir" — que registra a dose passada como feita e não
+                // arma nada. Para a recorrente o repositório arma a próxima dose aberta sem
+                // mover a série (`retryMissed`), então o botão promete o mesmo que ele faz.
+                if (occurrenceStatus == OccurrenceStatus.MISSED && onRetry != null) {
                     PrimaryButton("Fazer hoje", enabled = !saving) { onRetry() }
                 }
                 if (occurrenceStatus == OccurrenceStatus.COMPLETED && !isRecurring && onRepeat != null) {

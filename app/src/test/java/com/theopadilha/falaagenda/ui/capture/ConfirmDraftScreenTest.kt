@@ -12,6 +12,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.domain.model.MissingDraftField
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
@@ -299,6 +300,49 @@ class ConfirmDraftScreenTest {
         }
 
         compose.onNodeWithText("Falta preencher: o horário.", substring = true).assertExists()
+    }
+
+    /**
+     * O remédio de todo dia que não tocou tem que ter o caminho de "Fazer hoje".
+     *
+     * A dose que o aviso não alcançou fica como não realizada, e a única ação primária da tela
+     * era "Concluir" — que registra a dose passada como feita e não arma nada. Para uma rotina,
+     * é a dose seguinte que se perde: ela abre a tarefa e não tem por onde pedir o aviso. O
+     * "Fazer hoje" existia só para a tarefa que NÃO repete (`!isRecurring`), e o `onRetry` do
+     * root já chega aqui para qualquer ocorrência editada.
+     *
+     * O rótulo é o que a tela já usa: o dia real do aviso é anunciado depois do toque, pelo
+     * ViewModel, e um "Tocar agora" prometeria uma imediatez que o app não entrega.
+     *
+     * Este caso monta a tela de verdade com o estado do defeito (editando, não realizada,
+     * recorrente) e prende as duas metades: o caminho aparece, e o toque chama o `onRetry` —
+     * um botão que aparece e não age é a promessa que não se cumpre.
+     */
+    @Test
+    fun aDoseRecorrenteNaoAvisadaTemOFazerHoje() {
+        var tocou = false
+        val regra = recurrenceFor(RecurrenceKind.DAILY, hoje, emptySet())
+        compose.setContent {
+            FalaAgendaTheme(darkTheme = false) {
+                ConfirmDraftScreen(
+                    initial = rascunho("Tomar remédio", hoje, hora, regra),
+                    onCancel = {},
+                    onSave = {},
+                    editing = true,
+                    occurrenceStatus = OccurrenceStatus.MISSED,
+                    isRecurring = true,
+                    onComplete = {},
+                    onRetry = { tocou = true },
+                    onEndSeries = {},
+                )
+            }
+        }
+
+        // "Concluir" continua sendo uma ação legítima (ela tomou e não registrou) — o defeito
+        // era ser a ÚNICA.
+        compose.onNodeWithText("Concluir").assertExists()
+        compose.onNodeWithText("Fazer hoje").performScrollTo().performClick()
+        assertThat(tocou).isTrue()
     }
 
     private fun tela(draft: ParsedTaskDraft) {

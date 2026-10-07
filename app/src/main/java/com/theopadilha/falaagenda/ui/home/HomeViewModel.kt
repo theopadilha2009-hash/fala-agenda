@@ -315,6 +315,13 @@ private const val TAG = "FalaAgendaHome"
  */
 private const val SEM_AVISO = "Salvo. Esse horário já passou e a tarefa não repete, então não vou avisar."
 
+/**
+ * Duas tarefas com o mesmo nome: o app nunca escolhe no chute. Cancelar o remédio errado é
+ * pior que não cancelar nada — a mesma frase do concluir e do apagar.
+ */
+private const val AMBIGUOUS_TARGET_MESSAGE =
+    "Tem mais de uma tarefa com esse nome. Diga o nome completo, ou use os botões da lista."
+
 class HomeViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
@@ -806,7 +813,41 @@ class HomeViewModel(
                 publishStatus(unsupportedMessage(intent.kind))
                 false
             }
+
+            // "apaga o remédio": o verbo também é tarefa ("apaga a luz"), então quem decide o
+            // desfecho é a agenda — e o classificador, puro, não a tem. A leitura é assíncrona
+            // (o retorno diz "foi reconhecido como comando", como em Cancel); o desfecho real
+            // sai depois: com alvo, apaga; sem alvo, é recado de verdade e volta ao parser.
+            is SpeechIntent.EraseNamed -> {
+                eraseNamed(text, intent.target)
+                false
+            }
         }
+
+    /**
+     * O desfecho de "apaga o remédio", decidido com a agenda na mão.
+     *
+     * O alvo existir é o que separa o comando do recado: "apaga o remédio" com a rotina na
+     * agenda é apagar; "apaga a luz" — que não tem tarefa com esse nome — é uma tarefa nova, e
+     * o app não pode engolir o recado dela. Sem alvo, a fala segue o caminho de captura
+     * (`speech.understand`), exatamente como se a camada de intenção não existisse; o rascunho
+     * volta pela sessão e a home o abre na confirmação, inclusive quando a fala veio da tela
+     * de escrever (que já saiu da frente — o rascunho a encontra na home).
+     *
+     * Alvo ambíguo (dois "remédio") NÃO apaga nada: cancelar o errado é pior que não cancelar.
+     */
+    private fun eraseNamed(text: String, target: String) {
+        viewModelScope.launch {
+            val (resolution, itemById) = lookupTarget(target) ?: return@launch
+            when (resolution) {
+                is SpeechTargetResolution.One -> itemById[resolution.id]?.let { delete(it) }
+                // Sem alvo na agenda não é "não achei": é um recado. Engolir a tarefa seria o
+                // mesmo defeito pelo avesso — ela fala "apaga a luz" e a luz não é cadastrada.
+                SpeechTargetResolution.None -> speech.understand(text)
+                is SpeechTargetResolution.Ambiguous -> publishStatus(AMBIGUOUS_TARGET_MESSAGE)
+            }
+        }
+    }
 
     /**
      * A resposta da pergunta. Lê a agenda agora ([TaskRepository.snapshotAgenda]) em vez de usar
@@ -844,38 +885,95 @@ class HomeViewModel(
      */
     private fun resolveTarget(target: String, act: (AgendaItem) -> Unit) {
         viewModelScope.launch {
-            val sections = try {
-                withContext(Dispatchers.IO) { container.tasks.snapshotAgenda() }
-            } catch (error: Exception) {
-                Log.w(TAG, "Não consegui ler a agenda para achar a tarefa.", error)
-                publishStatus("Não consegui ler a sua agenda agora.")
-                return@launch
-            }
-            // Só o que ainda está de pé é alvo: concluir ou apagar algo já feito não é o que
-            // ela pediu.
-            //
-            // Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)
-            // materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia
-            // "já tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não
-            // funcionava. A ocorrência eleita é a pendente mais próxima (a mais urgente), que é
-            // justamente a data que `complete` e `deleteOccurrence` já tratam.
-            val pendentes = sections.today + sections.upcoming
-            val porSerie = pendentes
-                .groupBy { it.series.id }
-                .mapValues { (_, daSerie) -> daSerie.minBy { it.occurrence.scheduledAt } }
-            val candidates = porSerie.values.map {
-                SpeechCandidate(id = it.occurrence.id, title = it.series.title)
-            }
-            val itemById = porSerie.values.associateBy { it.occurrence.id }
-            when (val resolution = SpeechTargetMatcher.resolve(target, candidates)) {
+            val (resolution, itemById) = lookupTarget(target) ?: return@launch
+            when (resolution) {
                 is SpeechTargetResolution.One -> itemById[resolution.id]?.let(act)
                 SpeechTargetResolution.None ->
                     publishStatus("Não achei nenhuma tarefa com esse nome.")
-                is SpeechTargetResolution.Ambiguous ->
-                    publishStatus("Tem mais de uma tarefa com esse nome. Diga o nome completo, ou use os botões da lista.")
+                is SpeechTargetResolution.Ambiguous -> publishStatus(AMBIGUOUS_TARGET_MESSAGE)
             }
         }
     }
+
+    /**
+     * Casa o alvo falado com a agenda e devolve a resolução e o item de cada id. Nulo quando a
+     * leitura falhou — e aí o recado de falha já saiu daqui; quem chamou só para.
+     *
+     * Só o que ainda está de pé é alvo: concluir ou apagar algo já feito não é o que ela pediu.
+     *
+     * A ocorrência NÃO REALIZADA também é alvo. Ela é o estado em que a tarefa mais aparece — a
+     * dose de ontem que o aviso não alcançou, na seção "Não realizadas" — e quando é a única
+     * ocorrência da série o alvo não existia: "apaga o remédio" caía no caminho de captura e
+     * nascia o rascunho "Apaga remédio". Apagar uma MISSED é seguro: o contrato do
+     * `deleteOccurrence` é uma DATA (mais o tombstone), nunca a série.
+     *
+     * Mas ela não é alvo no MESMO nível: quem tem pendente na agenda responde sozinho. O
+     * histórico é um segundo turno, que só acontece quando nenhuma pendente casa com o alvo —
+     * "cancela o remédio" com a dose de amanhã na agenda E um "Remédio do coração" esquecido há
+     * um mês em "Não realizadas" devolvia "tem mais de uma tarefa com esse nome" e não cancelava
+     * NADA: uma tarefa velha de outra série envenenava a fala mais usada. O mesmo vale para o
+     * `apaga`, que é o irmão deste caminho; por isso os dois lados estão presos em teste.
+     */
+    private suspend fun lookupTarget(
+        target: String,
+    ): Pair<SpeechTargetResolution, Map<String, AgendaItem>>? {
+        val sections = try {
+            withContext(Dispatchers.IO) { container.tasks.snapshotAgenda() }
+        } catch (error: Exception) {
+            Log.w(TAG, "Não consegui ler a agenda para achar a tarefa.", error)
+            publishStatus("Não consegui ler a sua agenda agora.")
+            return null
+        }
+        val abertas = sections.today + sections.upcoming
+        val daVez = eleitasPorSerie(abertas)
+        val soVivas = SpeechTargetMatcher.resolve(target, candidatos(daVez))
+        // "None" é o único caso que desce para o histórico: o alvo não casa nenhuma pendente.
+        // Ambiguidade entre pendentes é decisão que fica onde está — perguntar é a resposta
+        // certa, e o histórico não pode calar a pergunta.
+        if (soVivas != SpeechTargetResolution.None) return soVivas to itensPorId(daVez)
+        // O histórico entra na MESMA ordem em que a home o mostra: `missedSections` é a fonte
+        // dessa ordem (ver [eleitasPorSerie]).
+        val comHistorico = eleitasPorSerie(
+            abertas + missedSections(sections.missed).flatMap { it.items },
+        )
+        return SpeechTargetMatcher.resolve(target, candidatos(comHistorico)) to
+            itensPorId(comHistorico)
+    }
+
+    /**
+     * Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)
+     * materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia "já
+     * tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não funcionava.
+     *
+     * A ocorrência eleita é a PRIMEIRA que a tela mostra daquela série, na ordem de exibição da
+     * home. Não é uma ordem própria: a lista chega já ordenada como a tela a monta — pendentes
+     * por data crescente ([AgendaSections.today]/[AgendaSections.upcoming]) e o histórico pela
+     * ordem de [missedSections] —, e [kotlin.collections.groupBy] preserva a ordem de entrada, de
+     * modo que o primeiro item do grupo é o topo.
+     *
+     * Eleger por um critério paralelo foi o defeito, duas vezes:
+     *
+     * - `minBy { scheduledAt }` cru elegia a missed mais VELHA, e a tela mostra a mais nova em
+     *   cima ("Não realizadas" sai de `sortedByDescending { missedAt }` em `TaskRepository`): ela
+     *   olhava a linha de cima, falava "já tomei o remédio" e o app concluía a data de baixo,
+     *   calado.
+     * - `maxWith(missedAt, scheduledAt)` empatava no `missedAt` — e empate é o caso NORMAL, não
+     *   exótico: a varredura da virada carimba todas as vencidas com o MESMO `now` de uma vez
+     *   (`OccurrenceLifecycle.advance`), então qualquer período sem abrir o app produz empate. A
+     *   tela ordena por `missedAt` com ordenação ESTÁVEL e mantém a ordem das linhas do Room
+     *   (data crescente); o desempate por `scheduledAt` descendente elegia a de baixo — o oposto
+     *   do topo. O mesmo valia para a série dividida nas duas seções de [missedSections]: o topo
+     *   é a "Não consegui avisar", e a eleição olhava só o `missedAt`.
+     */
+    private fun eleitasPorSerie(itens: List<AgendaItem>): List<AgendaItem> =
+        itens.groupBy { it.series.id }.values.map { daSerie -> daSerie.first() }
+
+    private fun candidatos(itens: List<AgendaItem>) = itens.map {
+        SpeechCandidate(id = it.occurrence.id, title = it.series.title)
+    }
+
+    private fun itensPorId(itens: List<AgendaItem>) =
+        itens.associateBy { it.occurrence.id }
 
     /**
      * O que o app reconheceu e ainda não sabe fazer. Diz em português de gente e aponta o

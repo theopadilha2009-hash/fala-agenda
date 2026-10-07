@@ -275,8 +275,12 @@ class NotaDaRecorrenciaIncompletaNoMergeTest {
 
         assertThat(final.recurrence.kind).isEqualTo(RecurrenceKind.NONE)
         // O título diverge ("Quinze" do local contra "Compromisso" da IA) e a nota disso é
-        // esperada — o que não pode haver aqui é nota de recorrência.
-        assertThat(final.notes.any { it.contains("repet") || it.contains(afirmacaoDePerda) }).isFalse()
+        // esperada — o que não pode haver aqui é nota de recorrência. A lista é exata, e não um
+        // filtro negativo: um filtro por "repet"/perda deixa passar qualquer outra nota que a
+        // fronteira venha a escrever neste caminho, e o que este teste afirma é o conjunto.
+        assertThat(final.notes).containsExactly(
+            "A ajuda extra chamou de “Compromisso”. Ficou “Quinze”.",
+        )
         assertThat(final.localTime).isEqualTo(LocalTime.of(10, 0))
         assertThat(final.localDate).isEqualTo(LocalDate.of(2026, 10, 25))
     }

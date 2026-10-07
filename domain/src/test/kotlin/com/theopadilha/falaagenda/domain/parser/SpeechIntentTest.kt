@@ -54,6 +54,167 @@ class SpeechIntentTest {
             .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
     }
 
+    // --- "apaga o remédio": apagar pelo NOME, com verbo que também é tarefa --------------
+    //
+    // A fala mais provável dela — "apaga o remédio" — criava a tarefa "Apaga remédio" e ela
+    // acreditava ter apagado. O verbo "apaga" sozinho não resolve: "apagar a luz" e "tirar o
+    // lixo" são tarefas de verdade, e tratá-las como comando engoliria o recado. O que separa
+    // os dois casos é a agenda (o alvo existe?), que o classificador puro não vê — por isso
+    // ele devolve o alvo e NÃO decide o desfecho (ver [SpeechIntent.EraseNamed]): quem decide
+    // é o `HomeViewModel`, com a agenda na mão.
+
+    @Test
+    fun apagaORemedioViraApagarPeloNome() {
+        assertThat(intent("apaga o remédio")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+    }
+
+    /**
+     * "apaga ESSA consulta" NOMEIA o alvo — o demonstrativo tem substantivo depois.
+     *
+     * A forma caía no beco do ERASE sem nome ("ainda não sei apagar falando") enquanto "apaga o
+     * remédio" apagava, e ela não tinha como saber por quê. É a mesma assimetria que o
+     * "cancela essa consulta" já tinha resolvido do outro lado da camada.
+     */
+    @Test
+    fun apagaEssaConsultaViraApagarPeloNome() {
+        assertThat(intent("apaga essa consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))
+        assertThat(intent("deleta esse remédio")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+    }
+
+    /**
+     * Sem substantivo depois, o demonstrativo não nomeia nada: "apaga essa" continua sendo
+     * apagar no escuro, e o app reconhece sem executar — não procura uma tarefa chamada "essa".
+     */
+    @Test
+    fun apagaEssaSozinhoContinuaSemNome() {
+        assertThat(intent("apaga essa")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("deleta esse")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    /**
+     * O PLURAL e a família `este/esta/aquele` também são alvo sem nome.
+     *
+     * O veredito era um `setOf("essa", "esse", "isso", "isto")` escrito à mão, enquanto a lista
+     * que limpa o alvo (`LEADING_DETERMINERS`) já tinha o plural e a família inteira: "apaga
+     * essa" era reconhecido sem executar e "apaga essas" virava a tarefa "Apaga essas". Ela
+     * acreditava ter apagado, e a lista continuava lá — a mesma classe do P2-A, reintroduzida
+     * pela segunda lista. As duas agora saem de uma fonte só.
+     */
+    @Test
+    fun demonstrativoPluralEFamiliaEsteAqueleTambemSaoSemNome() {
+        assertThat(intent("apaga essas")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga esses")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga estes")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga estas")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga este")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga esta")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga aquele")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("tira aquela")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga aqueles")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga aquelas")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    /**
+     * O outro lado da lista unificada: o determinante com substantivo depois NOMEIA o alvo.
+     *
+     * O determinante de DATA ("este sábado", "esta semana", "aquele dia") tem substantivo
+     * depois — ele não pode ser engolido como demonstrativo de tarefa e virar ERASE sem nome. O
+     * que sobra é o substantivo, e a fala é um comando de apagar com alvo, como qualquer outro.
+     */
+    @Test
+    fun determinanteDeDataNaoViraAlvoSemNome() {
+        assertThat(intent("apaga este sábado")).isEqualTo(SpeechIntent.EraseNamed("sabado"))
+        assertThat(intent("cancela esta semana")).isEqualTo(SpeechIntent.Cancel("semana"))
+        assertThat(intent("deleta aquele dia")).isEqualTo(SpeechIntent.EraseNamed("dia"))
+        assertThat(intent("apaga essas consultas")).isEqualTo(SpeechIntent.EraseNamed("consultas"))
+    }
+
+    /**
+     * A fala chega PONTUADA — é a premissa do `targetAfter`, que tira a pontuação das duas
+     * pontas porque o reconhecedor a gruda na palavra (ver [pontoFinalNaoFicaNoAlvo]).
+     *
+     * O ramo do demonstrativo sem substantivo exigia fim de string, então o ponto do
+     * reconhecedor desmanchava o "apaga essa": o alvo sobrava como a palavra `essa`, a matcher
+     * não achava tarefa nenhuma com esse nome e a fala voltava para a captura — nascia a tarefa
+     * "Apaga essa" e ela acreditava ter apagado. É exatamente o defeito que esta camada existe
+     * para consertar. O ramo irmão ("isso/isto") nunca teve o problema porque aceita a
+     * pontuação colada.
+     */
+    @Test
+    fun demonstrativoPontuadoContinuaApagarSemNome() {
+        assertThat(intent("apaga essa.")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga essa!")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("deleta esse,")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("exclui isso.")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    /**
+     * "apaga essa por favor": sem a vírgula que o `targetAfter` corta, a cortesia é o rabo do
+     * alvo. O demonstrativo sai na frente do artigo e a cortesia tem de sair DEPOIS — na ordem
+     * inversa o "essa " era comido como artigo, o "por favor" sobrava sozinho e virava o alvo,
+     * e o app procurava uma tarefa chamada "por favor".
+     */
+    @Test
+    fun demonstrativoComCortesiaSemVirgulaNaoViraAlvo() {
+        assertThat(intent("apaga essa por favor"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("deleta esse sim"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    /**
+     * O outro lado da cortesia: com um substantivo depois do demonstrativo o alvo existe, e a
+     * cortesia não pode comer o nome nem virar parte dele. "cancela o médico por favor" — sem
+     * vírgula — é a fala mais provável dela, e o "por favor" não pode virar palavra do alvo.
+     */
+    @Test
+    fun cortesiaSemVirgulaNaoEntraNoAlvo() {
+        assertThat(intent("cancela o médico por favor")).isEqualTo(SpeechIntent.Cancel("medico"))
+        assertThat(intent("apaga o remédio por favor")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+        assertThat(intent("já tomei o remédio por favor")).isEqualTo(SpeechIntent.Complete("remedio"))
+    }
+
+    @Test
+    fun excluiAConsultaViraApagarPeloNome() {
+        assertThat(intent("exclui a consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))
+    }
+
+    @Test
+    fun deletaAMissaViraApagarPeloNome() {
+        assertThat(intent("deleta a missa")).isEqualTo(SpeechIntent.EraseNamed("missa"))
+    }
+
+    @Test
+    fun tiraORemedioViraApagarPeloNome() {
+        assertThat(intent("tira o remédio")).isEqualTo(SpeechIntent.EraseNamed("remedio"))
+    }
+
+    @Test
+    fun removeAConsultaViraApagarPeloNome() {
+        assertThat(intent("remove a consulta")).isEqualTo(SpeechIntent.EraseNamed("consulta"))
+    }
+
+    /**
+     * "apaga a luz" NOMEIA o alvo — e é justamente por isso que ele não pode cair no ERASE
+     * sem nome ("ainda não sei apagar falando"): a decisão de apagar ou capturar depende da
+     * agenda, e é o `HomeViewModel` quem a toma. Aqui se prende só o que o classificador pode
+     * saber: o alvo é "luz", e não um "apaga isso" disfarçado.
+     */
+    @Test
+    fun apagaALuzTrazOAlvoEPedeAagenda() {
+        assertThat(intent("apaga a luz")).isEqualTo(SpeechIntent.EraseNamed("luz"))
+    }
+
+    /**
+     * O infinitivo continua captura, pela mesma razão do "cancelar a consulta": "me lembra de
+     * apagar a luz" é um recado, não um imperativo dirigido ao app.
+     */
+    @Test
+    fun apagarInfinitivoContinuaTarefa() {
+        assertThat(intent("apagar a luz")).isEqualTo(SpeechIntent.Capture)
+        assertThat(intent("me lembra de apagar a luz")).isEqualTo(SpeechIntent.Capture)
+    }
+
     @Test
     fun oQueTenhoHojeViraPerguntaDeHoje() {
         assertThat(intent("o que tenho hoje?")).isEqualTo(SpeechIntent.Ask(AskWhen.TODAY))

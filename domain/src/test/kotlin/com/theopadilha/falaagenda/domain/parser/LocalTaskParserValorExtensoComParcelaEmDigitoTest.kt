@@ -85,6 +85,24 @@ class LocalTaskParserValorExtensoComParcelaEmDigitoTest {
 
     // ---- Controles: o que já funcionava não pode regredir ----
 
+    // ---- F1: o extenso+extenso com a escala de milhão não pode virar principal+parcela ----
+
+    @Test
+    fun extensoComExtensoComEscalaDeMilhaoContinuaUmNumeroSo() {
+        // "pagar mil e quinhentos milhoes de reais" é UM número (1.500 milhões = 1,5 bilhão), não
+        // um principal de 1×milhão mais uma parcela de 500.000. O ramo novo casava o extenso na
+        // alternância de parcela, ancorava o principal opcional na escala sozinha e gravava
+        // R$500.001.000,00 — `qc=true`, sem nota, confirmável em um toque.
+        val draft = parser.parse("pagar mil e quinhentos milhoes de reais amanhã às 10h")
+        assertThat(draft.amountCents).isEqualTo(1500L * 1_000_000 * 100)
+        assertThat(draft.title).isEqualTo("Pagar")
+
+        assertThat(parser.parse("pagar dois mil e quinhentos milhoes de reais amanhã às 10h").amountCents)
+            .isEqualTo(2500L * 1_000_000 * 100)
+        assertThat(parser.parse("pagar mil e duzentos milhoes de reais amanhã às 10h").amountCents)
+            .isEqualTo(1200L * 1_000_000 * 100)
+    }
+
     @Test
     fun controleExtensoComExtensoContinuaSomando() {
         assertThat(parser.parse("pagar dois mil e quinhentos reais amanhã às 10h").amountCents)
@@ -122,6 +140,11 @@ class LocalTaskParserValorExtensoComParcelaEmDigitoTest {
         val composta = parser.parse("pagar 30.50 mil e 500 reais amanhã às 10h")
         assertThat(composta.amountCents).isNull()
         assertThat(composta.title).contains("30.50")
+
+        // E o extenso+extenso com escala de milhão não pode reabrir a porta pelo outro lado.
+        val milhoes = parser.parse("pagar 30.50 mil e quinhentos milhoes de reais amanhã às 10h")
+        assertThat(milhoes.amountCents).isNull()
+        assertThat(milhoes.title).contains("30.50")
     }
 
     @Test

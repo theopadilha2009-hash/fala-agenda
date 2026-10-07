@@ -266,8 +266,8 @@ class LocalTaskParser(
                 (numberFromWords(TextNormalizer.compactSpaces(extenso)) ?: return@let) * 100
             }
             val principal = escalaEmCentavos(bruto, m.groupValues[2]) ?: return@let
-            val parcela = reaisFromSpoken(m.groupValues[3], m.groupValues[4], m.groupValues[5])
-                ?: return@let
+            // Sem parcela por extenso aqui: ela é sempre o dígito do grupo 3.
+            val parcela = reaisFromSpoken(m.groupValues[3], m.groupValues[4], "") ?: return@let
             if (parcela > Long.MAX_VALUE - principal) return null
             return withCentavos(principal + parcela, text, m)
         }
@@ -2129,15 +2129,20 @@ class LocalTaskParser(
          * DÍGITO ("dois mil e 500 reais", "mil e 500 reais", "um milhão e 500 reais"). Só o lado
          * dígito+extenso tinha ramo próprio, e o outro gravava R$500,00 com o principal no título.
          *
+         * A parcela é SÓ em dígito — de propósito. Com a alternativa de parcela por extenso, o
+         * extenso+extenso que o [REAIS_EXTENSO] lia como um número só ("mil e quinhentos milhoes de
+         * reais" = 1,5 bilhão) passava a ser lido como principal+parcela, e o principal opcional
+         * ancorava na escala sozinha: gravava R$500.001.000,00, com `qc=true` e sem nota. O lado
+         * dígito não sofre disso porque o [VALOR_COMPOSTO] casa primeiro e não deixa este ramo ver
+         * a fala. Os grupos repetem a ordem daquele — 1 o extenso do principal, 2 a escala dele,
+         * 3-4 a parcela em dígito com a escala dela.
+         *
          * O extenso do principal é OPCIONAL porque a própria escala pode ser o número dito: em
-         * "mil e 500 reais" não há palavra antes do "mil", e o principal é 1× a escala. Os grupos
-         * repetem a ordem do [VALOR_COMPOSTO] — 1 o extenso do principal, 2 a escala dele, 3-4 a
-         * parcela em dígito com a escala dela, 5 a parcela por extenso.
+         * "mil e 500 reais" não há palavra antes do "mil", e o principal é 1× a escala.
          */
         private val VALOR_COMPOSTO_EXTENSO = Regex(
             """\b((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*)?\s*(mil|milhao|milhoes)\s+e\s+""" +
-                """(?:($BR_NUMBER)\s*(mil|milhao|milhoes)?|((?:$NUMBER_WORD_ALT)\b(?:\s+(?:e\s+)?(?:$NUMBER_WORD_ALT)\b)*))""" +
-                """\s+(?:de\s+)?(?:reais|real)\b""",
+                """($BR_NUMBER)\s*(mil|milhao|milhoes)?\s+(?:de\s+)?(?:reais|real)\b""",
         )
 
         /**

@@ -378,6 +378,123 @@ class FalaComandoTest {
     }
 
     /**
+     * O EMPATE de `missedAt` — e ele não é cenário exótico.
+     *
+     * A varredura da virada carimba TODAS as vencidas com o mesmo `now` de uma vez
+     * (`OccurrenceLifecycle.advance`), então qualquer período sem abrir o app produz empate. A
+     * tela ordena "Não realizadas" por `missedAt` com ordenação ESTÁVEL e, no empate, mantém a
+     * ordem das linhas do Room — data CRESCENTE, a mais velha em cima. A eleição antiga
+     * desempatava por `scheduledAt` descendente e elegia exatamente a de BAIXO: ela olhava a
+     * linha de cima, falava "já tomei o remédio" e o app concluía a de baixo, calado.
+     *
+     * O teste mede os dois lados: a ordem que a TELA mostra e em QUAL data o verbo caiu. Se a
+     * eleição voltar a ter critério próprio, o "caiu" deixa de ser o topo e isto fica vermelho.
+     */
+    @Test
+    fun empateDeMissedAtElegeALinhaDoTopo() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(3), diario())
+        val empate = quando(serie, hoje.minusDays(3)).plusSeconds(3_600)
+        semear(
+            serie,
+            listOf(
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(3), missedAt = empate),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(2), missedAt = empate),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(1), missedAt = empate),
+            ),
+        )
+
+        // O que a tela mostra, na ordem em que mostra: no empate, a ordem das linhas do Room.
+        val noTopo = naoRealizadasDa(serie).first()
+        assertThat(naoRealizadasDa(serie)).containsExactly(hoje.minusDays(3), hoje.minusDays(2), hoje.minusDays(1)).inOrder()
+
+        viewModel.understandSpeech("já tomei o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Feito.")
+        assertThat(statusDa(serie.id, noTopo)).isEqualTo(OccurrenceStatus.COMPLETED)
+        // As duas de baixo continuam não realizadas: só a linha de cima foi tocada.
+        assertThat(statusDa(serie.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.MISSED)
+        assertThat(statusDa(serie.id, hoje.minusDays(2))).isEqualTo(OccurrenceStatus.MISSED)
+    }
+
+    /**
+     * O mesmo empate pelos outros dois verbos que usam o mesmo `lookupTarget`.
+     */
+    @Test
+    fun empateDeMissedAtElegeALinhaDoTopoNoCancelar() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(3), diario())
+        val empate = quando(serie, hoje.minusDays(3)).plusSeconds(3_600)
+        semear(
+            serie,
+            listOf(
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(3), missedAt = empate),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(2), missedAt = empate),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(1), missedAt = empate),
+            ),
+        )
+        val noTopo = naoRealizadasDa(serie).first()
+
+        viewModel.understandSpeech("cancela o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, noTopo))).isNull()
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje.minusDays(1)))).isNotNull()
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje.minusDays(2)))).isNotNull()
+    }
+
+    @Test
+    fun empateDeMissedAtElegeALinhaDoTopoNoApagar() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(3), diario())
+        val empate = quando(serie, hoje.minusDays(3)).plusSeconds(3_600)
+        semear(
+            serie,
+            listOf(
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(3), missedAt = empate),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(2), missedAt = empate),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(1), missedAt = empate),
+            ),
+        )
+        val noTopo = naoRealizadasDa(serie).first()
+
+        viewModel.understandSpeech("apaga o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, noTopo))).isNull()
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje.minusDays(1)))).isNotNull()
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje.minusDays(2)))).isNotNull()
+    }
+
+    /**
+     * A série DIVIDIDA nas duas seções de "Não realizadas".
+     *
+     * A home não mostra as missed numa lista só: `missedSections` põe "Não consegui avisar"
+     * primeiro, e a não avisada pode ser mais VELHA que a avisada. Ordenar a eleição só por
+     * `missedAt` elegia a avisada (mais nova), enquanto o topo da tela é a não avisada — o
+     * mesmo "agir na linha de baixo" do empate, por outro eixo.
+     */
+    @Test
+    fun serieDivididaNasDuasSecoesElegeATopoSemAviso() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(2), diario())
+        semear(
+            serie,
+            listOf(
+                // A não avisada é mais velha e vem na PRIMEIRA seção; a avisada é mais nova e
+                // vem na segunda. O topo da tela é a não avisada.
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(2), ultimoAviso = null),
+                ocorrenciaNaoRealizada(serie, hoje.minusDays(1), ultimoAviso = quando(serie, hoje.minusDays(1))),
+            ),
+        )
+
+        assertThat(missedSections(agenda().missed).first().items.map { it.occurrence.localDate })
+            .containsExactly(hoje.minusDays(2))
+
+        viewModel.understandSpeech("já tomei o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Feito.")
+        assertThat(statusDa(serie.id, hoje.minusDays(2))).isEqualTo(OccurrenceStatus.COMPLETED)
+        assertThat(statusDa(serie.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.MISSED)
+    }
+
+    /**
      * A não realizada entra como SEGUNDO turno, e não no mesmo pool: com uma pendente viva que
      * casa o alvo, uma tarefa esquecida em "Não realizadas" não pode derrubar a fala pedindo
      * para escolher entre as duas.
@@ -558,7 +675,12 @@ class FalaComandoTest {
         updatedAt = CRIACAO,
     )
 
-    private fun ocorrenciaNaoRealizada(serie: TaskSeries, data: LocalDate): TaskOccurrence {
+    private fun ocorrenciaNaoRealizada(
+        serie: TaskSeries,
+        data: LocalDate,
+        missedAt: Instant = quando(serie, data).plusSeconds(3_600),
+        ultimoAviso: Instant? = null,
+    ): TaskOccurrence {
         val quando = quando(serie, data)
         return TaskOccurrence(
             id = OccurrenceIds.of(serie.id, data),
@@ -566,7 +688,8 @@ class FalaComandoTest {
             localDate = data,
             scheduledAt = quando,
             status = OccurrenceStatus.MISSED,
-            missedAt = quando.plusSeconds(3_600),
+            missedAt = missedAt,
+            lastReminderAt = ultimoAviso,
         )
     }
 

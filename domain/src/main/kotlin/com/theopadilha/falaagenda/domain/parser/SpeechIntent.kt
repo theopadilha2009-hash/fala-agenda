@@ -262,16 +262,43 @@ object SpeechIntentClassifier {
     )
 
     /**
-     * O demonstrativo sozinho não nomeia alvo nenhum: "apaga essa" aponta para algo que só ela
+     * A fonte ÚNICA dos determinantes que abrem um alvo: o artigo ("o médico" → "médico") e o
+     * demonstrativo ("essa consulta" → "consulta").
+     *
+     * As duas pontas que precisam da mesma lista — [stripLeadingArticles], que a usa para limpar
+     * o alvo, e [DEMONSTRATIVOS], que decide se o que sobrou é um alvo sem nome — liam de listas
+     * escritas à mão, e elas divergiram: a limpeza conhecia o plural e a família
+     * `este/esta/aquele`, o veredito só o singular. "apaga essa" era reconhecido sem executar e
+     * "apaga essas" virava a tarefa "Apaga essas", calado — a mesma classe do P2-A. Uma lista só
+     * é o que impede a divergência de voltar.
+     *
+     * Os determinantes de DATA ("este sábado", "esta semana", "aquele dia") NÃO são alvo: eles
+     * vêm com substantivo depois ("este sábado" → "sábado"), então nunca chegam sozinhos ao
+     * veredito de [DEMONSTRATIVOS] — que só olha o alvo quando ele é a última coisa dita.
+     */
+    private val DETERMINANTES = setOf(
+        "o", "a", "os", "as", "um", "uma", "meu", "minha", "meus", "minhas",
+        "este", "esta", "estes", "estas", "esse", "essa", "esses", "essas",
+        "aquele", "aquela", "aqueles", "aquelas",
+    )
+
+    /**
+     * O determinante sozinho não nomeia alvo nenhum: "apaga essa" aponta para algo que só ela
      * vê na tela, e escolher no chute é o pior desfecho. O veredito é tomado sobre o alvo já
      * limpo — depois da pontuação que o reconhecedor gruda e da cortesia que fecha a fala —,
      * porque é isso que sobra dito: "apaga essa." e "apaga essa, por favor" são o mesmo pedido
      * que "apaga isso", e o caminho é o mesmo (reconhecer e não executar).
      *
-     * "isso/isto" entram junto por simetria: eles nunca chegam aqui (o ramo [apagaIsso] os
-     * pega antes), mas um demonstrativo só é um demonstrativo só — a lista é uma.
+     * Derivado de [DETERMINANTES] — a mesma fonte que limpa o alvo —, e não uma enumeração
+     * paralela: era um `setOf("essa", "esse", ...)` à mão, cobria só o singular e divergia da
+     * outra lista. Ver [DETERMINANTES].
+     *
+     * "isso/isto" entram à parte: eles não são determinantes de alvo (não têm substantivo
+     * depois) e por isso ficam fora de [DETERMINANTES], mas continuam sendo um alvo sem nome.
+     * O ramo [apagaIsso] pega os verbos que ele conhece; os outros de [apagaNomeado]
+     * ("tira isso", "remove isso") chegam aqui e têm de cair no mesmo veredito.
      */
-    private val DEMONSTRATIVOS = setOf("essa", "esse", "isso", "isto")
+    private val DEMONSTRATIVOS: Set<String> = DETERMINANTES + setOf("isso", "isto")
 
     // Só os pronomes "isso/isto": eles não têm substantivo depois, então não nomeiam alvo
     // nenhum. "cancela essa consulta" fica de fora de propósito — "essa consulta" É o alvo, e
@@ -358,6 +385,11 @@ object SpeechIntentClassifier {
      * O início do rabo é `(^|\s+)`, e não `\s+`: depois de o artigo sair, a cortesia pode ficar
      * colada no começo do alvo ("apaga essa por favor" → "por favor"), e aí um `\s+` obrigatório
      * fazia o motor casar a alternativa CURTA no meio — " favor" — e devolver `por`.
+     *
+     * Quem segura [demonstrativoComCortesiaSemVirgulaNaoViraAlvo] é a ORDEM — a cortesia antes do
+     * artigo —, não esta âncora: trocar `(^|\s+)` por `\s+` mantendo a ordem deixa a suíte verde
+     * (as duas metades são redundantes aqui). Não remova a âncora achando que ela é o que
+     * protege; o teste é da ordem.
      */
     private val TRAILING_COURTESY = Regex(
         "(^|\\s+)(por favor|por gentileza|favor|obrigada|obrigado|sim|ok|beleza|ta)\\s*$",
@@ -374,9 +406,14 @@ object SpeechIntentClassifier {
      *
      * "isso/isto" ficam de fora de propósito: eles NÃO têm substantivo depois, então o alvo
      * seria vazio — e o caminho certo para eles é o ERASE sem nome, não um alvo limpo.
+     *
+     * A alternação sai de [DETERMINANTES] — a mesma lista que decide o alvo sem nome —, do mais
+     * longo para o mais curto: com "a" antes de "as", o motor casaria o prefixo e o `\s+`
+     * seguinte falharia, e ainda que o retrocesso resolvesse, a ordem explícita deixa a
+     * intenção legível.
      */
     private val LEADING_DETERMINERS = Regex(
-        "^(o|a|os|as|um|uma|meu|minha|meus|minhas|este|esta|estes|estas|esse|essa|esses|essas|aquele|aquela|aqueles|aquelas)\\s+",
+        "^(" + DETERMINANTES.sortedByDescending { it.length }.joinToString("|") + ")\\s+",
     )
 
     private fun stripLeadingArticles(text: String): String =

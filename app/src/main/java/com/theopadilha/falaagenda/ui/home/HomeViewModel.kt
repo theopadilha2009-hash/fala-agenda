@@ -931,7 +931,11 @@ class HomeViewModel(
         // Ambiguidade entre pendentes é decisão que fica onde está — perguntar é a resposta
         // certa, e o histórico não pode calar a pergunta.
         if (soVivas != SpeechTargetResolution.None) return soVivas to itensPorId(daVez)
-        val comHistorico = eleitasPorSerie(abertas + sections.missed)
+        // O histórico entra na MESMA ordem em que a home o mostra: `missedSections` é a fonte
+        // dessa ordem (ver [eleitasPorSerie]).
+        val comHistorico = eleitasPorSerie(
+            abertas + missedSections(sections.missed).flatMap { it.items },
+        )
         return SpeechTargetMatcher.resolve(target, candidatos(comHistorico)) to
             itensPorId(comHistorico)
     }
@@ -941,21 +945,28 @@ class HomeViewModel(
      * materializa várias pendentes com o mesmo nome, e um candidato por ocorrência fazia "já
      * tomei o remédio" virar ambíguo — a fala mais provável de uma rotina não funcionava.
      *
-     * A ocorrência eleita é a que a tela mostra como a MAIS RELEVANTE daquela série: a pendente
-     * mais próxima (a mais urgente, e justamente a data que `complete` e `deleteOccurrence` já
-     * tratam) e, sem nenhuma pendente, a não realizada que está EM CIMA em "Não realizadas" —
-     * o `TaskRepository` ordena essa seção por `missedAt` descendente. Eleger ali a mais VELHA
-     * (o que o `minBy { scheduledAt }` cru fazia) é a pior forma deste defeito: ela olha a linha
-     * de cima, fala "já tomei o remédio" e o app conclui a data de baixo, calado.
+     * A ocorrência eleita é a PRIMEIRA que a tela mostra daquela série, na ordem de exibição da
+     * home. Não é uma ordem própria: a lista chega já ordenada como a tela a monta — pendentes
+     * por data crescente ([AgendaSections.today]/[AgendaSections.upcoming]) e o histórico pela
+     * ordem de [missedSections] —, e [kotlin.collections.groupBy] preserva a ordem de entrada, de
+     * modo que o primeiro item do grupo é o topo.
+     *
+     * Eleger por um critério paralelo foi o defeito, duas vezes:
+     *
+     * - `minBy { scheduledAt }` cru elegia a missed mais VELHA, e a tela mostra a mais nova em
+     *   cima ("Não realizadas" sai de `sortedByDescending { missedAt }` em `TaskRepository`): ela
+     *   olhava a linha de cima, falava "já tomei o remédio" e o app concluía a data de baixo,
+     *   calado.
+     * - `maxWith(missedAt, scheduledAt)` empatava no `missedAt` — e empate é o caso NORMAL, não
+     *   exótico: a varredura da virada carimba todas as vencidas com o MESMO `now` de uma vez
+     *   (`OccurrenceLifecycle.advance`), então qualquer período sem abrir o app produz empate. A
+     *   tela ordena por `missedAt` com ordenação ESTÁVEL e mantém a ordem das linhas do Room
+     *   (data crescente); o desempate por `scheduledAt` descendente elegia a de baixo — o oposto
+     *   do topo. O mesmo valia para a série dividida nas duas seções de [missedSections]: o topo
+     *   é a "Não consegui avisar", e a eleição olhava só o `missedAt`.
      */
     private fun eleitasPorSerie(itens: List<AgendaItem>): List<AgendaItem> =
-        itens.groupBy { it.series.id }.values.map { daSerie ->
-            val pendentes = daSerie.filter { it.occurrence.status == OccurrenceStatus.PENDING }
-            pendentes.minByOrNull { it.occurrence.scheduledAt }
-                ?: daSerie.maxWith(
-                    compareBy({ it.occurrence.missedAt }, { it.occurrence.scheduledAt }),
-                )
-        }
+        itens.groupBy { it.series.id }.values.map { daSerie -> daSerie.first() }
 
     private fun candidatos(itens: List<AgendaItem>) = itens.map {
         SpeechCandidate(id = it.occurrence.id, title = it.series.title)

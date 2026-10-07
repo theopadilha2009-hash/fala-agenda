@@ -92,6 +92,44 @@ class SpeechIntentTest {
     }
 
     /**
+     * O PLURAL e a família `este/esta/aquele` também são alvo sem nome.
+     *
+     * O veredito era um `setOf("essa", "esse", "isso", "isto")` escrito à mão, enquanto a lista
+     * que limpa o alvo (`LEADING_DETERMINERS`) já tinha o plural e a família inteira: "apaga
+     * essa" era reconhecido sem executar e "apaga essas" virava a tarefa "Apaga essas". Ela
+     * acreditava ter apagado, e a lista continuava lá — a mesma classe do P2-A, reintroduzida
+     * pela segunda lista. As duas agora saem de uma fonte só.
+     */
+    @Test
+    fun demonstrativoPluralEFamiliaEsteAqueleTambemSaoSemNome() {
+        assertThat(intent("apaga essas")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga esses")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga estes")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga estas")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga este")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga esta")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga aquele")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("tira aquela")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga aqueles")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+        assertThat(intent("apaga aquelas")).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.ERASE))
+    }
+
+    /**
+     * O outro lado da lista unificada: o determinante com substantivo depois NOMEIA o alvo.
+     *
+     * O determinante de DATA ("este sábado", "esta semana", "aquele dia") tem substantivo
+     * depois — ele não pode ser engolido como demonstrativo de tarefa e virar ERASE sem nome. O
+     * que sobra é o substantivo, e a fala é um comando de apagar com alvo, como qualquer outro.
+     */
+    @Test
+    fun determinanteDeDataNaoViraAlvoSemNome() {
+        assertThat(intent("apaga este sábado")).isEqualTo(SpeechIntent.EraseNamed("sabado"))
+        assertThat(intent("cancela esta semana")).isEqualTo(SpeechIntent.Cancel("semana"))
+        assertThat(intent("deleta aquele dia")).isEqualTo(SpeechIntent.EraseNamed("dia"))
+        assertThat(intent("apaga essas consultas")).isEqualTo(SpeechIntent.EraseNamed("consultas"))
+    }
+
+    /**
      * A fala chega PONTUADA — é a premissa do `targetAfter`, que tira a pontuação das duas
      * pontas porque o reconhecedor a gruda na palavra (ver [pontoFinalNaoFicaNoAlvo]).
      *

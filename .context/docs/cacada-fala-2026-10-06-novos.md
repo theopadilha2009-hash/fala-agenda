@@ -181,6 +181,108 @@ para separar "terra natal", mas "fisioterapia" antes de "no Natal" não é subst
 
 ---
 
+---
+
+## Parte C — o caminho do alarme
+
+Esta parte mede o eixo que as sete caçadas anteriores só tinham **lido** e declarado OK. Método:
+`AlarmManager` real em Robolectric, notificação inspecionada nó a nó, dose semeada direto no DAO, e
+a invariante *"instante futuro marcado ⇒ existe alarme armado"* cruzada sobre 42 ocorrências.
+
+### F1 [ALTA] O alarme não fala e não tem som próprio — é o "áudio" que ela reclama
+
+**Medido: zero referências a `TextToSpeech`/`tts`/`synthes`/`utterance` em todo `app/src` e
+`domain/src`.** E a notificação, inspecionada:
+
+```
+canal: importance=4 sound=content://settings/system/notification_sound
+notif: sound=null vibrate=null defaults=0 fullScreenIntent=null category=reminder ongoing=0
+```
+
+`NotificationHelper.showReminder` (`reminders/NotificationHelper.kt:119-129`) monta a notificação
+**sem `setSound`, sem `setVibrate`, sem `setDefaults`, sem `setFullScreenIntent`, sem
+`setOngoing`**. O único áudio é o som padrão do canal (`ensureChannel`, `:40-51`) — o mesmo plim de
+qualquer mensagem, que **toca uma vez e para**. Não existe voz dizendo "está na hora do remédio".
+
+**Cenário dela:** o remédio das 08:00 chega como uma notificação com o plim padrão. Um plim de um
+segundo, na cozinha, com o celular na sala, não é um alarme. Este é o endereço mais provável da
+queixa literal *"o áudio nunca funciona"* — o áudio **do alarme**, não o reconhecimento da fala dela.
+
+### F2 [ALTA] O app diz "avisos OK" com o canal mudo
+
+`NotificationHelper.reminderAlerts` (`:80-86`) só olha três coisas: permissão de notificação, canal
+!= `IMPORTANCE_NONE`, e `importance < IMPORTANCE_DEFAULT`. Medido nos três ramos:
+
+```
+HIGH + som + vibra       -> alerts=OK  silent=false
+HIGH + SEM SOM + vibra   -> alerts=OK  silent=false   <<<
+HIGH + SEM SOM + SEM VIBRA -> alerts=OK  silent=false <<<
+```
+
+Um canal `IMPORTANCE_HIGH` cujo som foi posto em "Nenhum" **passa como saudável**. O cartão "sem
+som" da home não aparece e o lembrete do remédio sai mudo, com o app achando que avisou. É a mesma
+classe do defeito já corrigido para `IMPORTANCE_NONE` — o "HIGH mas mudo" ficou de fora.
+
+### F3 [ALTA] Permissão de alarme exato negada ⇒ alarme inexato, e o único aviso é um cartão na home
+
+Medido com `canScheduleExactAlarms=false`:
+```
+usedInexactAlarm no salvar = true
+  trigger=...T11:00:00Z alarmClock=false allowWhileIdle=true
+```
+O app declara `SCHEDULE_EXACT_ALARM` (não `USE_EXACT_ALARM`) — `AndroidManifest.xml:6`. Essa
+permissão **não é pré-concedida** em instalações novas com targetSdk ≥ 33. O onboarding pede
+(`OnboardingScreen.kt:95-118`) e há cartão na home (`HomeScreen.kt:671`), mas o texto promete "pode
+atrasar **alguns minutos**" — sob Doze/OEM o atraso não tem esse teto. Se ela tocar "Agora não",
+todo lembrete passa a ser inexato.
+
+### F4 [MÉDIA] A dose que não pôde ser avisada se perde 6 h depois — e a dose da noite se perde inteira
+
+Medido com contador (dose semeada no DAO, celular desligado a noite toda, volta às 09:00):
+```
+TOTAL=24 PERDIDAS=24 TOCAM_ATRASADAS=0
++1h: rearmado=true  +5h: rearmado=true  +6h: rearmado=false  +24h: status=MISSED
+```
+`TaskRepository.JANELA_ENTREGA_PENDENTE = Duration.ofHours(6)` (`:871`), aplicada em
+`OccurrenceLifecycle.entregaPendente`/`valeRearmar` (`:245-276`). Para um remédio, 6 h é janela
+curta e o número não está em lugar nenhum que ela veja. **É decisão de produto** — já registrada
+como item 2 das decisões abertas.
+
+### F5 [MÉDIA] Tocar na notificação abre o formulário de edição, não o remédio
+
+Medido: `contentIntent` é a activity com `OPEN_OCCURRENCE` + `occurrence_id`, e
+`FalaAgendaRoot.kt:179-185` resolve via `agendaNotice` chamando **`openForEdit(pedido.item)`**. Ela
+toca no aviso do remédio e cai num formulário, com o "Concluir" no fim de uma tela que rola (o PR
+#70 mediu ~460 dp abaixo da dobra). O caminho "tocar no aviso e marcar tomei" não existe; os botões
+"Concluir"/"Adiar" da própria notificação é que compensam.
+
+### F6 [MÉDIA-BAIXA] A notificação do lembrete é apagável por swipe e não tem categoria de alarme
+
+Medido: `ongoing=0`, `category=reminder`, `fullScreenIntent=null`. Ela passa o dedo e apaga o aviso
+sem ler; nada re-toca até o próximo degrau (15 min) e, se era o último do dia, o lembrete morre
+calado.
+
+### F7 [BAIXA] Com notificação negada o app fica completamente mudo, inclusive no "não deu para adiar"
+
+Medido: canal desligado → `lembrete=BLOCKED aviso=BLOCKED`. Ela toca "Adiar", nada é agendado e
+nenhuma tela diz nada.
+
+### Medido e OK neste eixo (não refazer)
+
+- **A API é a certa**: `setAlarmClock` no primeiro aviso e `setExactAndAllowWhileIdle` nas
+  repetições (`ReminderScheduler.kt:44-52, 135-141`), medido com `alarmClock=true` e `showIntent=true`.
+- **A invariante do agendamento tem zero violações**: `TOTAL ocorrencias=42 futuras=35 VIOLACOES=0`.
+- A dose das 22:00 fica armada exatamente às 22:00, com o alarme da virada do dia às 00:05 ao lado.
+- **Nenhum `SecurityException`**: `canScheduleExact()` guarda todos os caminhos (`:44, 61, 81`).
+- **`goAsync` + `withTimeout(8s)`** no receiver: ANR não é o defeito.
+- **Boot re-arma de verdade** (medido com a `FalaAgendaApplication` de produção), e
+  `RECEIVE_BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`, `TIME_SET`, `TIMEZONE_CHANGED` e
+  `SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED` estão declarados e tratados.
+- **A entrega funciona ponta a ponta** e o disparo atrasado pelo Doze não perde a dose.
+- **DST** se comporta, e o cold start não deixa alarme órfão.
+
+---
+
 ## Números
 
 Comando (idêntico em todas as rodadas; XMLs são a fonte, nunca o "BUILD SUCCESSFUL"):
@@ -215,6 +317,23 @@ ORACLE_REPARTE   total=12 semAviso=0
 
 ---
 
+## Confirmação independente
+
+As duas manchetes desta leva foram reconferidas pelo coordenador, com sonda própria rodada em
+`origin/main` (`c22b588`), relógio fixo 20/08/2026 10:00:
+
+```
+N1|tomei                    |intent=Capture
+N1|tomei o remédio          |intent=Capture
+N1|já tomei o remédio       |intent=Complete(target=remedio)   <- controle
+N4|meio-dia e um quarto     |time=12:00 title="Tomar remédio quarto" qc=true amb=false
+N4|meio-dia e meia          |time=12:30 title="Tomar remédio"        <- controle
+N4|um quarto pras três      |time=null  title="Tomar remédio quarto pras três"
+N4|metformina 850           |title="Tomar metformina"
+```
+
+---
+
 ## PENDENTE: (decisões de produto, não bug)
 
 1. **N1** — aceitar o verbo em primeira pessoa no passado (`tomei`) **só quando o alvo casa com a
@@ -225,3 +344,11 @@ ORACLE_REPARTE   total=12 semAviso=0
 3. **N8** — manter `todo dia 5` como diário (regra presa por teste) ou tornar mensal? Recomendação:
    manter e só limpar o resíduo de `primeiro`, porque mudar a regra regride o teste de `:555`.
 4. **N9** — depende de o #68 landar. Abrir em cima depois.
+5. **F1 (o alarme não fala)** — é a decisão de maior impacto desta leva, porque é a que dá endereço
+   à queixa literal do dono. Um alarme de remédio que toca o plim padrão **uma vez** e não insiste
+   não é um alarme. Recomendação: voz (TTS `pt-BR`, "está na hora do remédio") **e** som próprio no
+   canal, com `setOngoing` para o aviso não sair por swipe. Precisa do dono bater o martelo sobre o
+   que a voz deve dizer.
+6. **F3** — o texto do onboarding promete "pode atrasar alguns minutos" quando a permissão de alarme
+   exato é negada. Sob Doze o atraso não tem esse teto. Recomendação: ou prometer o que acontece, ou
+   insistir na permissão.

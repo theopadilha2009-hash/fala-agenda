@@ -8,6 +8,7 @@ import com.theopadilha.falaagenda.TestViewModelScopeRule
 import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.data.repo.SaveResult
 import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.domain.model.OccurrenceIds
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
@@ -323,6 +324,57 @@ class HomeStatusMessageTest {
         esperaAGravacaoTerminar()
 
         assertThat(viewModel.statusMessage.value!!.text).contains("Vai avisar")
+    }
+
+    /**
+     * O remédio de todo dia que não foi avisado: o "Fazer hoje" arma a dose e responde, em vez
+     * de a tela só oferecer "Concluir".
+     *
+     * A série não é remarcada — o que ganha alarme é a ocorrência do dia aberto (hoje, se a
+     * hora da rotina ainda não passou; senão amanhã), e o `startLocalDate` fica onde estava.
+     * O caso é escrito para os dois ramos: o que se prende é que ALGUMA ocorrência da série
+     * passou a estar pendente com aviso marcado, e que o recado nomeia o dia. Qual data é
+     * depende do relógio de parede, e prender "hoje" daria verde de manhã e vermelho à tarde.
+     */
+    @Test
+    fun oFazerHojeDaRotinaArmaADoseEDizQuando() {
+        val hoje = LocalDate.now()
+        val salvo = runBlocking {
+            container.tasks.saveDraft(
+                recado(data = hoje.minusDays(1)).copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY)),
+            ).also {
+                // O start do processo materializa as próximas datas da mesma série — é assim
+                // que a ocorrência de hoje passa a existir na agenda.
+                container.tasks.rescheduleAll()
+            }
+        }
+        // O cenário do defeito: a dose de hoje ficou sem aviso, e é ela que ela abre.
+        val id = OccurrenceIds.of(salvo.series.id, hoje)
+        runBlocking {
+            val dao = container.db.occurrenceDao()
+            val row = dao.get(id) ?: return@runBlocking
+            dao.upsert(
+                row.copy(
+                    status = OccurrenceStatus.MISSED.name,
+                    missedAtEpochMs = System.currentTimeMillis(),
+                    nextReminderAtEpochMs = null,
+                ),
+            )
+        }
+
+        viewModel.retryMissed(id)
+        esperaAGravacaoTerminar()
+
+        assertThat(viewModel.statusMessage.value!!.text).contains("Vai avisar")
+        // Alguma dose da série ficou pendente com aviso marcado — o caminho que não existia.
+        val armadas = runBlocking {
+            container.db.occurrenceDao().forSeries(salvo.series.id)
+                .filter { it.status == OccurrenceStatus.PENDING.name && it.nextReminderAtEpochMs != null }
+        }
+        assertThat(armadas).isNotEmpty()
+        // A série não foi movida: a rotina continua ancorada onde sempre esteve.
+        assertThat(runBlocking { container.db.seriesDao().get(salvo.series.id) }!!.startLocalDate)
+            .isEqualTo(hoje.minusDays(1).toString())
     }
 
     /**

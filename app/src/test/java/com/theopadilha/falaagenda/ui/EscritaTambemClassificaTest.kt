@@ -8,6 +8,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.TestViewModelScopeRule
 import com.theopadilha.falaagenda.di.AppContainer
+import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
+import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.ui.capture.WriteStep
 import com.theopadilha.falaagenda.ui.capture.writeStepFor
 import com.theopadilha.falaagenda.ui.home.HomeViewModel
@@ -22,6 +24,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.time.LocalDate
+import java.time.LocalTime
 
 /**
  * A tela "Escrever tarefa" passa pela MESMA classificação de intenção que a fala da home.
@@ -116,6 +120,69 @@ class EscritaTambemClassificaTest {
         assertThat(agenda.today + agenda.upcoming).isEmpty()
         assertThat(proximoRecado()).contains("Ainda não sei apagar")
     }
+
+    /**
+     * "apaga o remédio" pela porta da escrita, com a rotina na agenda: é comando, a tarefa sai
+     * e a rota "write" sai da frente para ela ver o desfecho na home. Sem o pop, a resposta
+     * ficaria publicada numa tela que não está visível.
+     */
+    @Test
+    fun apagarPeloNomeEscritoApagaENaoCriaTarefa() {
+        val nav = navEspiao()
+        val salvo = runBlocking { container.tasks.saveDraft(recado("Tomar remédio", LocalDate.now().plusDays(1))) }
+
+        confirmWrite(nav, viewModel, "apaga o remédio")
+
+        assertThat(nav.pops).isEqualTo(1)
+        // A resolução do alvo lê o banco: espera a exclusão aterrissar antes de olhar a agenda.
+        runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                var atual = agenda()
+                while (atual.find(salvo.occurrence.id) != null) {
+                    kotlinx.coroutines.delay(20)
+                    atual = agenda()
+                }
+            }
+        }
+        assertThat(agenda().find(salvo.occurrence.id)).isNull()
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+    }
+
+    /**
+     * O outro lado: "apaga a luz" sem alvo na agenda é um RECADO, e a tarefa nasce.
+     *
+     * A decisão de comando-vs-recado do `EraseNamed` depende da agenda, e a leitura do banco é
+     * assíncrona — `confirmWrite` não pode esperar por ela. Então o `understandSpeech` devolve
+     * "comando" (a rota sai da frente, como em `Cancel`) e, quando não há alvo, o rascunho
+     * volta pela sessão e a HOME o leva para a confirmação. O destino dela é o mesmo; o que
+     * importa é que a tarefa não seja engolida.
+     */
+    @Test
+    fun apagarPeloNomeSemAlvoEscritoViraRecadoNaConfirmacao() {
+        val nav = navEspiao()
+
+        confirmWrite(nav, viewModel, "apaga a luz")
+
+        assertThat(nav.pops).isEqualTo(1)
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("luz")
+    }
+
+    private fun recado(titulo: String, data: LocalDate) = ParsedTaskDraft(
+        title = titulo,
+        localDate = data,
+        localTime = LocalTime.of(8, 30),
+        recurrence = RecurrenceRule(),
+        confidence = 1.0,
+        missingFields = emptySet(),
+        ambiguous = false,
+        transcript = titulo,
+    )
 
     // --- o recado escrito continua indo para a confirmação --------------------------
 

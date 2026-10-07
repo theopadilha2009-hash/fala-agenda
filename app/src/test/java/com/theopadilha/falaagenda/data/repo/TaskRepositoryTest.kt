@@ -571,17 +571,170 @@ class TaskRepositoryTest {
         assertThat(fresh.status).isEqualTo(OccurrenceStatus.PENDING.name)
     }
 
+    /**
+     * A rotina NÃO é remarcada: o "Fazer hoje" de uma recorrente arma a dose do dia, e o
+     * `startLocalDate` da série continua onde estava. Mover a série — o que o caminho da tarefa
+     * única faz — mudaria o dia de todas as doses seguintes, e o remédio de todo dia passaria a
+     * tocar noutra data.
+     */
     @Test
-    fun retryMissedIgnoraRecorrente() = runBlocking {
+    fun retryMissedDeRecorrenteNaoMoveASerie() = runBlocking {
         val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0))
             .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
         val saved = repo.saveDraft(draft)
         val pending = occurrenceDao.getAll().single()
         occurrenceDao.upsert(pending.copy(status = OccurrenceStatus.MISSED.name, missedAtEpochMs = clock.instant().toEpochMilli()))
-        val result = repo.retryMissed(pending.id)
-        assertThat(result).isNull()
-        assertThat(occurrenceDao.get(pending.id)!!.status).isEqualTo(OccurrenceStatus.MISSED.name)
+
+        repo.retryMissed(pending.id)
+
+        assertThat(seriesDao.get(saved.series.id)!!.startLocalDate).isEqualTo("2026-08-19")
         assertThat(saved.series.recurrence.kind).isEqualTo(RecurrenceKind.DAILY)
+    }
+
+    /**
+     * O remédio de todo dia que não foi avisado tem por onde tocar HOJE.
+     *
+     * A dose perdida de uma rotina só oferecia "Concluir" — que registra a dose passada como
+     * feita e não arma nada. O `retryMissed` recusava a recorrente (`isRecurring`), então não
+     * havia caminho nenhum para o aviso do dia. Aqui a ocorrência não realizada de hoje
+     * (mesma série diária) é que é aberta, e o que ela pede é o aviso de hoje — não remarcar a
+     * série para outro dia (isso é o "Fazer hoje" da tarefa única, outra coisa).
+     *
+     * A série não é movida: a rotina já tem as datas dela, e mover o `startLocalDate` mudaria o
+     * dia de todas as doses seguintes. Quem ganha alarme é a ocorrência de hoje.
+     */
+    @Test
+    fun retryMissedDeRecorrenteArmaODeHoje() = runBlocking {
+        // Série diária das 11:00, ancorada em 19/08. O relógio do teste marca 20/08 às 10:00, e
+        // o horário das 11:00 ainda não passou — a data aberta é hoje, e o alarme nasce futuro.
+        val hoje = LocalDate.of(2026, 8, 20)
+        val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 19), LocalTime.of(11, 0))
+            .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+        val saved = repo.saveDraft(draft)
+        val id = OccurrenceIds.of(saved.series.id, hoje)
+        // O cenário do defeito: a dose de hoje ficou sem aviso — a ocorrência existe, não
+        // realizada, e sem alarme nenhum.
+        occurrenceDao.upsert(
+            OccurrenceLifecycle.materialize(saved.series, hoje, clock.instant()).copy(
+                status = OccurrenceStatus.MISSED,
+                missedAt = clock.instant(),
+                nextReminderAt = null,
+            ).toEntity(),
+        )
+        scheduler.scheduled.clear()
+
+        val result = repo.retryMissed(id)
+
+        assertThat(result).isNotNull()
+        assertThat(result!!.date).isEqualTo(hoje)
+        val armada = occurrenceDao.get(id)!!
+        assertThat(armada.status).isEqualTo(OccurrenceStatus.PENDING.name)
+        assertThat(armada.nextReminderAtEpochMs).isNotNull()
+        assertThat(scheduler.scheduled).contains(id)
+        // A série não foi mexida: a rotina continua ancorada onde sempre esteve.
+        assertThat(seriesDao.get(saved.series.id)!!.startLocalDate).isEqualTo("2026-08-19")
+    }
+
+    /**
+     * Quem avança a data aberta até a regra é o motor — não uma segunda conta aqui.
+     *
+     * "Dias úteis" com a data aberta caindo no sábado: a dose tem de ser armada na SEGUNDA. Sem
+     * isso o alarme nasce no sábado, um dia em que a rotina não existe, e o app toca num dia que
+     * não é dela. A série diária (a do teste acima) não prende nada disso: ali o motor é a
+     * identidade, e o `firstOnOrAfter` passa despercebido.
+     */
+    @Test
+    fun retryMissedDeDiasUteisArmaNaSegunda() = runBlocking {
+        // Sexta 21/08 às 10:00, série de dias úteis às 09:00 — o horário de hoje já passou, e a
+        // data aberta do `RetryPolicy` é sábado 22/08.
+        val sexta = FixedAppClock(
+            LocalDateTime.of(2026, 8, 21, 10, 0).atZone(zone).toInstant(),
+            zone,
+        )
+        val repoDaSexta = TaskRepository(seriesDao, occurrenceDao, sexta, scheduler)
+        val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 19), LocalTime.of(9, 0))
+            .copy(recurrence = RecurrenceRule(RecurrenceKind.WEEKDAYS))
+        val saved = repoDaSexta.saveDraft(draft)
+        val sextaId = OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 21))
+        occurrenceDao.upsert(
+            OccurrenceLifecycle.materialize(saved.series, LocalDate.of(2026, 8, 21), sexta.instant())
+                .copy(status = OccurrenceStatus.MISSED, missedAt = sexta.instant(), nextReminderAt = null)
+                .toEntity(),
+        )
+        scheduler.scheduled.clear()
+
+        val result = repoDaSexta.retryMissed(sextaId)
+
+        assertThat(result).isNotNull()
+        assertThat(result!!.date).isEqualTo(LocalDate.of(2026, 8, 24))
+        assertThat(result.date.dayOfWeek).isEqualTo(java.time.DayOfWeek.MONDAY)
+        assertThat(scheduler.scheduled).contains(OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 24)))
+    }
+
+    /**
+     * Arma UMA dose, não duas.
+     *
+     * O ramo que faz nascer a dose nova é o único que arma: a dose de ontem continua não
+     * realizada e não ganha alarme nenhum. Um armamento a mais faria o celular apitar duas vezes
+     * pela mesma rotina.
+     */
+    @Test
+    fun retryMissedArmaExatamenteUmaDose() = runBlocking {
+        val hoje = LocalDate.of(2026, 8, 20)
+        val draft = completeDraft("Remédio", LocalDate.of(2026, 8, 19), LocalTime.of(11, 0))
+            .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+        val saved = repo.saveDraft(draft)
+        val id = OccurrenceIds.of(saved.series.id, hoje)
+        occurrenceDao.upsert(
+            OccurrenceLifecycle.materialize(saved.series, hoje, clock.instant()).copy(
+                status = OccurrenceStatus.MISSED,
+                missedAt = clock.instant(),
+                nextReminderAt = null,
+            ).toEntity(),
+        )
+        scheduler.scheduled.clear()
+        // O preview do `saveDraft` já armou as doses seguintes: o que este teste mede é o que a
+        // chamada abaixo arma, e nada mais.
+        scheduler.armed.clear()
+
+        repo.retryMissed(id)
+
+        assertThat(scheduler.scheduled).containsExactly(id)
+        assertThat(scheduler.armed).hasSize(1)
+    }
+
+    /**
+     * A dose que o aviso não alcançou continua NÃO REALIZADA depois do "Fazer hoje".
+     *
+     * Ela não tomou aquele dia, e reescrever a linha como pendente seria mentir no histórico: a
+     * seção "Não realizadas" perderia a dose perdida e o registro passaria a dizer que ela
+     * esteve de pé o tempo todo. O que o "Fazer hoje" muda é só a dose NOVA, que nasce pendente.
+     */
+    @Test
+    fun retryMissedMantemADosePerdidaNaoRealizada() = runBlocking {
+        // Diária das 11:00 ancorada em 19/08; relógio em 20/08 às 10:00. A dose perdida é a de
+        // 19/08 e a data aberta é hoje, 20/08 — datas diferentes, que é o que separa o registro
+        // da dose nova.
+        val perdida = LocalDate.of(2026, 8, 19)
+        val draft = completeDraft("Remédio", perdida, LocalTime.of(11, 0))
+            .copy(recurrence = RecurrenceRule(RecurrenceKind.DAILY))
+        val saved = repo.saveDraft(draft)
+        val perdidaId = OccurrenceIds.of(saved.series.id, perdida)
+        occurrenceDao.upsert(
+            OccurrenceLifecycle.materialize(saved.series, perdida, clock.instant()).copy(
+                status = OccurrenceStatus.MISSED,
+                missedAt = clock.instant(),
+                nextReminderAt = null,
+            ).toEntity(),
+        )
+        scheduler.scheduled.clear()
+
+        val result = repo.retryMissed(perdidaId)
+
+        assertThat(result!!.date).isEqualTo(LocalDate.of(2026, 8, 20))
+        assertThat(occurrenceDao.get(perdidaId)!!.status).isEqualTo(OccurrenceStatus.MISSED.name)
+        assertThat(occurrenceDao.get(OccurrenceIds.of(saved.series.id, LocalDate.of(2026, 8, 20)))!!.status)
+            .isEqualTo(OccurrenceStatus.PENDING.name)
     }
 
     @Test

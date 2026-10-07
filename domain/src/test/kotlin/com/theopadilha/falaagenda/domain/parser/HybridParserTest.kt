@@ -474,4 +474,62 @@ class HybridParserTest {
         assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
         assertThat(draft.notes.joinToString()).doesNotContain("já passaram")
     }
+
+    /**
+     * F-2: a nota de **data ilegível** da IA sobrevive ao merge quando ela é verdadeira — o
+     * rascunho final fica mesmo sem data.
+     *
+     * A nota nasce na fronteira (`ParseResponse.toDraft`, quando `local_date` não é um `LocalDate`)
+     * e o merge a carrega em `remotoDraft.notes`. O risco medido é o `notasDomescladas`: ele
+     * **descarta** as notas do local sobre a data quando a IA traz a data, e a peça já regrediu
+     * antes (uma nota nova do parser ficava de fora da lista de desmentidas).
+     *
+     * O que este teste prende é o par: a nota fica **e** o campo falta. Uma nota de perda ao lado
+     * do campo preenchido é a contradição visível que a caixa de confirmação rápida mostraria no
+     * caminho de um toque ("Vai avisar 25 de outubro" com "Ficou sem essa parte" em vermelho logo
+     * abaixo). Por isso a fala local não traz data: `"às 9h"` dá hora e não dá dia, a IA devolve
+     * `local_date = null` (ilegível), e o final fica sem data — que é exatamente o caso em que a
+     * frase da IA é verdadeira. Se o merge a suprimisse aqui, ela perderia o aviso de que a ajuda
+     * extra errou essa parte sem nada no lugar.
+     *
+     * O outro teste da nota (`RespostaDaIaForaDaFaixaTest.dataQueNaoDaParaLerViraAusenteEAvisa`)
+     * para no cliente: este é o que prova que a frase atravessa o merge até o rascunho final.
+     */
+    @Test
+    fun aNotaDeDataIlegivelFicaQuandoOFinalRealmenteFicouSemData() = runBlocking {
+        val notaDaData = "A ajuda extra devolveu uma data que não deu para entender. Ficou sem essa parte."
+        val remoto = object : RemoteDraftParser {
+            override suspend fun parse(
+                transcript: String,
+                nowIso: String,
+                timezone: String,
+                locale: String,
+            ): ParsedTaskDraft = ParsedTaskDraft(
+                title = "",
+                localDate = null,
+                localTime = LocalTime.of(8, 0),
+                confidence = 0.9,
+                missingFields = emptySet(),
+                ambiguous = false,
+                transcript = transcript,
+                notes = listOf(notaDaData),
+                source = DraftSource.AI,
+            )
+        }
+        val hybrid = HybridParser(
+            local = local,
+            clock = clock,
+            remote = remoto,
+            network = NetworkStatus { true },
+            isAiEnabled = { true },
+        )
+        val draft = hybrid.parse("tomar remédio às 9h")
+
+        // O par que define a nota como verdadeira: o campo faltou de verdade…
+        assertThat(draft.localDate).isNull()
+        // …e a frase que avisa a perda está lá.
+        assertThat(draft.notes).contains(notaDaData)
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(draft.notes.joinToString()).doesNotContain("Falta o horário")
+    }
 }

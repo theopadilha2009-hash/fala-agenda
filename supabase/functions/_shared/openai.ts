@@ -13,8 +13,12 @@ export const PARSED_TASK_SCHEMA = {
   ],
   properties: {
     title: { type: "string" },
-    local_date: { type: ["string", "null"] },
-    local_time: { type: ["string", "null"] },
+    // O formato fecha a porta do outro lado do app: `local_date` já foi "21/08/2026" e
+    // `local_time` já foi "9h", e o `LocalDate.parse` do cliente estourava com os dois. O
+    // `format` é a fronteira que fala a mesma língua do `DateTimeFormatter.ISO_*` do Kotlin —
+    // o fix no cliente continua sendo a rede, não a única guarda.
+    local_date: { type: ["string", "null"], format: "date" },
+    local_time: { type: ["string", "null"], format: "time" },
     recurrence: {
       type: "object",
       additionalProperties: false,
@@ -25,8 +29,12 @@ export const PARSED_TASK_SCHEMA = {
           enum: ["NONE", "DAILY", "WEEKDAYS", "WEEKLY", "MONTHLY", "YEARLY"],
         },
         week_days: { type: "array", items: { type: "string" } },
-        day_of_month: { type: ["integer", "null"] },
-        month_of_year: { type: ["integer", "null"] },
+        // As faixas que faltavam. Sem elas o modelo devolveu `month_of_year = 13` — troca de
+        // base ou alucinação — e o `YearMonth.of` do app derrubava a home. É defesa em
+        // profundidade: o cliente valida de novo, porque uma resposta em cache ou de outro
+        // provedor não passa por este schema.
+        day_of_month: { type: ["integer", "null"], minimum: 1, maximum: 31 },
+        month_of_year: { type: ["integer", "null"], minimum: 1, maximum: 12 },
       },
     },
     confidence: { type: "number" },

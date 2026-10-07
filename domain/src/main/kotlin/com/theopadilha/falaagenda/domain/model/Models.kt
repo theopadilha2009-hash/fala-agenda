@@ -24,6 +24,47 @@ data class RecurrenceRule(
 ) {
     val isRecurring: Boolean get() = kind != RecurrenceKind.NONE
 
+    /** O dia que a regra descreve: só existe de 1 a 31. Fora disso é dado de fora, não um pedido. */
+    private val diaUtilizavel: Int? get() = dayOfMonth?.takeIf { it in 1..31 }
+
+    /** O mês que a regra descreve: só existe de 1 a 12. */
+    private val mesUtilizavel: Int? get() = monthOfYear?.takeIf { it in 1..12 }
+
+    /**
+     * A regra tem os campos que a sua descrição precisa?
+     *
+     * `MONTHLY` sem dia e `YEARLY` sem mês ou sem dia **não são recorrências** — são metade de
+     * uma, e a metade que falta é justamente a que a frase da tela precisa dizer. Quem pergunta
+     * isto é a fronteira da IA (`SupabaseFunctions.toDraft`), para rebaixar a regra a `NONE` em
+     * vez de deixá-la chegar à tela como texto quebrado.
+     *
+     * A pergunta é uma só e mora aqui, e não escrita de novo em cada lugar que a consulta: a
+     * versão anterior tinha a condição do `YEARLY` copiada na fronteira, e o `MONTHLY` ficou de
+     * fora dela — o mesmo defeito, por outro `kind`.
+     */
+    val isCoherent: Boolean
+        get() = when (kind) {
+            RecurrenceKind.MONTHLY -> diaUtilizavel != null
+            RecurrenceKind.YEARLY -> diaUtilizavel != null && mesUtilizavel != null
+            else -> true
+        }
+
+    /**
+     * A descrição é a **única origem do `"?"`** que aparecia na tela dela — e por isso a
+     * invariante mora aqui, no ponto que renderiza, e não em quem produz a regra.
+     *
+     * Dois caminhos provaram isso: a regra anual sem mês (`"Todo 5 de ?"`) e a mensal sem dia
+     * (`"Todo dia ? do mês"`), a segunda conformante ao schema do LLM — `day_of_month` é
+     * `["integer","null"]` e `minimum`/`maximum` não mordem em `null`, então nem é preciso o
+     * modelo alucinar. Um tipo que tornasse o estado inconstruível fecharia o caminho de
+     * entrada, mas **não** o dado já gravado: `SeriesEntity.toDomain()` lê `recurrenceKind`/
+     * `dayOfMonth` do banco sem validar, e uma linha antiga com `MONTHLY` sem dia continua
+     * chegando aqui. Só um guard no renderizador fecha os dois.
+     *
+     * A regra incoerente cai na descrição da **cadência**, sem inventar o campo que falta: a
+     * série realmente repete todo mês (o motor usa o dia do início da série, ver
+     * `RecurrenceEngine.firstOnOrAfter`), então dizer "Sem repetição" seria a mentira oposta.
+     */
     fun describePtBr(): String = when (kind) {
         RecurrenceKind.NONE -> "Única"
         RecurrenceKind.DAILY -> "Todos os dias"
@@ -32,10 +73,11 @@ data class RecurrenceRule(
             val names = weekDays.sortedBy { it.value }.joinToString(" e ") { it.toPtBr() }
             if (names.isBlank()) "Semanal" else "Toda $names"
         }
-        RecurrenceKind.MONTHLY -> "Todo dia ${dayOfMonth ?: "?"} do mês"
+        RecurrenceKind.MONTHLY -> diaUtilizavel?.let { "Todo dia $it do mês" } ?: "Todo mês"
         RecurrenceKind.YEARLY -> {
-            val month = monthOfYear?.toMonthPtBr() ?: "?"
-            "Todo ${dayOfMonth ?: "?"} de $month"
+            val dia = diaUtilizavel
+            val mes = mesUtilizavel?.toMonthPtBr()
+            if (dia == null || mes == null) "Todo ano" else "Todo $dia de $mes"
         }
     }
 }

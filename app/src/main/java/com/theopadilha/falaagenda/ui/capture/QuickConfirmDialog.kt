@@ -93,6 +93,14 @@ fun QuickConfirmDialog(
                         Text(linha, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
+                // A nota do que a IA devolveu e o app descartou. A tela de confirmação já as
+                // mostrava (`ConfirmDraftScreen`), e a caixa rápida — o caminho em que o
+                // salvamento é silencioso, sem passar por tela nenhuma — não: a nota que explica
+                // o descarte era justamente a que ela nunca via. Mesmo tom e mesmo lugar da outra
+                // tela, logo abaixo do que a nota explica.
+                draft.notes.forEach { nota ->
+                    Text(nota, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                }
                 draft.amountCents?.let {
                     Text(Money.formatReais(it), style = MaterialTheme.typography.bodyLarge)
                 }

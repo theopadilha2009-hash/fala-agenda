@@ -10,6 +10,8 @@ import com.theopadilha.falaagenda.data.prefs.ThemeMode
 import com.theopadilha.falaagenda.data.remote.ActivationClient
 import com.theopadilha.falaagenda.di.AppContainer
 import com.theopadilha.falaagenda.domain.model.QuietHours
+import com.theopadilha.falaagenda.speech.OfflineModelInstaller
+import com.theopadilha.falaagenda.speech.OfflineVoiceStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,9 +37,20 @@ internal class SettingsViewModel(
     private val settings: SettingsStore,
     private val activation: ActivationClient,
     private val tokens: SecureTokenStore,
+    private val installer: OfflineModelInstaller,
 ) : ViewModel() {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /**
+     * Repassa o estado do instalador para a tela.
+     *
+     * Aqui é um `StateFlow` direto, e não uma cópia que o ViewModel reconsulta: quem sabe
+     * o que aconteceu com o modelo é o instalador, que é um só no processo. Um retrato
+     * tirado na criação do ViewModel ficaria velho — o download pode começar e terminar
+     * com a tela de ajustes aberta.
+     */
+    val voiceOffline: StateFlow<OfflineVoiceStatus> = installer.status
 
     /** Do ViewModel, e não da tela: girar no meio de duas gravações não as solta uma da outra. */
     private val writeLock = Mutex()
@@ -112,6 +125,7 @@ internal class SettingsViewModel(
                             settings = container.settings,
                             activation = container.activation,
                             tokens = container.tokenStore,
+                            installer = container.offlineModel,
                         ) as T
                     }
                     throw IllegalArgumentException("Unknown ViewModel ${modelClass.name}")

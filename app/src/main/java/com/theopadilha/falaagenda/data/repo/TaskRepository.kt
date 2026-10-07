@@ -473,13 +473,24 @@ class TaskRepository(
         EditOutcome.SAVED
     }
 
+    /**
+     * "Fazer hoje" de uma ocorrência não realizada: arma o próximo horário de relógio ainda
+     * aberto.
+     *
+     * A tarefa única é MOVIDA para lá — a série não repete, então não há outra data para ela.
+     * A que REPETE não é movida: a rotina já tem as datas dela, e mover a série mudaria o dia
+     * de todas as doses seguintes. O que se arma é a dose daquele dia, que é a próxima aberta
+     * (hoje, se o horário ainda não passou; senão amanhã) — ver [rearmNextOpenDose]. Sem este
+     * ramo, o remédio de todo dia que não foi avisado só oferecia "Concluir", que registra a
+     * dose passada como feita e não faz nada tocar.
+     */
     suspend fun retryMissed(occurrenceId: String): RetryResult? = writer.withLock {
         val now = clock.instant()
         val row = occurrenceDao.get(occurrenceId) ?: return@withLock null
         val series = seriesDao.get(row.seriesId)?.toTaskSeries() ?: return@withLock null
         val occurrence = row.toDomain()
         if (occurrence.status != OccurrenceStatus.MISSED) return@withLock null
-        if (series.recurrence.isRecurring) return@withLock null
+        if (series.recurrence.isRecurring) return@withLock rearmNextOpenDose(series, now)
         val date = RetryPolicy.nextOpenDate(clock.today(), series.localTime, now, series.zoneId)
         scheduler.cancel(occurrence.id)
         val updatedSeries = series.copy(
@@ -497,6 +508,44 @@ class TaskRepository(
             deleteSeriesRow = false,
         )
         RetryResult(date = date, time = series.localTime)
+    }
+
+    /**
+     * A dose da rotina que ainda dá para avisar: a data aberta (hoje, se o horário não passou;
+     * senão amanhã) ajustada à regra — "dias úteis" com a data aberta no sábado cai na segunda,
+     * e quem avança é o motor da regra, não uma segunda conta aqui.
+     *
+     * A série não é tocada: o `startLocalDate` continua onde estava, porque a rotina não foi
+     * remarcada — o que ganha alarme é a ocorrência daquela data. A dose que não foi avisada
+     * continua não realizada (ela não tomou aquele dia, e reescrever isso seria mentir no
+     * histórico).
+     *
+     * Nulo quando não há o que armar: data excluída (o tombstone vale aqui como em todo lugar) e
+     * data que já está concluída ou cancelada — reabrir seria desfazer o que ela registrou.
+     *
+     * A data "não realizada" É alvo, e é o caso central: ela é exatamente a dose que o aviso não
+     * alcançou, e não há registro dela para desfazer. Reabrir essa é o pedido.
+     */
+    private suspend fun rearmNextOpenDose(series: TaskSeries, now: Instant): RetryResult? {
+        val aberto = RetryPolicy.nextOpenDate(clock.today(), series.localTime, now, series.zoneId)
+        val date = RecurrenceEngine.firstOnOrAfter(series.recurrence, series.startLocalDate, aberto)
+            ?: return null
+        if (series.isSkipped(date)) return null
+        val existing = occurrenceDao.get(OccurrenceIds.of(series.id, date))?.toDomain()
+        when {
+            // Viva: o alarme é (re)armado com o estado que ela já tinha — o `materialize` com
+            // a existente preserva adiamento e degrau, e um aviso já marcado para o futuro
+            // continua o mesmo.
+            existing != null && existing.status == OccurrenceStatus.PENDING ->
+                storeAndArm(OccurrenceLifecycle.materialize(series, date, now, existing), series, now)
+            // Concluída ou cancelada naquele dia: reabrir seria desfazer o que ela registrou.
+            existing != null && existing.status != OccurrenceStatus.MISSED -> return null
+            // Sem linha, ou "não realizada": nasce/reabre agora, armada. A data vem de `aberto`
+            // (hoje com o horário ainda por vir, ou amanhã), então o instante é futuro e o
+            // `storeAndArm` tem o que armar — nenhum alarme nasce no passado.
+            else -> storeAndArm(OccurrenceLifecycle.materialize(series, date, now), series, now)
+        }
+        return RetryResult(date = date, time = series.localTime)
     }
 
     suspend fun snooze(occurrenceId: String, minutes: Long = 30): ActionOutcome = writer.withLock {

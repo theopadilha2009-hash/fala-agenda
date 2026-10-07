@@ -11,11 +11,41 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
 private const val TAG = "FalaAgendaOffline"
+
+/**
+ * O que o app sabe sobre a voz offline do celular, para poder contar.
+ *
+ * Antes disto o instalador devolvia um `Boolean` e o motivo ia só para o `Log.w`: não
+ * havia como a tela de ajustes dizer o que estava acontecendo, nem como quem atende o
+ * telefone diagnosticar à distância. O estado sai do que o download realmente sabe —
+ * começou, terminou, ou não deu —, e não de uma porcentagem: o corpo do OkHttp não
+ * reporta quanto já chegou, então qualquer número aqui seria inventado.
+ *
+ * [Falhou.motivo] não vai para a tela. Quem lê é uma pessoa idosa, e "a rede caiu" não
+ * diz a ela o que fazer; o que a tela mostra é a frase de [voiceOfflineMessage]. O motivo
+ * é o rastro do diagnóstico — o mesmo que vai para o log.
+ */
+sealed interface OfflineVoiceStatus {
+    /** Nunca tentou, ou tentou e o modelo não ficou. O motor do sistema é quem ouve. */
+    data object NaoInstalado : OfflineVoiceStatus
+
+    /** O download está de pé. São 31 MB: este é o estado que ela mais vai ver. */
+    data object Instalando : OfflineVoiceStatus
+
+    /** O modelo está no disco e a escuta seguinte já é a offline. */
+    data object Pronto : OfflineVoiceStatus
+
+    /** A tentativa não chegou ao fim. A próxima é o próximo pedido de voz. */
+    data class Falhou(val motivo: String) : OfflineVoiceStatus
+}
 
 /**
  * Baixa o modelo do Vosk e instala em `filesDir`. Mesmo molde do AppUpdater: host
@@ -43,6 +73,23 @@ class OfflineModelInstaller(
     private val emCurso = AtomicBoolean(false)
 
     /**
+     * O disco é a resposta de partida, e não um `NaoInstalado` fixo: o modelo também chega
+     * por fora do app (`scripts/vosk-model.sh`, o envio por USB), e um estado que só se
+     * atualizasse quando o download é nosso ficaria dizendo "não preparada" com o modelo
+     * já no lugar. Uma leitura de diretório na construção é barata e acerta esse caso.
+     */
+    private val _status = MutableStateFlow(estadoInicial())
+
+    /**
+     * O que a tela de ajustes mostra. É derivado do que o instalador de fato sabe —
+     * nenhum progresso percentual, porque o download não sabe dele.
+     */
+    val status: StateFlow<OfflineVoiceStatus> = _status.asStateFlow()
+
+    private fun estadoInicial(): OfflineVoiceStatus =
+        if (VoskModel.isInstalled(context)) OfflineVoiceStatus.Pronto else OfflineVoiceStatus.NaoInstalado
+
+    /**
      * Pede o modelo sem segurar quem chamou, e devolve o trabalho iniciado — ou `null`
      * quando não é para baixar agora.
      *
@@ -63,8 +110,16 @@ class OfflineModelInstaller(
         source: String = SOURCE_URL,
         sha256: String = SHA256,
     ): Job? {
-        if (VoskModel.isInstalled(context)) return null
+        if (VoskModel.isInstalled(context)) {
+            // O modelo pode ter chegado por fora do app desde a última consulta. Sem esta
+            // linha a tela seguiria dizendo "ainda não foi preparada" com ele no lugar.
+            _status.value = OfflineVoiceStatus.Pronto
+            return null
+        }
         if (!emCurso.compareAndSet(false, true)) return null
+        // Antes do `launch`: quem olhar a tela agora vê que o download está de pé, e não
+        // o "não instalado" de antes — que era a única coisa que existia para mostrar.
+        _status.value = OfflineVoiceStatus.Instalando
         val job = scope.launch {
             try {
                 installIfNeeded(source, sha256)
@@ -79,7 +134,13 @@ class OfflineModelInstaller(
         // a trava — que é do processo, não da escuta — ficaria presa pelo resto da vida dele.
         // Todo pedido seguinte devolveria `null` sem dizer nada, e o modelo nunca chegaria.
         // Trabalho que não está de pé não segura a trava.
-        if (!job.isActive) emCurso.set(false)
+        //
+        // O estado volta junto e pelo mesmo motivo: "estamos preparando a voz" para um
+        // download que nunca vai existir é a mesma mentira que o `null` sem explicação.
+        if (!job.isActive) {
+            emCurso.set(false)
+            _status.value = estadoInicial()
+        }
         return job
     }
 
@@ -88,7 +149,10 @@ class OfflineModelInstaller(
         source: String = SOURCE_URL,
         sha256: String = SHA256,
     ): Boolean {
-        if (VoskModel.isInstalled(context)) return true
+        if (VoskModel.isInstalled(context)) {
+            _status.value = OfflineVoiceStatus.Pronto
+            return true
+        }
         val zip = File(cacheDir(context), ZIP_NAME)
         val staging = File(context.filesDir, STAGING_NAME)
         return try {
@@ -103,12 +167,19 @@ class OfflineModelInstaller(
             val destino = VoskModel.dir(context)
             destino.deleteRecursively()
             if (!baixado.renameTo(destino)) error("não deu para guardar o modelo")
+            _status.value = OfflineVoiceStatus.Pronto
             true
         } catch (erro: Exception) {
             // Modelo pela metade nunca fica passando por bom: o próximo pedido de voz
             // tenta de novo. E o motivo vai para o log — sem ele, o modelo que nunca
             // chegou não conta a ninguém por quê, e a fala fica no motor do sistema
             // sem que ninguém saiba que era para ser offline.
+            //
+            // O mesmo motivo vira estado: o log só serve a quem tem o aparelho na mão, e
+            // quem atende o telefone dela não tem. `motivo` não aparece na tela — a frase
+            // de lá é a de [voiceOfflineMessage] —, mas é o rastro que separa "não tinha
+            // rede" de "veio um arquivo trocado".
+            _status.value = OfflineVoiceStatus.Falhou(erro.message ?: "não deu para preparar")
             Log.w(TAG, "o modelo da fala offline não chegou; a escuta segue no motor do sistema", erro)
             false
         } finally {

@@ -5,13 +5,31 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.theopadilha.falaagenda.R
 
 object NotificationHelper {
-    const val CHANNEL_ID = "fala_agenda_reminders"
+    /**
+     * O canal dos lembretes. O id mudou junto com o som, e isso é a migração, não uma renomeação:
+     * um canal já criado **não muda de som** — o sistema só aceita nome e descrição de uma criação
+     * repetida — e apagar para recriar com o mesmo id também não resolve, porque o sistema
+     * **restaura as configurações anteriores do canal apagado** quando um canal com o mesmo id
+     * volta a nascer. O aparelho dela tem o canal antigo ([LEGACY_CHANNEL_ID]) gravado, com o som
+     * padrão de notificação e possivelmente com o som que ela pôs em "Nenhum"; um id novo é o único
+     * jeito de ele passar a tocar o som de alarme. Sem isso o fix valeria só em instalação limpa.
+     */
+    const val CHANNEL_ID = "fala_agenda_alarmes"
+
+    /**
+     * O canal anterior. Fica aqui como fato histórico do aparelho, e não como constante de uso: o
+     * [ensureChannel] apaga este id porque ele é o canal mudo que a versão antiga criou, e deixá-lo
+     * nas configurações dela só ofereceria um "Lembretes" silencioso para escolher por engano.
+     */
+    private const val LEGACY_CHANNEL_ID = "fala_agenda_reminders"
 
     private const val TAG = "NotificationHelper"
 
@@ -32,19 +50,47 @@ object NotificationHelper {
      *
      * [OFF] é "nada aparece": a permissão negada ou o canal DESLIGADO nas configurações — os
      * dois terminam em [ReminderDelivery.BLOCKED], e o degrau da escada fica sem entrega.
-     * [QUIET] é o canal rebaixado: a notificação sai, mas muda, e para quem depende dela ser
-     * lembrada isso é quase o mesmo que não sair.
+     * [QUIET] é o canal mudo: a notificação sai, mas não faz barulho, e para quem depende dela ser
+     * lembrada isso é quase o mesmo que não sair. São dois caminhos até aqui — o canal rebaixado
+     * nas configurações e o canal que continua alto com o som posto em "Nenhum" —, e o segundo é
+     * o que passava como saudável.
      */
     enum class ReminderAlerts { OK, OFF, QUIET }
 
+    /**
+     * O canal do lembrete, que é um alarme — e não um aviso de mensagem.
+     *
+     * Antes ele subia sem som próprio, e o único áudio era o plim curto do som padrão de
+     * notificação, que toca uma vez e para: um lembrete das 08:00, na cozinha, com o celular na
+     * sala, não é um alarme. Aqui o canal toca o som de alarme do próprio aparelho
+     * ([RingtoneManager.TYPE_ALARM]) e o `AudioAttributes` sobe em [AudioAttributes.USAGE_ALARM].
+     *
+     * A escolha do som do aparelho, e não de um arquivo empacotado, é de propósito: é o som que ela
+     * já reconhece como despertador, não engorda o APK e continua sendo o que ela escolheria nos
+     * Ajustes. O `USAGE_ALARM` também é o que põe o toque no volume de alarme — e é por isso que o
+     * lembrete **não** é silenciado junto com as notificações comuns, que costumam estar mudas ou
+     * baixas. Pelo mesmo motivo o som vai no canal, e não na notificação: a partir do Android 8 o
+     * som de uma notificação é o do canal, e `setSound` na notificação é ignorado.
+     *
+     * O canal antigo é apagado na passagem (ver [CHANNEL_ID]). Como um canal apagado com o mesmo id
+     * volta com as configurações antigas, a única saída é o id novo — o canal da versão anterior
+     * fica mudo para sempre no aparelho dela.
+     */
     fun ensureChannel(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
+        val somDeAlarme = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        val audioDeAlarme = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
         val channel = NotificationChannel(
             CHANNEL_ID,
             context.getString(R.string.notification_channel),
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = "Avisos de tarefas no horário combinado"
+            setSound(somDeAlarme, audioDeAlarme)
             enableVibration(true)
         }
         manager.createNotificationChannel(channel)
@@ -74,15 +120,23 @@ object NotificationHelper {
      * seriam a home dizendo que está tudo bem enquanto o lembrete não sai.
      *
      * A permissão vem do [NotificationManagerCompat], que é quem enxerga o "desligado nas
-     * configurações" além da permissão negada; a importância vem do canal gravado. `minSdk`
-     * é 26, então canal sempre existe.
+     * configurações" além da permissão negada; a importância e o som vêm do canal gravado. `minSdk`
+     * é 26, então canal existe — exceto antes do primeiro agendamento, e é por isso que canal
+     * ausente responde [ReminderAlerts.OK] e não [ReminderAlerts.QUIET]: "ainda não criado" não é
+     * "mudo", e inventar um aviso falso para ela seria o mesmo defeito na direção oposta.
+     *
+     * A ordem importa: o canal DESLIGADO sai primeiro porque ele não é "sem som" — com
+     * [NotificationManager.IMPORTANCE_NONE] a notificação não aparece de forma nenhuma, e contá-lo
+     * como mudo faria o app dizer "sem som" enquanto o remédio das 08:00 nunca mais saía.
      */
     fun reminderAlerts(context: Context): ReminderAlerts {
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return ReminderAlerts.OFF
-        if (channelDisabled(context)) return ReminderAlerts.OFF
-        val importance = context.getSystemService(NotificationManager::class.java)
-            ?.getNotificationChannel(CHANNEL_ID)?.importance ?: return ReminderAlerts.OK
-        return if (importance < NotificationManager.IMPORTANCE_DEFAULT) ReminderAlerts.QUIET else ReminderAlerts.OK
+        val canal = context.getSystemService(NotificationManager::class.java)
+            ?.getNotificationChannel(CHANNEL_ID) ?: return ReminderAlerts.OK
+        if (canal.importance == NotificationManager.IMPORTANCE_NONE) return ReminderAlerts.OFF
+        if (canal.importance < NotificationManager.IMPORTANCE_DEFAULT) return ReminderAlerts.QUIET
+        // Canal alto mas mudo é o mesmo desfecho que canal rebaixado: o lembrete sai, ninguém ouve.
+        return if (channelSilenced(canal)) ReminderAlerts.QUIET else ReminderAlerts.OK
     }
 
     /**
@@ -94,6 +148,19 @@ object NotificationHelper {
     private fun channelDisabled(context: Context): Boolean =
         context.getSystemService(NotificationManager::class.java)
             ?.getNotificationChannel(CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE
+
+    /**
+     * O canal está alto mas mudo: o som foi posto em "Nenhum" nas configurações do aparelho (ou o
+     * padrão do sistema está em "Nenhum", e o canal herda isso na criação). Um canal
+     * `IMPORTANCE_HIGH` nesse estado passava como saudável, o cartão "sem som" da home não
+     * aparecia, e o lembrete saía mudo com o aplicativo achando que tinha avisado.
+     *
+     * As duas leituras entram porque uma só não cobre tudo: `sound` é nulo quando o som foi
+     * desligado, e `shouldVibrate` cobre o canal que perdeu o som e a vibração de uma vez — que é
+     * o "Nenhum" de verdade. Um canal que ainda vibra não está mudo, mesmo sem som.
+     */
+    private fun channelSilenced(canal: NotificationChannel): Boolean =
+        canal.sound == null && !canal.shouldVibrate()
 
     fun showReminder(
         context: Context,
@@ -123,7 +190,11 @@ object NotificationHelper {
             .setContentIntent(open)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            // Não sai no swipe acidental: um aviso de remédio que ela apaga sem ler, sem querer,
+            // morre calado. O caminho de dispensar continua sendo os botões daqui de baixo —
+            // "Concluir" e "Adiar 30 min" —, que é o que `setOngoing` não bloqueia.
+            .setOngoing(true)
             .addAction(0, context.getString(R.string.complete), complete)
             .addAction(0, context.getString(R.string.snooze_30), snooze)
             .build()

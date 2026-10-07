@@ -615,7 +615,7 @@ fun HomeScreen(
                                             // O canal está certo e o volume do aparelho não: a tela
                                             // de som é onde se sobe o volume do alarme.
                                             AlertFix.OPEN_SOUND_SETTINGS -> openOrReport(
-                                                soundSettings(context),
+                                                soundSettings(),
                                                 "Não consegui abrir os ajustes de som deste celular.",
                                             )
                                             null -> Unit
@@ -1000,7 +1000,7 @@ private fun channelNotificationSettings(context: Context): Intent =
  * não tem esse controle. Aqui ela sobe o volume do alarme, que é o mesmo do despertador que ela
  * já conhece.
  */
-private fun soundSettings(context: Context): Intent =
+private fun soundSettings(): Intent =
     Intent(Settings.ACTION_SOUND_SETTINGS)
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)

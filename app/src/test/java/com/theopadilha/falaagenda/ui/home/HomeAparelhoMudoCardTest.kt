@@ -1,6 +1,8 @@
 package com.theopadilha.falaagenda.ui.home
 
+import android.Manifest
 import android.app.Application
+import android.app.NotificationManager
 import android.content.Context
 import android.media.AudioManager
 import android.os.PowerManager
@@ -72,6 +74,12 @@ class HomeAparelhoMudoCardTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         shadowOf(context.getSystemService(PowerManager::class.java))
             .setIgnoringBatteryOptimizations(context.packageName, true)
+        // Declarado, e não herdado do default do Robolectric: se o default das notificações mudar,
+        // o cartão do aparelho mudo some atrás do cartão de notificações desligadas — o caso
+        // positivo falharia e o negativo passaria pelo motivo errado, os dois medindo outro eixo.
+        shadowOf(context as Application).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        shadowOf(context.getSystemService(NotificationManager::class.java))
+            .setNotificationsEnabled(true)
         NotificationHelper.ensureChannel(context)
     }
 

@@ -8,7 +8,6 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
-import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -170,9 +169,14 @@ object NotificationHelper {
      *
      * **Só o volume zero conta, e isso é de propósito.** O critério poderia acender o cartão para
      * "volume baixo", mas um degrau acima do zero ainda toca — e um cartão que aparece para quem
-     * continua sendo avisada ensina a ignorá-lo, que é pior do que não ter cartão nenhum. O
-     * degrau mínimo, sim, é o mesmo que mudo: `STREAM_ALARM` costuma ir de 0 a 7, e não há som
-     * audível no zero.
+     * continua sendo avisada ensina a ignorá-lo, que é pior do que não ter cartão nenhum.
+     * `STREAM_ALARM` vai de 0 a 7, e o zero é o único degrau em que não há som audível.
+     *
+     * O critério é `== 0`, e não `<= getStreamMinVolume()`, porque no Android 9+ o mínimo do
+     * stream de alarme é **1**, não zero (`MIN_STREAM_VOLUME[STREAM_ALARM]`), e o `getStreamVolume`
+     * devolve 0 quando o stream está mudo. Comparar com o mínimo acenderia o cartão no degrau 1 —
+     * que é audível, é o ajuste mais baixo do controle de volume —, ou seja, exatamente o alarme
+     * falso que este KDoc recusa. O zero é o único valor que significa "não toca" nos dois lados.
      *
      * **O modo silencioso NÃO entra, e é o ponto mais delicado.** O silencioso e o Não Perturbe
      * governam o toque e as notificações comuns; o alarme é justamente o que costuma sobreviver
@@ -187,19 +191,13 @@ object NotificationHelper {
      * aparelho cujo volume de alarme o sistema trate de outro jeito. Os dois só se medem no
      * aparelho, e não no Robolectric.
      *
-     * `getStreamMinVolume` só existe a partir do Android 9; abaixo disso o mínimo do stream é
-     * zero por contrato, e é o zero que a comparação quer. A [Build.VERSION.SDK_INT] está aqui
-     * porque o `minSdk` é 26, e não porque o aparelho dela seja antigo.
+     * `getStreamMinVolume` só existe a partir do Android 9, mas não é ele que a comparação usa:
+     * o critério é o zero literal, que vale em todas as versões e é o único que significa "não
+     * toca". Não há checagem de versão aqui de propósito.
      */
     private fun alarmeDoAparelhoMudo(context: Context): Boolean {
         val audio = context.getSystemService(AudioManager::class.java) ?: return false
-        val volume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
-        val minimo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            audio.getStreamMinVolume(AudioManager.STREAM_ALARM)
-        } else {
-            0
-        }
-        return volume <= minimo
+        return audio.getStreamVolume(AudioManager.STREAM_ALARM) == 0
     }
 
     /**
@@ -265,7 +263,11 @@ object NotificationHelper {
             NotificationManagerCompat.from(context)
                 .notify(AlarmIds.requestCode(occurrenceId, AlarmIds.NOTIF_REMINDER), notification)
             if (remindersWillBeSilent(context)) {
-                Log.w(TAG, "Lembrete $occurrenceId apareceu sem som: canal $CHANNEL_ID rebaixado")
+                Log.w(
+                    TAG,
+                    "Lembrete $occurrenceId apareceu sem som: canal $CHANNEL_ID rebaixado " +
+                        "ou volume de alarme do aparelho zerado",
+                )
             }
             ReminderDelivery.POSTED
         } catch (e: SecurityException) {
@@ -325,7 +327,11 @@ object NotificationHelper {
             )
             // Aqui ela precisa notar: um aviso mudo é quase tão ruim quanto nenhum.
             if (remindersWillBeSilent(context)) {
-                Log.w(TAG, "Aviso de ação não aplicada $occurrenceId apareceu sem som: canal rebaixado")
+                Log.w(
+                    TAG,
+                    "Aviso de ação não aplicada $occurrenceId apareceu sem som: canal rebaixado " +
+                        "ou volume de alarme do aparelho zerado",
+                )
             }
             ReminderDelivery.POSTED
         } catch (e: SecurityException) {

@@ -40,6 +40,7 @@ import org.robolectric.annotation.Config
     manifest = Config.NONE,
     packageName = "com.theopadilha.falaagenda",
     application = Application::class,
+    shadows = [ShadowAudioManagerComMinimoDeAlarme::class],
 )
 class OracleSanidadeTest {
     private val base: Context = ApplicationProvider.getApplicationContext()

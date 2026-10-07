@@ -38,3 +38,6 @@ supabase/.temp/
 .cxx
 *.exec
 coverage/
+
+# Worktrees de agente: ficam aqui por padrão e somam centenas de MB.
+.claude/

@@ -65,13 +65,25 @@ class HybridParser(
      * Campo a campo: o remoto vence quando traz valor, o local fica quando o remoto devolve nulo
      * ou vazio. Recorrência segue a mesma ideia, mas o "vazio" dela é `NONE` — a regra que não
      * repete —, e não um nulo.
+     *
+     * O **título é a exceção**: quem vence é o local, quando ele acertou. Ele já removeu o verbo
+     * ("levar a Maria no médico dia 25" → "Levar Maria médico"), e a IA devolvendo "Compromisso"
+     * apagava o único pedaço da frase que dizia do que se tratava. Como o título alimenta
+     * `isComplete`/`canQuickConfirm`, a troca nem passava pela tela: a caixa rápida salvava
+     * "Compromisso" em silêncio. O remoto preenche o título só quando o local não achou nenhum
+     * — completar o que falta é o trabalho dele; trocar o que já está certo, não.
      */
     private fun mergeRemote(
         localDraft: ParsedTaskDraft,
         remoteDraft: ParsedTaskDraft,
         transcript: String,
     ): ParsedTaskDraft {
-        val title = remoteDraft.title.ifBlank { localDraft.title }
+        val tituloLocal = localDraft.title.trim()
+        val tituloRemoto = remoteDraft.title.trim()
+        val title = if (tituloLocal.isNotBlank()) tituloLocal else tituloRemoto
+        // A divergência vira nota: a troca de nome não pode ser invisível como era antes. Sem
+        // isso, ela salvaria um cartão com outro nome sem nunca saber que a ajuda extra mexeu.
+        val tituloDivergiu = tituloLocal.isNotBlank() && tituloRemoto.isNotBlank() && tituloRemoto != tituloLocal
         val mergedDate = remoteDraft.localDate ?: localDraft.localDate
         val mergedTime = remoteDraft.localTime ?: localDraft.localTime
         val missing = buildSet {
@@ -79,6 +91,14 @@ class HybridParser(
             if (mergedDate == null) add(MissingDraftField.DATE)
             if (mergedTime == null) add(MissingDraftField.TIME)
         }
+        val notes = notasDomescladas(
+            locais = localDraft.notes,
+            remotas = remoteDraft.notes,
+            remotoTrouxeData = remoteDraft.localDate != null,
+            remotoTrouxeHora = remoteDraft.localTime != null,
+            finalTemData = mergedDate != null,
+            finalTemHora = mergedTime != null,
+        )
         return remoteDraft.copy(
             title = title,
             localDate = mergedDate,
@@ -95,14 +115,11 @@ class HybridParser(
             // rápida continuaria barrada (`canQuickConfirm`) por uma dúvida que a IA já resolveu.
             ambiguous = remoteDraft.ambiguous && missing.isNotEmpty(),
             transcript = transcript,
-            notes = notasDomescladas(
-                locais = localDraft.notes,
-                remotas = remoteDraft.notes,
-                remotoTrouxeData = remoteDraft.localDate != null,
-                remotoTrouxeHora = remoteDraft.localTime != null,
-                finalTemData = mergedDate != null,
-                finalTemHora = mergedTime != null,
-            ),
+            notes = if (tituloDivergiu) {
+                notes + "A ajuda extra chamou de “$tituloRemoto”. Ficou “$tituloLocal”."
+            } else {
+                notes
+            },
         )
     }
 

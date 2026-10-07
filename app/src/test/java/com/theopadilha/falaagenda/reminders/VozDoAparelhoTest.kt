@@ -133,6 +133,91 @@ class VozDoAparelhoTest {
     }
 
     /**
+     * O caminho normal de todo `TextToSpeech`: o motor avisa `onStart` e **depois** `onDone`. O fim
+     * tem que chegar a quem pediu a fala — é dele que a política depende para agendar a **segunda**
+     * repetição. Sem este aviso, `AvisoFalado.terminou` nunca roda, a escada para na primeira e o
+     * aviso fica de pé até o prazo: a segunda fala — o motivo de `FALAS_POR_AVISO` existir — nunca
+     * sai, e é a queixa dela na metade da repetição.
+     *
+     * Os três fakes da suíte avisam o fim **dentro do `falar`** e nunca passam pelo
+     * `UtteranceProgressListener`; este é o único teste que dirige o listener de verdade, e por
+     * isso é ele que prende o `aoTerminar` do `onDone`.
+     */
+    @Test
+    fun oOnDoneAvisaOFimAQuemPediuAFala() {
+        val voz = VozDoAparelho(contexto)
+        voz.quandoPronto { }
+        temVozEmPortugues()
+        val motor = ShadowTextToSpeech.getLastTextToSpeechInstance()
+        shadowOf(motor).onInitListener.onInit(TextToSpeech.SUCCESS)
+
+        var saidas = 0
+        var terminou: String? = null
+        voz.falar(frase, "fala-0", aoSair = { saidas++ }) { terminou = it }
+
+        val listener = shadowOf(motor).utteranceProgressListener
+        listener.onStart("fala-0")
+        assertThat(terminou).isNull()
+        listener.onDone("fala-0")
+
+        assertThat(saidas).isEqualTo(1)
+        assertThat(terminou).isEqualTo("fala-0")
+    }
+
+    /**
+     * O overload deprecado do `onError` é o que a classe base exige; motor antigo pode chamá-lo em
+     * vez do que tem `errorCode`. Nos dois, o fim é avisado: sem ele a política esperaria para
+     * sempre por um `onDone` que não vem.
+     */
+    @Test
+    fun oOnErrorDeprecadoTambemAvisaOFim() {
+        val voz = VozDoAparelho(contexto)
+        voz.quandoPronto { }
+        temVozEmPortugues()
+        val motor = ShadowTextToSpeech.getLastTextToSpeechInstance()
+        shadowOf(motor).onInitListener.onInit(TextToSpeech.SUCCESS)
+
+        var terminou: String? = null
+        voz.falar(frase, "fala-0", aoSair = { }) { terminou = it }
+
+        @Suppress("DEPRECATION")
+        shadowOf(motor).utteranceProgressListener.onError("fala-0")
+
+        assertThat(terminou).isEqualTo("fala-0")
+    }
+
+    /**
+     * O aviso de saída é da fala da vez. Um `onStart` atrasado de uma fala já substituída — o
+     * disparo novo pediu outra frase — não pode anunciar a voz que está no ar agora.
+     *
+     * Hoje o id vem de um contador monotônico em `AvisoFalado`, então um aviso antigo nunca casa
+     * com o id atual: é defesa em profundidade, e é por isso que este teste existe — sem ele a
+     * guarda não estava presa por nada.
+     */
+    @Test
+    fun oAvisoDeSaidaDeUmaFalaJaSubstituidaNaoAnuncia() {
+        val voz = VozDoAparelho(contexto)
+        voz.quandoPronto { }
+        temVozEmPortugues()
+        val motor = ShadowTextToSpeech.getLastTextToSpeechInstance()
+        shadowOf(motor).onInitListener.onInit(TextToSpeech.SUCCESS)
+
+        var saidas = 0
+        voz.falar(frase, "fala-0", aoSair = { saidas++ }) { }
+        // A fala da vez passou a ser outra.
+        voz.falar(frase, "fala-1", aoSair = { saidas++ }) { }
+
+        val listener = shadowOf(motor).utteranceProgressListener
+        listener.onStart("fala-0")
+
+        assertThat(saidas).isEqualTo(0)
+
+        // E a fala da vez continua anunciando normalmente.
+        listener.onStart("fala-1")
+        assertThat(saidas).isEqualTo(1)
+    }
+
+    /**
      * O aparelho não tem voz em português do Brasil — só inglês instalado, ou nenhuma voz. O motor
      * **não** fica pronto, e é isso que faz a política sair do caminho sem travar.
      */

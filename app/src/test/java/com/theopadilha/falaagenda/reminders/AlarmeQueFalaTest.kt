@@ -34,6 +34,13 @@ class AlarmeQueFalaTest {
         val falas = mutableListOf<String>()
         var paradas = 0
         var soltadas = 0
+
+        /**
+         * Quantas vezes a política **pediu** uma fala, inclusive as que não saíram. É o que separa
+         * "a escada andou" de "a escada parou": [falas] só conta o que saiu, e num motor que recusa
+         * ele fica vazio mesmo com a política insistindo.
+         */
+        var tentativas = 0
         private var esperando: ((Boolean) -> Unit)? = null
         private val terminam = mutableListOf<(String) -> Unit>()
 
@@ -52,6 +59,7 @@ class AlarmeQueFalaTest {
             aoSair: () -> Unit,
             aoTerminar: (String) -> Unit,
         ) {
+            tentativas++
             if (!avisaQueSaiu) {
                 // A frase foi aceita e nenhum som saiu — o motor falhou depois do aceite, pelo
                 // `onError`. O fim é avisado, a saída não.
@@ -317,9 +325,6 @@ class AlarmeQueFalaTest {
      * A frase foi **aceita** e nenhum som saiu — o motor falhou depois do aceite, pelo `onError`,
      * que a costura traduz para o mesmo `aoTerminar` do `onDone`. A política **não** anuncia: a
      * barra só pode dizer "avisando em voz alta" quando a voz saiu.
-     *
-     * E a escada não quebra: o fim da fala que falhou continua fazendo a política seguir, senão o
-     * aviso ficaria de pé até o prazo por causa de um motor que avisou o fim e não a saída.
      */
     @Test
     fun naoAnunciaQuandoAAceitacaoNaoViraFala() {
@@ -329,9 +334,31 @@ class AlarmeQueFalaTest {
         aviso.sintetizador.ficouPronto()
 
         assertThat(aviso.anuncios).isEqualTo(0)
+    }
 
-        // A escada seguiu pelo fim: a segunda tentativa é pedida, e continua sem anunciar.
+    /**
+     * A escada **anda** pelo fim mesmo quando a fala não sai. O motor avisa o fim (`onError`) sem
+     * ter avisado a saída, e a política tem que seguir: quem manda a segunda tentativa é o
+     * [AvisoFalado.terminou], não o anúncio da barra. Sem isso o aviso ficaria de pé até o prazo
+     * por causa de um motor que avisou o fim e não a saída — e a segunda fala, que é o motivo de
+     * [FALAS_POR_AVISO] existir, nunca seria pedida.
+     *
+     * O oráculo é o contador de **tentativas**, e não [SintetizadorFalso.falas]: num motor que
+     * recusa, o que saiu fica vazio mesmo com a política insistindo. É por isso que a asserção
+     * anterior (só o anúncio) não provava nada sobre a escada.
+     */
+    @Test
+    fun aEscadaAndaPeloFimMesmoQuandoAFalaNaoSai() {
+        val aviso = novoAviso(avisaQueSaiu = false)
+
+        aviso.aviso.falar(ocorrencia, frase)
+        aviso.sintetizador.ficouPronto()
+        assertThat(aviso.sintetizador.tentativas).isEqualTo(1)
+
+        // O fim da primeira chegou: a política pede a segunda tentativa.
         aviso.relogio.avancar(PAUSA_ENTRE_AS_FALAS_MS + 1)
+
+        assertThat(aviso.sintetizador.tentativas).isEqualTo(2)
         assertThat(aviso.anuncios).isEqualTo(0)
     }
 

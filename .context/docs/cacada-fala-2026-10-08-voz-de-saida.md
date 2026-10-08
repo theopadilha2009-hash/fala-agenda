@@ -1,6 +1,6 @@
 # Caçada — A VOZ DE SAÍDA: o que de fato chega ao `TextToSpeech` (2026-10-08)
 
-Décima nona leva. As anteriores estão listadas em
+Vigésima leva. As anteriores estão listadas em
 `cacada-fala-2026-10-07-intencao-e-comandos.md`.
 
 A 18ª mediu o **texto** da resposta ao usuário no ViewModel. Ninguém tinha medido **o que chega ao

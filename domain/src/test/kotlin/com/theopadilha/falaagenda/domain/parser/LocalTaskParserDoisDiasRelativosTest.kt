@@ -95,9 +95,17 @@ class LocalTaskParserDoisDiasRelativosTest {
             Linha("daqui a dois dias dentista às 9h", LocalDate.of(2026, 8, 22), false),
 
             // Relativo + dia nomeado / dia do mês / borda do mês: inalterados pelo guard.
+            //
+            // ATENÇÃO — "hoje e sexta" e "hoje e no dia 25" cravam `hoje` e descartam o outro dia
+            // calado. É a MESMA classe de defeito, mas o segundo dia não é relativo (é dia da semana
+            // e dia do mês), e alargar o guard até lá não é o escopo deste PR. Estas duas linhas
+            // prendem o COMPORTAMENTO DO BASE, não endossam a doutrina: o valor esperado é o que o
+            // base já fazia, para o número não mudar calado. A doutrina pediria escalar.
             Linha("hoje e sexta dentista às 9h", hoje, false),
             Linha("amanhã e sexta dentista às 9h", LocalDate.of(2026, 8, 21), false),
             Linha("hoje e no dia 25 dentista às 9h", hoje, false),
+            // Estes dois JÁ escalam pela doutrina de dois dias da semana ("sexta e sábado",
+            // "segunda e quarta") — o guard novo não os toca.
             Linha("sexta e sábado às 9h", null, true),
             Linha("segunda e quarta", null, true),
             Linha("toda segunda e quarta natação às 18h", LocalDate.of(2026, 8, 24), false),

@@ -883,9 +883,28 @@ class LocalTaskParser(
      * correção da continuação.
      */
     private fun correcaoMarcadores(text: String): List<Pair<Int, Int>> {
+        val semSobreposicao = candidatosDeCorrecao(text)
+        // ...e o conector só vale quando o trecho seguinte NOMEIA um campo de tempo. A pergunta é
+        // feita sobre o trecho inteiro, e não sobre o primeiro token do conector.
+        return semSobreposicao.filterIndexed { i, m ->
+            val fim = semSobreposicao.getOrNull(i + 1)?.first ?: text.length
+            val cauda = text.substring(m.second, fim)
+            val terminadoComVirgula = m.second < text.length && text[m.second] == ','
+            nomeiaTempo(cauda) && !negaODiaRelativo(text.substring(m.first, m.second), terminadoComVirgula, cauda)
+        }
+    }
+
+    /**
+     * Os conectores CANDIDATOS da fala, já sem sobreposição — antes de qualquer veredito.
+     *
+     * A lista é candidata porque o mesmo conjunto responde duas perguntas diferentes: onde a fala se
+     * CORRIGE (as caudas que nomeiam tempo) e onde ela CONTINUA (as que não nomeiam). Quem separa é
+     * [nomeiaTempo], e as duas leituras precisam ver a mesma lista para não divergir.
+     */
+    private fun candidatosDeCorrecao(text: String): List<Pair<Int, Int>> {
         val candidatos = mutableListOf<Pair<Int, Int>>()
         CORRECAO_FRASE.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
-        NAO_ANTES.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
+        NAO_VIRGULA_ANTES.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
         NAO_BARE.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
         val ordenados = candidatos.sortedBy { it.first }
         // Um conector não pode começar dentro do outro ("não, quer dizer"): vale o que começa
@@ -895,12 +914,55 @@ class LocalTaskParser(
         ordenados.forEach { m ->
             if (semSobreposicao.isEmpty() || m.first >= semSobreposicao.last().second) semSobreposicao += m
         }
-        // ...e o conector só vale quando o trecho seguinte NOMEIA um campo de tempo. A pergunta é
-        // feita sobre o trecho inteiro, e não sobre o primeiro token do conector.
-        return semSobreposicao.filterIndexed { i, m ->
-            val fim = semSobreposicao.getOrNull(i + 1)?.first ?: text.length
-            nomeiaTempo(text.substring(m.second, fim))
+        return semSobreposicao
+    }
+
+    /**
+     * Os trechos que CONTINUAM a fala em vez de corrigi-la: a cauda de um conector que não abre com
+     * um valor de tempo ("não tomei hoje", "não deu ontem", "não quero mais").
+     *
+     * É a fronteira gêmea da correção, e o único ponto em que as duas doutrinas do campo de tempo se
+     * tocam. A correção descarta o valor dito antes do conector; a continuação não descarta nada — e
+     * o dia que aparece DENTRO dela não é dia dito, é a RAZÃO ("não tomei hoje" explica por que o
+     * lembrete existe). O guard dos dois dias relativos (PR #98) conta os dias DITOS: contando
+     * também este, "amanhã, não tomei hoje" virava duas datas, o rascunho escalava e o dia que ela
+     * disse — e nunca corrigiu — se perdia na pergunta. Medido em `main`: 60 das 200 falas da
+     * família (20 verbos × 3 valores com dia relativo na cauda).
+     */
+    private fun trechosDeContinuacao(text: String): List<Pair<Int, Int>> {
+        val candidatos = candidatosDeCorrecao(text)
+        return candidatos.mapIndexedNotNull { i, m ->
+            val fim = candidatos.getOrNull(i + 1)?.first ?: text.length
+            if (nomeiaTempo(text.substring(m.second, fim))) null else m.second to fim
         }
+    }
+
+    /**
+     * O `não` sem a vírgula de fechamento seguido de um DIA RELATIVO não é correção — é a NEGAÇÃO
+     * que o guard dos dois dias relativos (PR #98) resolve: "amanhã, não hoje" diz amanhã e RECUSA
+     * hoje, e a leitura do app é 21/08.
+     *
+     * Este é o único ponto em que as duas doutrinas se cruzam de verdade, e quem separa é a
+     * vírgula depois do conector:
+     *
+     * - `"amanhã, não, hoje"` — a vírgula fecha o conector: é CORREÇÃO, e vale hoje (20/08);
+     * - `"amanhã, não hoje"` / `"amanhã não hoje"` — sem a vírgula, o "não" nega o dia que segue:
+     *   é a leitura já em `main` pelo #98, e vale amanhã (21/08).
+     *
+     * A distinção não é arbitrária: em português o "não" que nega um termo fica colado nele ("não
+     * hoje"), e o que volta atrás do que foi dito vem isolado pela vírgula ("não, hoje"). Sem ela,
+     * as duas leituras são a mesma string e o app não tem como decidir — e aí vale a que já está
+     * em `main`, em vez de o PR novo trocar o desfecho de uma fala que o outro já prendia.
+     *
+     * O custo fica medido no corpus (`CORPUS-DESCOBERTAS`), e não escondido: a forma sem a vírgula
+     * de fechamento só corrige para um valor que NÃO seja dia relativo ("não sexta", "não às nove",
+     * "não de tarde" continuam valendo).
+     */
+    private fun negaODiaRelativo(conector: String, terminadoComVirgula: Boolean, cauda: String): Boolean {
+        if (terminadoComVirgula) return false
+        if (!NAO_BARE.containsMatchIn(conector)) return false
+        val dito = cauda.trimStart(' ', ',', '.', '!', '?', ';', ':')
+        return DIAS_RELATIVOS.find(dito)?.range?.first == 0
     }
 
     /**
@@ -1168,6 +1230,20 @@ class LocalTaskParser(
         var remaining = text
         val today = clock.today()
 
+        // A fala que CONTINUA depois do conector não diz um segundo dia: "amanhã, não tomei hoje"
+        // diz UM dia (amanhã) e explica por que o lembrete existe. O dia dentro da continuação é a
+        // RAZÃO, não a data — e o guard abaixo conta dias DITOS. O trecho sai daqui antes de ele
+        // contar: sem isso o guard via duas datas, escalava, e o dia que ela disse (e nunca
+        // corrigiu) se perdia na pergunta. Medido em `main`: 60 das 200 falas da família.
+        val continuacao = trechosDeContinuacao(remaining)
+        val semContinuacao = if (continuacao.isEmpty()) {
+            remaining
+        } else {
+            var t = remaining
+            continuacao.reversed().forEach { (ini, fim) -> t = t.replaceRange(ini, fim, " ") }
+            TextNormalizer.compactSpaces(t)
+        }
+
         // DOIS dias relativos DISTINTOS na mesma fala ("hoje e amanhã às 9h", "hoje e daqui a dois
         // dias"): os ramos abaixo devolvem no PRIMEIRO que casa, e o segundo dia nunca era olhado —
         // a fala virava um dia só, completa e confirmável num toque, com o dia descartado sobrando
@@ -1182,7 +1258,7 @@ class LocalTaskParser(
         // O critério é o CONJUNTO de dias distintos, não a contagem de marcadores, e um dia NEGADO
         // não entra nele: "hoje e hoje" e "amanhã, não hoje" continuam cravando o que já cravavam.
         // A régua larga demais derruba fala legítima e é pior que a pergunta.
-        if (diasRelativosDistintosDitos(remaining, today).size > 1) {
+        if (diasRelativosDistintosDitos(semContinuacao, today).size > 1) {
             return DateHit(
                 null,
                 stripDiasRelativos(remaining),
@@ -2737,7 +2813,7 @@ class LocalTaskParser(
          * de palavra dos dois lados — a fala chega pontuada de formas diferentes (", errei.", ",
          * mentira", ", melhor,") e um conector que escapasse deixaria o valor descartado valendo,
          * calado. O `não` não está aqui: ele é o único com ambiguidade de continuação ("não vou
-         * poder ir"), e por isso vive em [NAO_ANTES]/[NAO_BARE], onde o teste é o mesmo
+         * poder ir"), e por isso vive em [NAO_VIRGULA_ANTES]/[NAO_BARE], onde o teste é o mesmo
          * [nomeiaTempo] que vale para todos.
          *
          * O vocabulário é o mesmo que o `SpeechIntentClassifier` já usa para o alvo, mais as
@@ -2758,8 +2834,15 @@ class LocalTaskParser(
         /**
          * O `não` com a vírgula ANTES ("amanhã, não hoje") — a forma mais comum da correção falada.
          * A vírgula antes é o que dá o corte: sem ela o "não" pode estar negando o que segue.
+         *
+         * O nome é `NAO_VIRGULA_ANTES` e não `NAO_ANTES` porque o guard dos dois dias relativos
+         * (PR #98) já usa `NAO_ANTES` para OUTRA coisa — o `não` que ENCOSTA no marcador pelo lado
+         * esquerdo (`\bnao\s*$`, para decidir se o dia entra no conjunto). As duas perguntas são
+         * vizinhas e distintas: aqui é "onde começa o conector de correção?", lá é "este dia foi
+         * recusado?". Nomes iguais com semânticas diferentes foi o que o rebase produziu, e o
+         * compilador pegou.
          */
-        private val NAO_ANTES = Regex(""",\s*\bnao\b""")
+        private val NAO_VIRGULA_ANTES = Regex(""",\s*\bnao\b""")
 
         /**
          * O `não` SEM vírgula nenhuma ("amanhã não hoje"), que a versão anterior deixava passar

@@ -150,21 +150,44 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
     private val CLASSES_EXIGIDAS: Set<ClasseDaForma> =
         ClasseDaForma.entries.toSet() - ClasseDaForma.SUJEITO_EXPLICITO
 
+    /** Todas as formas: é a lista que o lado da CONTINUAÇÃO percorre, porque ali não há custo. */
     private val FORMAS: List<String> = FORMAS_POR_CLASSE
         .filterKeys { it in CLASSES_EXIGIDAS }
         .values
         .flatten()
 
     /**
+     * As formas do `não` SEM a vírgula depois do conector. A correção é ambígua com a NEGAÇÃO que o
+     * guard dos dois dias relativos (PR #98) resolve, e o desempate está medido em
+     * [aNegacaoSemVirgulaDeclaraOCusto]: quando o valor corrigido é um DIA RELATIVO, vale a leitura
+     * que já está em `main` ("amanhã, não hoje" = ela diz amanhã e recusa hoje).
+     */
+    private val FORMAS_DE_NEGACAO: List<String> =
+        FORMAS_POR_CLASSE.getValue(ClasseDaForma.NAO_VIRGULA_ANTES) +
+            FORMAS_POR_CLASSE.getValue(ClasseDaForma.NAO_SEM_VIRGULA)
+
+    /**
+     * As formas em que a correção não se confunde com a negação: a vírgula depois do conector
+     * ("não, hoje"), ou um conector de reformulação ("quer dizer, hoje"). É a lista que os dois
+     * eixos da correção percorrem.
+     */
+    private val FORMAS_DE_CORRECAO: List<String> =
+        FORMAS.filterNot { it in FORMAS_DE_NEGACAO }
+
+    /**
      * O relatório de cobertura por CLASSE: o defeito não pode voltar pela forma que a lista não
-     * cobre. O esperado sai da tabela [DIA] escrita à mão — "amanhã" descartado, "hoje" corrigido,
-     * 20/08 —, e a classe que não estiver coberta aparece aqui, nomeada.
+     * cobre. O esperado sai da tabela [DIA] escrita à mão — "amanhã" descartado, "segunda"
+     * corrigido, 24/08 —, e a classe que não estiver coberta aparece aqui, nomeada.
+     *
+     * O alvo é um dia NÃO relativo de propósito: com o alvo relativo ("amanhã, não hoje") a forma
+     * sem vírgula é a string que o #98 já lê como NEGAÇÃO, e o desempate está declarado em
+     * [aNegacaoSemVirgulaDeclaraOCusto] em vez de escondido na escolha do exemplo.
      */
     @Test
     fun todaClasseDeFormaDaDoutrinaEstaCobertaPeloParser() {
         val descartado = "amanha"
-        val corrigido = "hoje"
-        val esperado = LocalDate.of(2026, 8, 20)
+        val corrigido = "segunda"
+        val esperado = LocalDate.of(2026, 8, 24)
         val cobertura = FORMAS_POR_CLASSE.mapValues { (_, formas) ->
             formas.all { forma ->
                 parser.parse("me lembra de tomar remedio $descartado$forma$corrigido").localDate == esperado
@@ -178,11 +201,74 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
     }
 
     /**
+     * O custo da convivência entre as duas doutrinas, medido e DECLARADO.
+     *
+     * A correção sem a vírgula depois do conector ("amanhã, não hoje") é a MESMA string que o guard
+     * dos dois dias relativos do #98 já lê como NEGAÇÃO — "ela diz amanhã e recusa hoje" —, e essa
+     * leitura está presa por asserção em `LocalTaskParserDoisDiasRelativosTest`. As duas não podem
+     * valer: com o alvo sendo um DIA RELATIVO, vale a que já está em `main`, porque trocar o
+     * desfecho de uma fala que o outro PR prendia é regressão, não melhora.
+     *
+     * Medido: **3 combinações × 4 prefixos × 2 formas = 24** falas de 7480 do eixo do dia (0,32%),
+     * e nenhuma do eixo da hora. Fora do alvo relativo, a correção sem vírgula continua valendo
+     * ("amanhã não segunda", "amanhã não dia 25", "amanhã não às nove") — é o que a segunda metade
+     * deste teste prende, e é ela que prova que o P1 (a vírgula não é o que separa a correção da
+     * continuação) segue fechado no resto do espaço.
+     *
+     * O caminho alternativo está medido e é pior: deixar a correção vencer no alvo relativo
+     * derrubaria as três linhas de `oDiaNegadoNaoContaComoSegundoDia`, que são o defeito que o #98
+     * fechou. Não há como honrar as duas leituras da mesma string.
+     */
+    private val CUSTO_DA_NEGACAO_SEM_VIRGULA = 24
+
+    @Test
+    fun aNegacaoSemVirgulaDeclaraOCusto() {
+        val dias = DIA.filter { (_, d) ->
+            d == LocalDate.of(2026, 8, 20) || d == LocalDate.of(2026, 8, 21) || d == LocalDate.of(2026, 8, 22)
+        }
+        var casos = 0
+        var naoCorrigiu = 0
+        val custo = mutableListOf<String>()
+        PREFIXOS.forEach { prefixo ->
+            dias.forEach { (descartado, _) ->
+                dias.forEach { (corrigido, esperado) ->
+                    if (descartado == corrigido) return@forEach
+                    FORMAS_DE_NEGACAO.forEach { forma ->
+                        casos++
+                        val obtido = parser.parse("$prefixo$descartado$forma$corrigido").localDate
+                        if (obtido != esperado) {
+                            naoCorrigiu++
+                            custo += "$descartado→$corrigido"
+                        }
+                    }
+                }
+            }
+        }
+        println("CORPUS-NEGACAO|casos=$casos|naoCorrigiu=$naoCorrigiu")
+        println("CORPUS-NEGACAO-CUSTO|${custo.toSet()}")
+        assertThat(naoCorrigiu).isEqualTo(CUSTO_DA_NEGACAO_SEM_VIRGULA)
+        // O P1 segue fechado fora do alvo relativo: a correção sem vírgula vale para o dia da
+        // semana, o dia do mês, o "semana que vem" e a hora.
+        val naoRelativos = listOf("segunda", "dia 25", "semana que vem")
+        val falhas = PREFIXOS.flatMap { prefixo ->
+            naoRelativos.flatMap { corrigido ->
+                FORMAS_DE_NEGACAO.mapNotNull { forma ->
+                    val fala = "${prefixo}amanha$forma$corrigido"
+                    val obtido = parser.parse(fala).localDate
+                    if (obtido == DIA.toMap()[corrigido]) null else "«$fala» obtido=$obtido"
+                }
+            }
+        }
+        println("CORPUS-NEGACAO-NAO-RELATIVO|casos=${PREFIXOS.size * naoRelativos.size * FORMAS_DE_NEGACAO.size}|falhas=${falhas.size}")
+        assertThat(falhas).isEmpty()
+    }
+
+    /**
      * O residual da moldura verbal, medido e DECLARADO em vez de escondido — a troca é explícita,
      * como no `SpeechIntentCorrecaoCorpusIndependenteTest` do #83.
      *
-     * `"amanhã, não, eu quero hoje"` é correção de verdade, e o parser NÃO a pega: o "não" deixa
-     * de ser fronteira e o dia dito antes sobrevive (21/08 em vez de 20/08). O desfecho é o lado
+     * `"amanhã, não, eu quero segunda"` é correção de verdade, e o parser NÃO a pega: o "não" deixa
+     * de ser fronteira e o dia dito antes sobrevive (21/08 em vez de 24/08). O desfecho é o lado
      * SEGURO — a tela de confirmação mostra a data antiga e ela corrige com um toque —, contra o
      * app cravar o dia errado com `ambiguous=false`.
      *
@@ -195,12 +281,12 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
     @Test
     fun oResidualDaMolduraVerbalFicaDeclarado() {
         val correcoes = listOf(
-            "me lembra de tomar remedio amanha, nao, eu quero hoje",
-            "me lembra de tomar remedio amanha, nao, eu queria hoje",
+            "me lembra de tomar remedio amanha, nao, eu quero segunda",
+            "me lembra de tomar remedio amanha, nao, eu queria segunda",
         )
         var naoPegou = 0
         correcoes.forEach { fala ->
-            if (parser.parse(fala).localDate != LocalDate.of(2026, 8, 20)) naoPegou++
+            if (parser.parse(fala).localDate != LocalDate.of(2026, 8, 24)) naoPegou++
         }
         println("CORPUS-RESIDUAL|casos=${correcoes.size}|naoPegou=$naoPegou")
         assertThat(naoPegou).isEqualTo(RESIDUAL_DA_MOLDURA_VERBAL)
@@ -214,7 +300,7 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
             DIA.forEach { (descartado, _) ->
                 DIA.forEach { (corrigido, esperado) ->
                     if (descartado == corrigido) return@forEach
-                    FORMAS.forEach { forma ->
+                    FORMAS_DE_CORRECAO.forEach { forma ->
                         val fala = "$prefixo$descartado$forma$corrigido"
                         casos++
                         val obtido = parser.parse(fala).localDate
@@ -250,7 +336,7 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
             HORA.forEach { (descartado, _) ->
                 HORA.forEach { (corrigido, esperado) ->
                     if (descartado == corrigido) return@forEach
-                    FORMAS.forEach { forma ->
+                    FORMAS_DE_CORRECAO.forEach { forma ->
                         val fala = "${prefixo}amanha $descartado$forma$corrigido"
                         casos++
                         val draft = parser.parse(fala)
@@ -288,8 +374,13 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
      * dia depois — então é amanhã, 21/08. O "hoje" da cauda é a razão, e NÃO pode virar a data.
      *
      * Os verbos são de propósito fora do `TASK_VERB` (com "tomei"/"vou" dentro, justamente para
-     * provar que a lista não é o critério): 20 verbos × 10 valores × as formas do "não" e da
-     * reformulação = 2600 casos, contra as 36 regressões medidas no critério antigo.
+     * provar que a lista não é o critério): 20 verbos × 10 valores × as 17 formas do "não" e da
+     * reformulação = 3400 casos, contra as 36 regressões medidas no critério antigo.
+     *
+     * O dia RELATIVO na cauda ("não tomei hoje") entra aqui junto com os outros: o dia dentro da
+     * continuação é a RAZÃO, não um segundo dia dito, e o guard dos dois dias relativos do #98 não
+     * pode contá-lo. Sem a fronteira gêmea ([trechosDeContinuacao]), esta linha sozinha acumulava
+     * 900 violações — 60 de 200 na família isolada, medidas também no parser de `main` puro.
      */
     @Test
     fun aContinuacaoComValorNaCaudaNaoViraCorrecao() {

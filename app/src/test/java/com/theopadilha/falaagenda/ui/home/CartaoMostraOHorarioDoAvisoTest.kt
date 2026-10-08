@@ -109,6 +109,39 @@ class CartaoMostraOHorarioDoAvisoTest {
     }
 
     /**
+     * Uma segunda série no mesmo dia, para a ordem dos itens poder divergir da ordem das horas.
+     * O `id` sai do título: [idDa] e o `idDe` do remédio não podem colidir.
+     */
+    private suspend fun semearOutraSerie(titulo: String, horaDaSerie: LocalTime) {
+        val criado = em(hoje.minusDays(1), 10)
+        val id = "s-$titulo"
+        container.db.seriesDao().upsert(
+            TaskSeries(
+                id = id,
+                title = titulo,
+                zoneId = zone,
+                localTime = horaDaSerie,
+                startLocalDate = hoje,
+                recurrence = RecurrenceRule(RecurrenceKind.DAILY),
+                createdAt = criado,
+                updatedAt = criado,
+            ).toEntity(),
+        )
+        container.db.occurrenceDao().upsert(
+            TaskOccurrence(
+                id = idDa(id, hoje),
+                seriesId = id,
+                localDate = hoje,
+                scheduledAt = em(hoje, horaDaSerie.hour, horaDaSerie.minute),
+                status = OccurrenceStatus.PENDING,
+                nextReminderAt = em(hoje, horaDaSerie.hour, horaDaSerie.minute),
+            ).toEntity(),
+        )
+    }
+
+    private fun idDa(serie: String, data: LocalDate) = OccurrenceIds.of(serie, data)
+
+    /**
      * A dose como ela chega viva ao toque dela: pendente, com o instante do aviso já gravado.
      * [marcadaPara] é a hora marcada (`scheduledAt`) e [avisoEm] o instante que o alarme vai
      * tocar — os dois divergem por desenho nos casos que este teste mede.
@@ -288,6 +321,49 @@ class CartaoMostraOHorarioDoAvisoTest {
     }
 
     /**
+     * Abrir a dose adiada para corrigir só o **nome** e salvar sem mexer no horário não desfaz o
+     * adiamento.
+     *
+     * É o caminho real depois do fix: o rascunho abre com o que a tela mostra, e quem salva manda
+     * de volta esse mesmo horário. O `editOccurrence` recalcula a escolha pelo horário que
+     * recebeu; com o da **série** (08:00) já vencido às 08:05, a escolha nascia vencida — a dose
+     * adiada virava não realizada e o aviso pulava para amanhã, calado. Com o do aviso (08:30), a
+     * escolha segue de pé e o alarme fica onde ela o tinha posto.
+     *
+     * Sem esta metade, o teste do rascunho provaria só o campo na tela: salvar por cima dele é o
+     * que decide se o adiamento sobrevive.
+     */
+    @Test
+    fun salvarORascunhoSemMexerNoHorarioNaoDesfazOAdiamento() {
+        runBlocking {
+            semearSerie(horaDaSerie = LocalTime.of(8, 0))
+            semearDose(hoje, marcadaPara = em(hoje, 8), avisoEm = em(hoje, 8))
+            val repo = repo(LocalDateTime.of(2026, 8, 20, 8, 0))
+            repo.rescheduleAll()
+            repo.snooze(idDe(hoje), minutes = 30)
+
+            // O que a tela manda de volta: os valores do rascunho que ela abriu, sem edição.
+            val rascunho = editDraftOf(itemDe(hoje))
+            val dataNoCampo = rascunho.localDate!!
+            val horaNoCampo = rascunho.localTime!!
+            repo(LocalDateTime.of(2026, 8, 20, 8, 5)).editOccurrence(
+                occurrenceId = idDe(hoje),
+                title = "Remédio da manhã",
+                date = dataNoCampo,
+                time = horaNoCampo,
+                recurrence = rascunho.recurrence,
+            )
+
+            assertThat(alarmeDe(hoje)).isEqualTo(em(hoje, 8, 30))
+            assertThat(container.db.occurrenceDao().get(idDe(hoje))?.status)
+                .isEqualTo(OccurrenceStatus.PENDING.name)
+            // O nome novo entrou: o teste mede o adiamento preservado, não uma escrita que não
+            // aconteceu.
+            assertThat(container.db.seriesDao().get(seriesId)?.title).isEqualTo("Remédio da manhã")
+        }
+    }
+
+    /**
      * A manchete do topo anuncia o mesmo horário que o cartão logo abaixo.
      *
      * Sem esta metade a home se contradiz **dentro da mesma tela**: o cartão dizendo 08:00 e a
@@ -355,6 +431,121 @@ class CartaoMostraOHorarioDoAvisoTest {
 
             assertThat(texto).contains("Remédio às 08:00")
             assertThat(texto).doesNotContain("14:00")
+        }
+    }
+
+    /**
+     * A manchete escolhe o compromisso pela hora do **aviso**, e não pela hora marcada.
+     *
+     * O defeito é o mesmo eixo uma superfície acima: ela escolhia com `minByOrNull
+     * { scheduledAt }` e descrevia com `occurrenceTime`. Quando o mais próximo deixa de ser o
+     * marcado mais cedo — que é o que o adiamento faz —, a frase anuncia o compromisso errado, e
+     * anuncia a hora dele com a mesma convicção.
+     *
+     * Aqui: o remédio era o mais cedo (07:00) e foi adiado para as 11:30; a consulta é às 08:00.
+     * Quem vem primeiro agora é a consulta.
+     */
+    @Test
+    fun aMancheteEscolheOPendentePelaHoraDoAviso() {
+        runBlocking {
+            semearSerie(horaDaSerie = LocalTime.of(7, 0))
+            semearDose(hoje, marcadaPara = em(hoje, 7), avisoEm = em(hoje, 7))
+            semearOutraSerie("Consulta", horaDaSerie = LocalTime.of(8, 0))
+            val repo = repo(LocalDateTime.of(2026, 8, 20, 7, 0))
+            repo.rescheduleAll()
+
+            repo.snooze(idDe(hoje), minutes = 270)
+
+            val manchete = homeHeadline(
+                agendaUi = AgendaUi(
+                    sections = repo(LocalDateTime.of(2026, 8, 20, 7, 0)).snapshotAgenda(),
+                    loaded = true,
+                    failed = false,
+                ),
+                nowTime = LocalTime.of(7, 0),
+                today = hoje,
+            )
+
+            assertThat(alarmeDe(hoje)).isEqualTo(em(hoje, 11, 30))
+            assertThat(manchete).contains("Consulta, hoje às 08:00")
+            assertThat(manchete).doesNotContain("Remédio")
+        }
+    }
+
+    /**
+     * E o compartilhado sai na ordem das horas que ele **anuncia**.
+     *
+     * O texto é montado a partir de `sectionsOf`, que ordena por `scheduledAt`; como a linha
+     * carrega a hora do aviso, o adiamento fazia a dose das 07:00 (agora 11:30) sair **antes** da
+     * consulta das 08:00 — a família recebia a lista fora de ordem, com a tarde na frente da
+     * manhã.
+     */
+    @Test
+    fun oCompartilhadoSaiNaOrdemDasHorasQueEleAnuncia() {
+        runBlocking {
+            semearSerie(horaDaSerie = LocalTime.of(7, 0))
+            semearDose(hoje, marcadaPara = em(hoje, 7), avisoEm = em(hoje, 7))
+            semearOutraSerie("Consulta", horaDaSerie = LocalTime.of(8, 0))
+            val repo = repo(LocalDateTime.of(2026, 8, 20, 7, 0))
+            repo.rescheduleAll()
+
+            repo.snooze(idDe(hoje), minutes = 270)
+
+            val secao = repo(LocalDateTime.of(2026, 8, 20, 7, 0)).snapshotAgenda()
+            val texto = AgendaFormat.todayShare(shareLinesOf(secao.today, hoje))
+
+            assertThat(texto).contains("Consulta às 08:00")
+            assertThat(texto.indexOf("Consulta às 08:00"))
+                .isLessThan(texto.indexOf("Remédio às 11:30"))
+        }
+    }
+
+    /**
+     * A pendente de hoje cujo aviso já passou e não tem mais escada aberta é "atrasada".
+     *
+     * `lateMark` pergunta pelo **dia**, e só marca o que atravessou a meia-noite. A escada
+     * encerrada (`nextReminderAt` nulo) com a hora já passada não era vista por ninguém: às 10:00
+     * ela lia "Remédio, hoje · 08:00" — um instante que já passou, sem nada dizendo que passou. O
+     * widget já marca esse caso como atrasado; o cartão de dentro, não.
+     */
+    @Test
+    fun oCartaoMarcaComoAtrasadaAPendenteCujoAvisoJaPassou() {
+        runBlocking {
+            semearSerie(horaDaSerie = LocalTime.of(8, 0))
+            container.db.occurrenceDao().upsert(
+                TaskOccurrence(
+                    id = idDe(hoje),
+                    seriesId = seriesId,
+                    localDate = hoje,
+                    scheduledAt = em(hoje, 8),
+                    status = OccurrenceStatus.PENDING,
+                    nextReminderAt = null,
+                ).toEntity(),
+            )
+            val agora = LocalDateTime.of(2026, 8, 20, 10, 0)
+            val item = repo(agora).snapshotAgenda().today.first { it.occurrence.id == idDe(hoje) }
+
+            assertThat(item.occurrence.nextReminderAt).isNull()
+            assertThat(AgendaFormat.isLate(item, hoje, agora.atZone(zone).toInstant())).isTrue()
+            // O `lateMark` sozinho não via este caso — é ele que a peça nova estende.
+            assertThat(AgendaFormat.lateMark(item.occurrence.localDate, hoje)).isNull()
+        }
+    }
+
+    /**
+     * O outro lado do critério, que é o que impede a marca de virar "tudo que passou das 8h está
+     * atrasado": com a escada aberta, o aviso deslocado pelo silêncio noturno para as 08:00 de
+     * **amanhã** é o próximo, e não um atraso.
+     */
+    @Test
+    fun oAvisoDeslocadoParaAmanhaNaoViraAtraso() {
+        runBlocking {
+            semearSerie(horaDaSerie = LocalTime.of(22, 0))
+            semearDose(hoje, marcadaPara = em(hoje, 22), avisoEm = em(amanha, 8), passo = 1)
+            val agora = LocalDateTime.of(2026, 8, 20, 22, 30)
+            val item = repo(agora).snapshotAgenda().today.first { it.occurrence.id == idDe(hoje) }
+
+            assertThat(AgendaFormat.isLate(item, hoje, agora.atZone(zone).toInstant())).isFalse()
         }
     }
 }

@@ -82,7 +82,7 @@ object AgendaFormat {
      *
      * A regra só é anunciada quando rege a data anunciada. Na edição em que a data tocada vale e
      * a regra só passa a valer das próximas em diante, a metade da regra saía da frase como uma
-     * segunda promessa — "Vai avisar Sábado, 22 de agosto de 2026 às 08:00. Dias úteis." —, e as
+     * segunda promessa — "Vai avisar Sábado, 3 de outubro de 2026 às 08:00. Dias úteis." —, e as
      * duas metades eram verdadeiras sobre coisas diferentes. O dado gravado sempre esteve certo
      * (a edição mantém a data tocada; é o contrato); a frase é que prometia o que o app não faz.
      */
@@ -271,6 +271,23 @@ object AgendaFormat {
         } else {
             item.occurrence.localDate
         }
+
+    /**
+     * A pendente que já passou da hora do seu aviso — o que o cartão marca como "atrasada".
+     *
+     * A pergunta é sobre o **aviso**, e não sobre o dia: a escada de lembretes pode estar
+     * encerrada (`nextReminderAt` nulo, ver [avisoInstant]) com a hora já passada, e o [lateMark]
+     * — que olha só o dia — não vê esse caso. O cartão ficava mudo justamente no aviso que não
+     * saiu: às 10:00 ela lia "Remédio, hoje · 08:00" sem nada dizendo que a hora passou.
+     *
+     * Com a escada aberta a marca continua sendo a do dia, de propósito: um aviso de hoje
+     * deslocado pelo silêncio para as 08:00 de amanhã é o **próximo**, não um atraso.
+     *
+     * É a mesma pergunta que o widget já responde para o lado de fora (`late = true`).
+     */
+    fun isLate(item: AgendaItem, today: LocalDate, now: Instant): Boolean =
+        item.occurrence.status == OccurrenceStatus.PENDING &&
+            (lateMark(item.occurrence.localDate, today) != null || avisoInstant(item).isBefore(now))
 
     fun todayShare(lines: List<DayShareLine>): String {
         if (lines.isEmpty()) return "Hoje no Fala Agenda não tem nada marcado."

@@ -933,7 +933,12 @@ internal fun homeHeadline(
     today: LocalDate,
 ): String {
     val agenda = agendaUi.sections
-    val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
+    // O mais próximo pelo **aviso**, que é o instante que a frase anuncia logo abaixo: com
+    // `scheduledAt` ela escolhia por um campo e descrevia por outro, e os dois divergem por
+    // desenho — o adiamento das 08:00 para as 08:30 e o aviso deslocado pelo silêncio noturno
+    // fazem o compromisso mais próximo ser outro. O `sectionsOf` do repositório ordena pela
+    // hora marcada e chega à manchete assim; quem decide aqui não pode depender disso.
+    val next = (agenda.today + agenda.upcoming).minByOrNull { AgendaFormat.avisoInstant(it) }
     // O mesmo `missedReason` que decide as seções de baixo: a manchete não pode ter a sua
     // própria noção de "eu não avisei", senão o topo diz "3 recados ficaram para trás" e a
     // seção logo abaixo diz "Não consegui avisar" sobre o mesmo item. Uma conta, dois usos.
@@ -968,16 +973,22 @@ internal fun homeHeadline(
  * a marca "ontem" da pendente que atravessou a meia-noite.
  */
 internal fun shareLinesOf(items: List<AgendaItem>, today: LocalDate): List<AgendaFormat.DayShareLine> =
-    items.map { item ->
-        AgendaFormat.DayShareLine(
-            title = item.series.title,
-            time = AgendaFormat.occurrenceTime(item),
-            observation = item.series.observation,
-            // A pendente que atravessou a meia-noite entra em "Hoje": sem a marca, ela era
-            // mandada para a família como se fosse de hoje.
-            dayMark = AgendaFormat.shareDayMark(AgendaFormat.occurrenceDay(item), today),
-        )
-    }
+    items
+        // A ordem acompanha a hora anunciada, e não a da lista: `sectionsOf` ordena por
+        // `scheduledAt`, que é a hora **marcada** e não a do aviso — e é o aviso que a linha
+        // carrega. Com o adiamento e o silêncio noturno, a dose das 08:00 que foi para as 08:30
+        // saía depois da das 09:00, e o texto chegava à família fora de ordem.
+        .sortedBy { AgendaFormat.avisoInstant(it) }
+        .map { item ->
+            AgendaFormat.DayShareLine(
+                title = item.series.title,
+                time = AgendaFormat.occurrenceTime(item),
+                observation = item.series.observation,
+                // A pendente que atravessou a meia-noite entra em "Hoje": sem a marca, ela era
+                // mandada para a família como se fosse de hoje.
+                dayMark = AgendaFormat.shareDayMark(AgendaFormat.occurrenceDay(item), today),
+            )
+        }
 
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -1172,14 +1183,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
             // deslocado pelo silêncio noturno toca às 08:00 de amanhã.
             val date = AgendaFormat.dateLabel(AgendaFormat.occurrenceDay(item), today)
             val time = AgendaFormat.time(AgendaFormat.occurrenceTime(item))
-            val relative = AgendaFormat.fromNow(AgendaFormat.avisoInstant(item), Instant.now())
+            val agora = Instant.now()
+            val relative = AgendaFormat.fromNow(AgendaFormat.avisoInstant(item), agora)
             // A pendente de ontem vive na seção "Hoje": ela diz que está atrasada em vez de
-            // um "há N h" que se lê igual ao das tarefas de hoje.
-            val late = if (item.occurrence.status == OccurrenceStatus.PENDING) {
-                AgendaFormat.lateMark(item.occurrence.localDate, today)
-            } else {
-                null
-            }
+            // um "há N h" que se lê igual ao das tarefas de hoje. E a de hoje cujo aviso já
+            // passou sem a escada estar aberta (`nextReminderAt` nulo) entra pela mesma peça:
+            // ela lia "Remédio, hoje · 08:00" às 10:00 sem nada dizendo que a hora passou.
+            val late = if (AgendaFormat.isLate(item, today, agora)) "atrasada" else null
             val detail = buildString {
                 append(date)
                 append(" · ")

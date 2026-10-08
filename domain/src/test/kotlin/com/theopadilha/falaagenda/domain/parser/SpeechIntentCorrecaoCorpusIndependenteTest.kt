@@ -108,7 +108,6 @@ class SpeechIntentCorrecaoCorpusIndependenteTest {
         "não me deixaram",
         "não deixaram",
         "não foi liberado",
-        "não é o momento",
         "não vou mais",
         "não tenho mais",
         "não sobrou",
@@ -168,19 +167,70 @@ class SpeechIntentCorrecaoCorpusIndependenteTest {
         "não quero o dinheiro",
     )
 
-    /** As caudas de RAZÃO que abrem com o MESMO verbo de [caudasComAlvoMencionado]. */
+    /**
+     * As caudas de RAZÃO que abrem com o MESMO verbo de [caudasComAlvoMencionado].
+     *
+     * O `"não é possível"` saiu daqui: ele é a cópula seguida de palavra nua, e é o custo DECLARADO
+     * do fix do complemento sem determinante (ver `SpeechIntentCorrecaoInvarianteTest`). Ele
+     * continua no corpus — só que em [caudasQueACopulaBloqueia], com o número explícito, em vez de
+     * numa lista de tolerância zero onde ele faria a asserção mentir.
+     */
     private val caudasDeRazaoComOMesmoVerbo = listOf(
         "não quero mais",
         "não tenho como",
         "não tem como",
         "não queria",
-        "não é possível",
         "não posso",
         "não consigo",
         "não preciso mais",
     )
 
     private val verbosNaturais = listOf("cancela ", "já tomei ", "apaga ", "exclui ", "tira ")
+
+    /**
+     * O custo DECLARADO do fix do complemento sem determinante: a continuação cujo complemento,
+     * depois da cópula, tem a forma de um sintagma nominal — palavra nua ("não é possível"), ou
+     * preposição ("não é pra mim").
+     *
+     * A FORMA não separa essas duas de uma correção de verdade ("não é dentista", "não é de
+     * diabetes"): as quatro são `cópula + palavra nua` ou `cópula + preposição + nome`. Separá-las
+     * pediria léxico (saber que "possível" é adjetivo e "dentista" é substantivo), e o classificador
+     * é puro e não tem léxico. O desfecho é o lado seguro — deixa de agir, não age sobre o alvo
+     * descartado —, e o número fica preso para não subir calado.
+     *
+     * O que NÃO entra aqui é a família clínica (`"não quero mais"`, `"não tenho como"`, `"não vou
+     * poder ir"`): nenhuma delas tem cópula, então o critério não as toca e elas continuam em
+     * [caudasNaturais] com tolerância zero.
+     */
+    private val caudasQueACopulaBloqueia = listOf(
+        "não é possível",
+        "não é pra mim",
+    )
+
+    @Test
+    fun oCustoDaCopulaFicaDeclarado() {
+        var casos = 0
+        var bloqueados = 0
+        val naoBloqueadas = mutableListOf<String>()
+
+        verbosNaturais.forEach { verbo ->
+            alvosNaturais.forEach { (alvo, _) ->
+                caudasQueACopulaBloqueia.forEach { cauda ->
+                    casos++
+                    val intent = SpeechIntentClassifier.classify("$verbo$alvo, $cauda")
+                    if (bloqueado(intent)) {
+                        bloqueados++
+                    } else {
+                        naoBloqueadas += "$verbo$alvo, $cauda → $intent"
+                    }
+                }
+            }
+        }
+
+        println("PROBE-RESUMO|custoDaCopulaCorpusIndependente|casos=$casos|bloqueados=$bloqueados")
+        if (naoBloqueadas.isNotEmpty()) println("PROBE-NAO-BLOQUEADAS|$naoBloqueadas")
+        assertThat(bloqueados).isEqualTo(casos)
+    }
 
     /**
      * O TETO do custo, e não o zero. Três caudas do corpus são genuinamente ambíguas para um
@@ -238,6 +288,7 @@ class SpeechIntentCorrecaoCorpusIndependenteTest {
             "cancela o médico, não esta marcado",
             "cancela o médico, não é o momento",
             "cancela o médico, não é meu médico",
+            "cancela o médico, não é pra mim",
         )
         var bloqueadas = 0
         var agiram = 0

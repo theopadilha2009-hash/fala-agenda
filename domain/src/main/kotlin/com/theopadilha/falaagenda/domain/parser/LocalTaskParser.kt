@@ -999,6 +999,29 @@ class LocalTaskParser(
         var remaining = text
         val today = clock.today()
 
+        // DOIS dias relativos DISTINTOS na mesma fala ("hoje e amanhã às 9h", "hoje e daqui a dois
+        // dias"): os ramos abaixo devolvem no PRIMEIRO que casa, e o segundo dia nunca era olhado —
+        // a fala virava um dia só, completa e confirmável num toque, com o dia descartado sobrando
+        // no título ("Hoje", "Dentista hoje"). O modelo tem UM `localDate`; com dois dias ditos não
+        // existe "a" data, e cravar uma delas calado é o defeito. É o gêmeo do `days.size > 1`
+        // (dois dias da semana) e do "no dia 25 e no dia 30": escala em vez de escolher.
+        //
+        // O guard roda ANTES de todo ramo que decida a data — inclusive os que devolvem cedo
+        // (`namedDate`, a borda do mês, o `RELATIVE_DAY`). Depois deles ele nunca via a fala: era
+        // por isso que "hoje e daqui a dois dias" saía 22/08, `amb=false`, `qc=true` e sem nota.
+        //
+        // O critério é o CONJUNTO de dias distintos, não a contagem de marcadores, e um dia NEGADO
+        // não entra nele: "hoje e hoje" e "amanhã, não hoje" continuam cravando o que já cravavam.
+        // A régua larga demais derruba fala legítima e é pior que a pergunta.
+        if (diasRelativosDistintosDitos(remaining, today).size > 1) {
+            return DateHit(
+                null,
+                stripDiasRelativos(remaining),
+                true,
+                "${NotasDoRascunho.DATA_AMBIGUA} a fala diz mais de um dia. Não dá para cravar um só.",
+            )
+        }
+
         // Data nomeada (Natal, Páscoa, Sexta-feira Santa, finados) e as expressões de mês
         // ("fim do mês", "meio do mês") vêm antes de tudo: sem isto "sexta-feira santa" casava o
         // dia da semana e virava a sexta DESTA semana, e "amanhã no fim do mês" entregava o
@@ -1137,6 +1160,8 @@ class LocalTaskParser(
             return DateHit(date, remaining, false)
         }
 
+        // (O guard dos dois dias relativos roda no topo deste método: aqui ele já não veria nada,
+        // porque os ramos acima devolvem cedo.)
         Regex("""\bdepois\s+de\s+amanha\b""").find(remaining)?.let {
             remaining = remaining.replace(it.value, " ")
             return DateHit(today.plusDays(2), remaining, false)
@@ -1525,6 +1550,69 @@ class LocalTaskParser(
         return TextNormalizer.compactSpaces(remaining)
     }
 
+    /**
+     * Os dias DISTINTOS que a fala diz por expressão relativa — nunca qual deles vale. Quem
+     * responde "existe uma data que os honre?" é o chamador.
+     *
+     * O critério é o CONJUNTO, não a contagem de marcadores: "hoje e hoje" é um dia só, e contar
+     * marcadores fazia o dia repetido escalar — o app deixava de cravar o que já cravava.
+     *
+     * Um dia NEGADO não entra no conjunto: em "amanhã, não hoje" ela diz um dia e recusa o outro,
+     * e o "não" é o conector de correção (o mesmo que o #99 trata como fronteira). Sem isso o dia
+     * recusado contava como segundo e a resposta certa virava pergunta.
+     *
+     * A alternância mantém `depois de amanhã` inteiro: sem ela o marcador casaria como "amanhã" e
+     * o dia sairia um a menos. A ORDEM dentro da alternância, ao contrário do que esta função já
+     * afirmou, NÃO é load-bearing — o `findAll` retoma DEPOIS do fim de cada match, então não há
+     * sobreposição para a ordem evitar (medido: original=1, ordem trocada=1).
+     */
+    private fun diasRelativosDistintosDitos(text: String, today: LocalDate): Set<LocalDate> {
+        val dias = mutableSetOf<LocalDate>()
+        DIAS_RELATIVOS.findAll(text).forEach { m ->
+            if (negadoNoTexto(text, m)) return@forEach
+            dias += when {
+                m.value.startsWith("depois") -> today.plusDays(2)
+                m.value.startsWith("hoje") -> today
+                else -> today.plusDays(1)
+            }
+        }
+        // "daqui a dois dias"/"em duas semanas" também é dia relativo dito, e o ramo que o resolve
+        // devolve cedo: sem contá-lo aqui, "hoje e daqui a dois dias" seguia com UM dia no conjunto
+        // e o guard não mordia — era o defeito do enunciado, palavra por palavra.
+        RELATIVE_DAY.findAll(text).forEach { m ->
+            if (negadoNoTexto(text, m)) return@forEach
+            val raw = TextNormalizer.compactSpaces(m.groupValues[1])
+            val n = raw.toIntOrNull() ?: WORD_AMOUNTS[raw] ?: return@forEach
+            dias += if (m.groupValues[2].startsWith("semana")) {
+                today.plusWeeks(n.toLong())
+            } else {
+                today.plusDays(n.toLong())
+            }
+        }
+        return dias
+    }
+
+    /**
+     * O "não" colado no marcador o RECUSA ("amanhã, não hoje", "hoje não, amanhã sim").
+     *
+     * Só a vizinhança imediata conta: o "não" que encosta no dia por um dos lados. Um "não" no meio
+     * da oração não alcança o marcador. A régua é deliberadamente estreita — ela só decide se o dia
+     * entra no CONJUNTO, e um dia a menos no conjunto nunca faz o app escalar a mais; um dia a mais
+     * faz.
+     */
+    private fun negadoNoTexto(text: String, marcador: MatchResult): Boolean {
+        val antes = text.substring(0, marcador.range.first)
+        val depois = text.substring(marcador.range.last + 1)
+        return NAO_ANTES.containsMatchIn(antes) || NAO_DEPOIS.containsMatchIn(depois)
+    }
+
+    /**
+     * A fala que escala não pode deixar o dia dito no título ("Daqui a dois dias dentista"): o dia
+     * relativo já cumpriu o papel de disparar a pergunta.
+     */
+    private fun stripDiasRelativos(text: String): String =
+        stripDayWords(text.replace(RELATIVE_DAY, " "))
+
     private data class PeriodHit(val hint: String?, val label: String, val remaining: String)
 
     private fun extractPeriodHint(text: String): PeriodHit {
@@ -1816,13 +1904,28 @@ class LocalTaskParser(
         return found
     }
 
+    /**
+     * Tira SÓ os dias da semana do texto. A conjunção e a vírgula ficam para quem sabe o papel
+     * delas.
+     *
+     * A limpeza antiga (`replace(Regex("""\b(e|,)\b"""), " ")`) rodava sobre todo o resto da frase
+     * sem saber se o token era conjunção de dia, conector de hora, "e" de número ou a vírgula
+     * DECIMAL. Como `extractRecurrence` roda antes de `extractAmount` e de `extractTime`, o dano
+     * era silencioso: "toda segunda pagar 30,50 reais" virava "30 50" e o valor saía R$50,00;
+     * "toda segunda tomar remédio oito e meia" perdia o minuto e ficava sem hora; "às sete e meia"
+     * saía 07:00. Tudo com `ambiguous=false`, que a caixa rápida confirma em um toque.
+     *
+     * O "e" e a vírgula do TÍTULO não dependem desta limpeza: o "e" já está em [FILLERS] e a
+     * vírgula solta já sai no `.trim(',', '.', '!', '?')` do `extractTitle`. Por isso a limpeza sai
+     * daqui inteira, em vez de ganhar um guard de papel: quem interpreta o token é o motor que o
+     * entende (`extractAmount`, `extractClock`, `extractTitle`), não o removedor do dia.
+     */
     private fun stripWeekDays(text: String): String {
         // "quinta que vem" / "próxima sexta": sai inteiro, senão "vem" sobra no título.
         var remaining = text.replace(WEEKDAY_NEXT_WEEK, " ")
         WEEKDAY_PATTERNS.forEach { (regex, _) ->
             remaining = remaining.replace(regex, " ")
         }
-        remaining = remaining.replace(Regex("""\b(e|,)\b"""), " ")
         return TextNormalizer.compactSpaces(stripFeiraSuffix(remaining))
     }
 
@@ -2301,6 +2404,26 @@ class LocalTaskParser(
 
         /** "semana que vem" sozinha (sem dia da semana): a data é a próxima semana, no mesmo dia. */
         private val WEEK_PHRASE = Regex("""\b(?:na\s+|da\s+)?semana\s+que\s+vem\b""")
+
+        /**
+         * As expressões de dia relativo que o parser resolve sem conta: `depois de amanhã`, `amanhã`
+         * e `hoje`. A alternância mantém `depois de amanhã` inteiro (a armadilha é ele conter
+         * "amanhã"): sem isso o marcador casaria como "amanhã" e o dia sairia um a menos.
+         *
+         * A ORDEM dentro da alternância não é load-bearing — o `findAll` retoma depois do fim de
+         * cada match, então não há sobreposição para a ordem evitar (medido: 1 match com a ordem
+         * original e 1 com a ordem trocada). O comentário anterior afirmava o contrário.
+         */
+        private val DIAS_RELATIVOS = Regex("""\bdepois\s+de\s+amanha\b|\bamanha\b|\bhoje\b""")
+
+        /**
+         * O "não" COLADO no dia o recusa — só espaço no meio, sem vírgula. A pontuação é o que diz
+         * de quem o "não" é: em "amanhã, não hoje" a vírgula solta o "não" de "amanhã" e ele cola em
+         * "hoje"; em "hoje não, amanhã sim" é o contrário. Sem essa distinção o dia afirmado também
+         * seria recusado e a fala voltaria a escalar.
+         */
+        private val NAO_ANTES = Regex("""\bnao\s*$""")
+        private val NAO_DEPOIS = Regex("""^\s*nao\b""")
 
         /** "no começo/início do mês": primeiro dia do mês seguinte quando o dia 1 já passou. */
         private val MONTH_START = Regex("""\b(?:no\s+)?(?:comeco|inicio)\s+do\s+(?:mes(?:\s+que\s+vem)?|proximo\s+mes)\b""")

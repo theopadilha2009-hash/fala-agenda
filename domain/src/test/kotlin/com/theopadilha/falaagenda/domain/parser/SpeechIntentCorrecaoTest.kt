@@ -259,4 +259,78 @@ class SpeechIntentCorrecaoTest {
             assertThat(intent(frase)).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
         }
     }
+
+    /**
+     * A família que o comentário de [SpeechIntentClassifier] declarava fora e que TAMBÉM volta
+     * atrás: "espera", "calma", "ops", "pera" e "deixa eu ver".
+     *
+     * A caçada de 07/10 mediu o dano ponta-a-ponta em Robolectric, com a agenda `{Médico,
+     * Dentista}`: `"cancela o médico, espera, o dentista"` respondia "Tarefa excluída." e deixava
+     * `restam=[Dentista]` — o MÉDICO tinha sido apagado. No `Complete` o dano é o de sempre e o
+     * maior do app: `"já tomei o remédio, espera, o de pressão"` registrava a dose errada.
+     *
+     * A cobertura era ZERO: o `grep` dos testes só achava `"peraí"`, que já estava na lista.
+     */
+    @Test
+    fun asInterrupcoesDeCorrecaoQueFaltavamTambemBloqueiam() {
+        listOf(
+            "cancela o médico, espera, o dentista",
+            "cancela o médico, calma, o dentista",
+            "cancela o médico, ops, o dentista",
+            "cancela o médico, pera, o dentista",
+            "cancela o médico, deixa eu ver, o dentista",
+        ).forEach { frase ->
+            assertThat(intent(frase)).isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+        }
+        // O caso mais caro: a dose errada registrada.
+        assertThat(intent("já tomei o remédio, espera, o de pressão"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+        assertThat(intent("apaga o remédio, espera, o de pressão"))
+            .isEqualTo(SpeechIntent.Unknown(UnsupportedKind.CORRECTION))
+    }
+
+    /**
+     * O outro lado da interrupção: o "depois" NÃO é correção — é a continuação ("cancela o médico,
+     * depois eu vejo"), e bloqueá-lo custaria o comando certo. Fica de fora da lista de propósito,
+     * e o custo de tê-lo fora é este teste.
+     */
+    @Test
+    fun aContinuacaoComDepoisNaoBloqueiaOComando() {
+        assertThat(intent("cancela o médico, depois eu vejo")).isEqualTo(SpeechIntent.Cancel("medico"))
+        assertThat(intent("cancela o médico, agora eu vejo")).isEqualTo(SpeechIntent.Cancel("medico"))
+        assertThat(intent("cancela o médico, então eu vejo")).isEqualTo(SpeechIntent.Cancel("medico"))
+    }
+
+    /**
+     * O CUSTO da família da interrupção, medido — a metade que o coordenador mandou medir.
+     *
+     * Diferente do `não`, o gatilho de [SpeechIntentClassifier] para essas palavras é por PRESENÇA
+     * (elas estão em `CONTENT_CUE`), sem veredito de alvo. A consequência é que uma continuação que
+     * use a palavra como VERBO de outra oração também bloqueia: `"cancela o médico, espera o
+     * resultado"` deixa de cancelar e o app pergunta.
+     *
+     * O desfecho é o lado seguro — deixa de agir, não age sobre o alvo descartado —, e o custo fica
+     * DECLARADO aqui em vez de escondido. A asserção é a igualdade: o número não pode subir calado.
+     *
+     * O que este teste também prende é que a família clínica não tem nenhuma dessas palavras, e por
+     * isso não é tocada (ver [clausulaDeRazaoNaoBloqueiaOComando]).
+     */
+    private val CUSTO_DA_FAMILIA_DE_INTERRUPCAO = 5
+
+    @Test
+    fun oCustoDaFamiliaDeInterrupcaoFicaDeclarado() {
+        val custosas = listOf(
+            "cancela o médico, espera o resultado",
+            "cancela o médico, calma que eu resolvo",
+            "cancela o médico, pera aí que eu já volto",
+            "cancela o médico, ops esqueci",
+            "cancela o médico, deixa eu ver o papel",
+        )
+        var bloqueadas = 0
+        custosas.forEach { frase ->
+            if (intent(frase) == SpeechIntent.Unknown(UnsupportedKind.CORRECTION)) bloqueadas++
+        }
+        println("PROBE-RESUMO|custoDaInterrupcao|casos=${custosas.size}|bloqueadas=$bloqueadas")
+        assertThat(bloqueadas).isEqualTo(CUSTO_DA_FAMILIA_DE_INTERRUPCAO)
+    }
 }

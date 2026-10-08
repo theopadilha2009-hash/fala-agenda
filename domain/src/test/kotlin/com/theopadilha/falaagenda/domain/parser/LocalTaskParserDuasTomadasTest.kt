@@ -27,7 +27,7 @@ class LocalTaskParserDuasTomadasTest {
     )
     private val parser = LocalTaskParser(clock)
 
-    // ---- D1: a segunda tomada em DÍGITO sem o "às" — o caso relatado ----
+    // ---- D1: a segunda tomada em DÍGITO com período próprio — o caso relatado ----
 
     @Test
     fun duasTomadasEmDigitoNaoViramUmHorarioInventado() {
@@ -51,8 +51,9 @@ class LocalTaskParserDuasTomadasTest {
 
     @Test
     fun aSegundaTomadaEmDigitoNaoViraMinutoDaPrimeira() {
-        // O dano exato: o "8" da segunda tomada entrava no MINUTO da primeira. Qualquer número dito
-        // depois do primeiro período é um horário novo, nunca o minuto de uma hora já fechada.
+        // O dano exato: o "8" da segunda tomada entrava no MINUTO da primeira. O que distingue a
+        // hora nova do minuto é o PERÍODO PRÓPRIO do número — "e 8 da noite" é 20h, "e 8" sozinho
+        // é o minuto (08:08). Todas as frases abaixo trazem o período da segunda tomada.
         listOf(
             "tomar remédio todo dia às 8 da manhã e 20 da noite",
             "tomar remédio todo dia às 8 da manhã e 15 da tarde",
@@ -91,7 +92,7 @@ class LocalTaskParserDuasTomadasTest {
         assertThat(vinte.canQuickConfirm(clock.instant(), zone)).isFalse()
     }
 
-    // ---- D2: a segunda tomada em DÍGITO sem o "às" — o caso relatado ----
+    // ---- D2: o número NU depois do período é MINUTO, não hora nova ----
 
     @Test
     fun numeroSoltoQueCabeComoHoraContinuaSendoMinuto() {

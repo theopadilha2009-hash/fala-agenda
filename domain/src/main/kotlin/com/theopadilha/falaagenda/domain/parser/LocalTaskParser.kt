@@ -2521,12 +2521,6 @@ class LocalTaskParser(
         /**
          * As expressões de dia relativo que o parser resolve sem conta: `depois de amanhã`, `amanhã`
          * e `hoje`. A alternância mantém `depois de amanhã` inteiro (a armadilha é ele conter
-         * "amanhã"), e é por isso que a contagem de dias ditos não pode ser feita com três `find`
-         * soltos — o dia único escalaria sozinho.
-         */
-        /**
-         * As expressões de dia relativo que o parser resolve sem conta: `depois de amanhã`, `amanhã`
-         * e `hoje`. A alternância mantém `depois de amanhã` inteiro (a armadilha é ele conter
          * "amanhã"): sem isso o marcador casaria como "amanhã" e o dia sairia um a menos.
          *
          * A ORDEM dentro da alternância não é load-bearing — o `findAll` retoma depois do fim de

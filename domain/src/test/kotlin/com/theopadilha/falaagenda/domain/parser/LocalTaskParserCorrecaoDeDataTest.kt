@@ -111,4 +111,87 @@ class LocalTaskParserCorrecaoDeDataTest {
         assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 20))
         assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
     }
+
+    /**
+     * O "não" que FECHA a fala ("me lembra amanhã, não"): ela começou a se corrigir e parou.
+     *
+     * Não há valor novo nenhum para o app usar, então o "não" não é fronteira — o dia dito antes
+     * continua valendo — e ele também não some: ele sobrevive no título, que é o que ela disse.
+     * O título é a única diferença observável deste ramo, e é ela que prende o guard: sem a
+     * asserção, remover o tratamento da cauda vazia deixava a suíte inteira verde.
+     */
+    @Test
+    fun naoTerminalNaoDescartaODiaENaoSomeDoTitulo() {
+        val draft = parse("me lembra de tomar remédio amanhã, não")
+        assertThat(draft.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(draft.title).isEqualTo("Tomar remédio não")
+    }
+
+    // --- o outro lado: a CONTINUAÇÃO depois do "não" ---------------------------------
+    //
+    // A mesma fala que se corrige tem a irmã que CONTINUA: "não tomei hoje" não volta atrás de
+    // nada, ela explica por que o lembrete existe. O "não" ali nega o que vem DEPOIS, e o dia
+    // dito antes dele continua valendo.
+    //
+    // O gatilho do defeito é o VALOR TEMPORAL na cauda, não o verbo. Um critério que pergunte
+    // "a cauda tem um verbo de tarefa?" responde por uma lista de 20 verbos e deixa de fora toda
+    // a fala que não está nela — e aí o valor descartado vence calado, com `ambiguous=false` e a
+    // caixa rápida confirmando o dia errado em um toque. A lista não é o critério; o valor é.
+
+    /**
+     * A tabela do defeito: verbo de continuação × valor temporal na cauda. Escrita à mão, com o
+     * dia que ela disse (`amanhã` = 21/08) — o `hoje` da cauda é a RAZÃO, não a correção.
+     */
+    @Test
+    fun continuacaoComValorNaCaudaNaoDescartaODia() {
+        val casos = listOf(
+            "me lembra de tomar remédio amanhã às oito, não tomei hoje",
+            "me lembra de tomar remédio amanhã, não tomei hoje",
+            "anota pagar a conta amanhã, não deu hoje",
+            "me lembra de ligar pro médico amanhã, não consegui hoje",
+        )
+        val violacoes = casos.mapNotNull { fala ->
+            val draft = parse(fala)
+            if (draft.localDate == LocalDate.of(2026, 8, 21)) {
+                null
+            } else {
+                "«$fala» esperado=2026-08-21 obtido=${draft.localDate} amb=${draft.ambiguous}"
+            }
+        }
+        assertThat(violacoes).isEmpty()
+    }
+
+    /**
+     * O produto: **20 verbos de continuação × 10 valores temporais**, todos com o dia dito antes
+     * do "não" — nenhum pode perder o dia. O que o teste mede é a CLASSE, não os quatro exemplos
+     * da tabela: um critério que responda por lista de verbos falha aqui em qualquer verbo que
+     * ele não conheça.
+     */
+    @Test
+    fun nenhumVerboDeContinuacaoComValorNaCaudaDescartaODia() {
+        val verbos = listOf(
+            "tomei", "tomo", "deu", "consegui", "pude", "quero", "preciso", "tenho",
+            "vou", "sei", "fui", "paguei", "marquei", "liguei", "vi", "soube",
+            "achei", "encontrei", "recebi", "lembrei",
+        )
+        val valores = listOf(
+            "hoje", "hoje as oito", "amanha", "ontem", "agora",
+            "de manha", "de tarde", "de noite", "mais tarde", "hoje a tarde",
+        )
+        val violacoes = mutableListOf<String>()
+        var casos = 0
+        verbos.forEach { verbo ->
+            valores.forEach { valor ->
+                val fala = "me lembra de tomar remedio amanha, nao $verbo $valor"
+                casos++
+                val draft = parse(fala)
+                if (draft.localDate != LocalDate.of(2026, 8, 21)) {
+                    violacoes += "«$fala» obtido=${draft.localDate} amb=${draft.ambiguous}"
+                }
+            }
+        }
+        println("CONTINUACAO|casos=$casos|violacoes=${violacoes.size}")
+        violacoes.take(12).forEach { println("CONTINUACAO-VIOL|$it") }
+        assertThat(violacoes).isEmpty()
+    }
 }

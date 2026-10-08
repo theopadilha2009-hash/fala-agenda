@@ -802,10 +802,15 @@ class LocalTaskParser(
      * e o que vem depois dele é o que ela quis dizer. A leitura da frase é feita por trecho, e o
      * parser fica com o último valor dito de cada campo — não com o primeiro da fala inteira.
      *
-     * Um conector só é fronteira quando a fala **continua** depois dele: "não vou poder ir" é uma
-     * continuação, não uma correção, e um "não" que termina a frase ("me lembra amanhã, não") não
-     * corrige nada — ele descarta, e o app precisa perguntar em vez de cravar. Por isso o trecho
-     * seguinte vazio desfaz a fronteira e a leitura volta a ser a da fala inteira.
+     * Um conector só é fronteira quando o trecho seguinte **nomeia o campo**: a correção segue com
+     * um valor ("hoje", "às nove"), e a continuação segue com uma oração ("não vou poder ir", "não
+     * tomei hoje"). A pergunta é a mesma que o [SpeechIntentClassifier] faz no eixo do alvo ("o que
+     * vem depois nomeia um alvo novo?"), com o desfecho adaptado: lá o classificador, que não tem a
+     * agenda, ESCALA quando o alvo não decide; aqui o parser é o dono do campo, e uma cauda que não
+     * nomeia tempo nenhum não é dúvida — é continuação, e o valor dito antes dela continua valendo.
+     *
+     * Um "não" que termina a frase ("me lembra amanhã, não") não corrige nada e também não é
+     * descartado em silêncio: ele sobrevive no título, que é o que ela disse.
      */
     private data class LeituraTemporal(
         val date: LocalDate?,
@@ -868,15 +873,20 @@ class LocalTaskParser(
 
     /**
      * As fronteiras de correção na fala já normalizada: o par (começo do conector, fim do
-     * conector). As duas listas de conectores vêm do vocabulário que a correção falada usa, e o
-     * `não` é o único que precisa do teste da vírgula — "não, hoje" volta atrás do que foi dito;
-     * "não vou poder ir" nega o que vem depois e não descarta nada.
+     * conector).
+     *
+     * A lista de conectores é CANDIDATA, e não veredito: cada um deles só vira fronteira depois de
+     * passar pelo teste de [nomeiaTempo], que é o mesmo para todos. Isso é o que permite o "não"
+     * SEM vírgula entrar aqui — a forma mais comum da correção falada, que a versão anterior só
+     * reconhecia com a vírgula ("amanhã, não, hoje") e deixava passar calada sem ela ("amanhã não
+     * hoje"): o reconhecedor não pontua de forma confiável, e a vírgula não é o que separa a
+     * correção da continuação.
      */
     private fun correcaoMarcadores(text: String): List<Pair<Int, Int>> {
-        val fortes = mutableListOf<Pair<Int, Int>>()
-        CORRECAO_FRASE.findAll(text).forEach { m -> fortes += m.range.first to m.range.last + 1 }
-        NAO_VIRGULA.findAll(text).forEach { m -> fortes += m.range.first to m.range.last + 1 }
-        val candidatos = fortes + naoFraco(text).map { it.first to it.last + 1 }
+        val candidatos = mutableListOf<Pair<Int, Int>>()
+        CORRECAO_FRASE.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
+        NAO_ANTES.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
+        NAO_BARE.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
         val ordenados = candidatos.sortedBy { it.first }
         // Um conector não pode começar dentro do outro ("não, quer dizer"): vale o que começa
         // antes, e o conector que morre dentro dele é descartado em vez de partir a fala duas vezes
@@ -885,39 +895,65 @@ class LocalTaskParser(
         ordenados.forEach { m ->
             if (semSobreposicao.isEmpty() || m.first >= semSobreposicao.last().second) semSobreposicao += m
         }
-        return semSobreposicao
+        // ...e o conector só vale quando o trecho seguinte NOMEIA um campo de tempo. A pergunta é
+        // feita sobre o trecho inteiro, e não sobre o primeiro token do conector.
+        return semSobreposicao.filterIndexed { i, m ->
+            val fim = semSobreposicao.getOrNull(i + 1)?.first ?: text.length
+            nomeiaTempo(text.substring(m.second, fim))
+        }
     }
 
     /**
-     * O `não` com a vírgula ANTES ("amanhã, não hoje") — a forma mais comum da correção falada, e
-     * a que escapou da primeira versão desta fronteira, que exigia a vírgula depois.
+     * O que vem depois do conector NOMEIA um dia ou uma hora? É a pergunta que separa a correção
+     * ("amanhã, não hoje") da continuação ("amanhã, não vou poder ir"), e é a MESMA pergunta que o
+     * `SpeechIntentClassifier` faz no eixo do alvo — "o que vem depois nomeia um alvo novo?" —,
+     * com o desfecho adaptado: lá o classificador, sem a agenda na mão, escala quando o alvo não
+     * decide; aqui o parser é o dono do campo, e uma cauda que não nomeia tempo nenhum não é
+     * dúvida — é continuação, e o valor dito antes dela continua valendo.
      *
-     * Ela não vale pela presença: a vírgula antes do "não" também abre uma continuação ("amanhã,
-     * não vou poder ir"), e ali o "não" nega o que vem depois em vez de descartar o que veio
-     * antes. Quem separa as duas é a gramática do trecho seguinte: a correção segue com um
-     * VALOR ("hoje", "às nove"), e a continuação segue com uma ORAÇÃO — o verbo é o que denuncia
-     * que ela está explicando, não corrigindo. Um token sozinho não carrega essa informação; a
-     * forma da oração carrega.
+     * O veredito NÃO é uma lista de verbos. A versão anterior perguntava "a cauda tem um verbo de
+     * tarefa?" contra o `TASK_VERB` — 20 verbos —, e toda continuação fora dela ("não tomei hoje",
+     * "não deu hoje", "não consegui hoje") fazia a fronteira disparar e o valor DESCARTADO vencer:
+     * "me lembra de tomar remédio amanhã às oito, não tomei hoje" agendava 20/08, com
+     * `ambiguous=false` e a caixa rápida confirmando o dia errado em um toque. Medido: 36
+     * regressões em 200 falas (20 verbos × 10 valores). Um token não carrega essa informação; a
+     * FORMA do trecho carrega.
      *
-     * O trecho vazio também não é fronteira ("me lembra amanhã, não"): ela começou a se corrigir
-     * e parou, e ali não há valor novo nenhum para o app usar — a leitura volta a ser a da fala
-     * inteira, que é o desfecho de antes desta mudança.
+     * E a forma é POSICIONAL: a correção de data/hora é o valor dito logo depois do conector
+     * ("não, hoje", "não, de tarde", "não, às nove"), e a continuação é uma oração, com o verbo
+     * antes do tempo ("não tomei **hoje**", "não vou poder ir **amanhã**"). Por isso o sinal de
+     * tempo tem de ABRIR o trecho, e não apenas aparecer nele — a versão que só perguntava "tem
+     * tempo na cauda?" continuava disparando em "não tomei hoje", que é exatamente o defeito.
+     *
+     * Os sinais são três, e cada um cobre uma correção de verdade:
+     *
+     * - a DATA (`DATE_SIGNAL`: "hoje", "amanhã", "segunda", "dia 25", "25/10");
+     * - o PERÍODO do dia (`PERIOD_PHRASE`: "de tarde", "de manhã"), que é a correção de hora mais
+     *   comum depois do "não" e sozinho já nomeia um horário;
+     * - a HORA (`TIME_SIGNAL`: "às N", "meio-dia", "daqui a...").
+     *
+     * A moldura vem antes do valor em fala natural ("errei, **é na** sexta"), e por isso até dois
+     * tokens de moldura são pulados — só de moldura, e só dois: pular qualquer coisa abriria a
+     * porteira para a continuação ("não **vou poder** ir amanhã"), que é o caso clínico.
      */
-    private fun naoFraco(text: String): List<IntRange> {
-        val hits = NAO_ANTES.findAll(text).toList()
-        return hits.mapNotNull { m ->
-            val fim = m.range.last + 1
-            val proximo = hits.firstOrNull { it.range.first > m.range.first }?.range?.first
-                ?: CORRECAO_FRASE.find(text, fim)?.range?.first
-                ?: text.length
-            val cauda = text.substring(fim, proximo)
-            when {
-                cauda.isBlank() -> null
-                TASK_VERB.containsMatchIn(cauda) -> null
-                else -> m.range.first until fim
-            }
+    private fun nomeiaTempo(cauda: String): Boolean {
+        var dito = cauda.trimStart(' ', ',', '.', '!', '?', ';', ':')
+        var pulados = 0
+        while (pulados < 2 && dito.isNotBlank()) {
+            if (abreComTempo(dito)) return true
+            val primeiro = dito.substringBefore(' ')
+            if (primeiro !in MOLDURA_TEMPORAL) return false
+            dito = dito.substringAfter(' ', "").trimStart(' ', ',', '.', '!', '?', ';', ':')
+            pulados++
         }
+        return abreComTempo(dito)
     }
+
+    /** Um sinal de data, de período do dia ou de hora ABRINDO o trecho. */
+    private fun abreComTempo(text: String): Boolean =
+        text.isNotBlank() && (DATE_SIGNAL.find(text)?.range?.first == 0 ||
+            PERIOD_PHRASE.find(text)?.range?.first == 0 ||
+            TIME_SIGNAL.find(text)?.range?.first == 0)
 
     /**
      * O relógio da frase: dígito, por extenso e o "às N" sem "h". Extraído de `extractTime` porque
@@ -1909,9 +1945,16 @@ class LocalTaskParser(
      * o "e" lista dias, não tarefas.
      */
     private fun looksLikeTwoTasks(text: String): Boolean {
+        // O "e" DENTRO de um conector de correção não separa orações. Sem esta poda, "amanhã, isto
+        // é, hoje" era lido como duas tarefas e o rascunho escalava por uma ambiguidade que não
+        // existe: a fala é uma correção só, e o corpus por classe gramatical foi quem a expôs.
+        var semConector = text
+        correcaoMarcadores(text).reversed().forEach { (ini, fim) ->
+            semConector = semConector.replaceRange(ini, fim, " ")
+        }
         // "vinte e cinco"/"quarenta e cinco": o "e" aqui é do número, não separa orações. Colar as
         // duas palavras antes de dividir evita partir "às vinte e cinco de maio" em duas orações.
-        val glued = text.replace(NUMBER_E, "$1$2")
+        val glued = semConector.replace(NUMBER_E, "$1$2")
         val clauses = glued.split(Regex("""\be\b"""))
         if (clauses.count { TASK_VERB.containsMatchIn(it) } >= 2) return true
 
@@ -2694,29 +2737,56 @@ class LocalTaskParser(
          * de palavra dos dois lados — a fala chega pontuada de formas diferentes (", errei.", ",
          * mentira", ", melhor,") e um conector que escapasse deixaria o valor descartado valendo,
          * calado. O `não` não está aqui: ele é o único com ambiguidade de continuação ("não vou
-         * poder ir"), e por isso vive em [NAO_VIRGULA], onde a vírgula é quem decide.
+         * poder ir"), e por isso vive em [NAO_ANTES]/[NAO_BARE], onde o teste é o mesmo
+         * [nomeiaTempo] que vale para todos.
          *
          * O vocabulário é o mesmo que o `SpeechIntentClassifier` já usa para o alvo, mais as
          * formas de correção falada que só fazem sentido para data/hora ("hoje não, amanhã").
+         *
+         * Acrescentados aqui os conectores de reformulação que faltavam e que a fala real usa —
+         * "só que", "ou melhor", "ou seja", "isto é", "espera". Eles entram sem o custo que
+         * teriam na versão anterior desta fronteira: o gate de [nomeiaTempo] só os deixa valer
+         * quando o trecho seguinte ABRE com um dia ou uma hora, então "espera aí, o médico vem"
+         * continua exatamente o que era — não há valor novo para descartar nada.
          */
         private val CORRECAO_FRASE = Regex(
             """\b(?:quer dizer|quis dizer|na verdade|ao inves disso|em vez disso|ta errado|""" +
                 """deixa pra la|me enganei|corrigindo|mentira|alias|esquece|perai|desculpa|""" +
-                """digo|errei)\b|,\s*melhor\b""",
+                """digo|errei|so que|ou melhor|ou seja|isto e|espera)\b|,\s*melhor\b""",
         )
 
         /**
-         * O `não` como fronteira: só quando ele vem seguido de vírgula. A vírgula é a quebra
-         * prosódica da correção — ela parou, e o que vem depois é o que ela quis dizer. Sem ela o
-         * "não" nega o que segue ("não vou poder ir") e não descarta nada.
-         */
-        private val NAO_VIRGULA = Regex("""\bnao\s*,""")
-
-        /**
-         * O `não` precedido de vírgula. Só é fronteira quando o trecho seguinte traz um VALOR em
-         * vez de uma oração — ver [naoFraco], que é quem decide.
+         * O `não` com a vírgula ANTES ("amanhã, não hoje") — a forma mais comum da correção falada.
+         * A vírgula antes é o que dá o corte: sem ela o "não" pode estar negando o que segue.
          */
         private val NAO_ANTES = Regex(""",\s*\bnao\b""")
+
+        /**
+         * O `não` SEM vírgula nenhuma ("amanhã não hoje"), que a versão anterior deixava passar
+         * calada.
+         *
+         * O reconhecedor de fala não pontua de forma confiável — e o teclado entrega o texto CRU,
+         * sem normalizador que apague a vírgula (`WriteTaskScreen` → `understandSpeech`) —, então
+         * exigir a vírgula não filtra ruído: filtra a fala dela. O que separa a correção da
+         * continuação não é a pontuação, é o valor que vem depois, e quem responde isso é
+         * [nomeiaTempo] — o mesmo teste que o "não" com vírgula já respondia.
+         *
+         * O conector exige a fronteira de palavra dos dois lados para não roubar o "não" de dentro
+         * de uma palavra nem o "não" final de uma continuação ("não vou poder ir, não").
+         */
+        private val NAO_BARE = Regex("""\bnao\b""")
+
+        /**
+         * A moldura que a fala natural põe ANTES do valor corrigido ("errei, **é na** sexta",
+         * "**não é** amanhã", "**acho que é** hoje"). Ela não é o valor e não decide nada: só é
+         * pulada, até dois tokens, para o teste de [nomeiaTempo] olhar o que vem depois.
+         *
+         * Só as palavras DESTA lista são puladas. Pular qualquer coisa abriria a porteira para a
+         * continuação — "não **vou poder** ir amanhã" tem o dia na cauda e é o caso clínico.
+         */
+        private val MOLDURA_TEMPORAL = setOf(
+            "e", "eh", "era", "nao", "ate", "so", "agora", "melhor", "acho", "que", "pra", "para",
+        )
 
         private val FILLERS = setOf(
             "me", "lembrar", "lembre", "lembra", "de", "que", "pra", "para", "o", "a", "os", "as",

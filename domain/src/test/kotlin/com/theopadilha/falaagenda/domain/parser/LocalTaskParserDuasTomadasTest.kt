@@ -194,17 +194,16 @@ class LocalTaskParserDuasTomadasTest {
             .isEqualTo(java.time.LocalTime.of(8, 30))
     }
 
-    // ---- O teto não pode ler um número que OUTRO extrator já consumiu ----
+    // ---- O número que OUTRO extrator já consumiu não abre segunda tomada ----
 
     @Test
     fun valorEmReaisDepoisDoPeriodoNaoViraSegundaTomada() {
         // O valor em reais é lido ANTES do relógio, e o texto que o relógio recebe já não o tem.
-        // O "12" de "e 12 reais" não é horário nenhum — é dinheiro. Um critério que varre a frase
-        // INTEIRA conta esse número como segunda tomada e derruba o 08:00 que ela disse: a fala
-        // vira ambígua por causa do preço, não por causa de uma dose a mais.
+        // O "12" de "e 12 reais" não é horário nenhum — é dinheiro, e não traz período próprio,
+        // então não abre tomada. Um critério de teto numérico leria esse número como hora e
+        // derrubaria o 08:00 que ela disse: a fala viraria ambígua por causa do preço.
         //
-        // O par "12 reais" (ambíguo) × "30 reais" (seguro) é o que denuncia o defeito: o gatilho é
-        // o número caber em 0–23, e não existir um segundo horário.
+        // O controle é o par: com e sem os "reais" o número está lá, e só o valor é que muda.
         val draft = parser.parse("pagar a conta às 8 da manhã e 12 reais")
         assertThat(draft.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
         assertThat(draft.ambiguous).isFalse()
@@ -214,8 +213,8 @@ class LocalTaskParserDuasTomadasTest {
         assertThat(vinte.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
         assertThat(vinte.ambiguous).isFalse()
 
-        // O "30" passa do teto, então já ficava seguro na base — é o controle que mostra que o
-        // problema é o teto lendo o número, não o número em si.
+        // O "30" é o controle do outro lado: também não traz período próprio, então também é
+        // dinheiro e não tomada — o número em si nunca é o gatilho.
         val trinta = parser.parse("pagar a conta às 8 da manhã e 30 reais")
         assertThat(trinta.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
         assertThat(trinta.ambiguous).isFalse()
@@ -224,7 +223,8 @@ class LocalTaskParserDuasTomadasTest {
     @Test
     fun segundaTomadaContinuaSendoVistaQuandoOValorNaoEstaLá() {
         // O outro lado do conserto: tirar o valor do caminho não pode cegar a regra para o caso
-        // que ela existe para pegar. Sem os "reais", o mesmo "e 12" é um horário.
+        // que ela existe para pegar. Sem os "reais", o "e 12 da noite" traz o período próprio dele
+        // e é uma segunda tomada de verdade.
         val draft = parser.parse("tomar remédio todo dia às 8 da manhã e 12 da noite")
         assertThat(draft.localTime).isNull()
         assertThat(draft.ambiguous).isTrue()

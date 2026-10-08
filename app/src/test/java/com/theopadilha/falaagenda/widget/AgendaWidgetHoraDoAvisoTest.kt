@@ -55,9 +55,13 @@ class AgendaWidgetHoraDoAvisoTest {
      * justamente ele que o widget mostrava, mesmo quando a dose exibida tinha outro instante
      * armado.
      */
-    private fun serie(horaDaSerie: LocalTime): TaskSeries = TaskSeries(
-        id = "s-rem",
-        title = "Remédio",
+    private fun serie(
+        horaDaSerie: LocalTime,
+        id: String = "s-rem",
+        titulo: String = "Remédio",
+    ): TaskSeries = TaskSeries(
+        id = id,
+        title = titulo,
         zoneId = zone,
         localTime = horaDaSerie,
         startLocalDate = hoje,
@@ -206,7 +210,7 @@ class AgendaWidgetHoraDoAvisoTest {
             passo = 3,
         )
         val seguinte = ocorrencia(
-            serie(horaDaSerie = LocalTime.of(9, 0)),
+            serie(horaDaSerie = LocalTime.of(9, 0), id = "s-seguinte", titulo = "Cabelo"),
             hoje,
             marcadaPara = em(hoje, 9),
             avisoEm = em(hoje, 9),
@@ -215,6 +219,45 @@ class AgendaWidgetHoraDoAvisoTest {
         val tela = naTela(secoes(adiada, seguinte), now = em(hoje, 8, 15))
 
         assertThat(tela.quando).isEqualTo("Hoje · 08:30")
+        assertThat(tela.kicker).isEqualTo("Próxima")
+    }
+
+    /**
+     * A ORDENAÇÃO, e não só o filtro: o aviso adiado ganha da tarefa seguinte mesmo quando a hora
+     * **marcada** dele é menor que a da outra e o aviso é maior.
+     *
+     * É o caso que separa as duas contas, e o único em que elas discordam. "Remédio" das 08:00
+     * adiada 30 min (o `snooze` é sempre 30, ver `Receivers.kt`) e "Cabelo" às 08:10: às 08:05 os
+     * dois passam o filtro — as duas horas marcadas e os dois avisos são futuros —, e aí ordenar
+     * pelo `scheduledAt` elege o Remédio (08:00 < 08:10), cujo aviso é das **08:30**, enquanto o do
+     * Cabelo está armado para as 08:10. O widget anuncia o aviso que toca depois e a tela de fora
+     * mente por vinte minutos, na hora em que ela olha o telefone para saber o que vem.
+     *
+     * O outro teste de dois candidatos não pega isto: lá as duas ordens coincidem (08:00 < 09:00 e
+     * 08:30 < 09:00), então ele morre pelo filtro e deixa a ordenação solta.
+     */
+    @Test
+    fun oAvisoAdiadoGanhaDaTarefaSeguinteMesmoComAHoraMarcadaMenor() {
+        val remedio = serie(horaDaSerie = LocalTime.of(8, 0))
+        val adiada = ocorrencia(
+            remedio,
+            hoje,
+            marcadaPara = em(hoje, 8),
+            avisoEm = em(hoje, 8, 30),
+            adiadaPara = em(hoje, 8, 30),
+            passo = 3,
+        )
+        val cabelo = ocorrencia(
+            serie(horaDaSerie = LocalTime.of(8, 10), id = "s-cabelo", titulo = "Cabelo"),
+            hoje,
+            marcadaPara = em(hoje, 8, 10),
+            avisoEm = em(hoje, 8, 10),
+        )
+
+        // Os dois candidatos passam o filtro: nada aqui morre por hora marcada vencida.
+        val tela = naTela(secoes(adiada, cabelo), now = em(hoje, 8, 5))
+
+        assertThat(tela.quando).isEqualTo("Hoje · 08:10")
         assertThat(tela.kicker).isEqualTo("Próxima")
     }
 

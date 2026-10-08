@@ -3,6 +3,8 @@ package com.theopadilha.falaagenda.ui.capture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -85,32 +87,52 @@ fun QuickConfirmDialog(
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
-                Text(draft.title, style = MaterialTheme.typography.titleLarge)
-                promise?.let {
-                    Text(it.recap, style = MaterialTheme.typography.bodyLarge)
-                    it.droppedChoice?.let { linha ->
-                        Text(linha, style = MaterialTheme.typography.bodyMedium)
+            // O `AlertDialog` do M3 não dá rolagem ao conteúdo e não reserva o rodapé: o slot
+            // `text` recebe a altura que sobra da janela e, quando o conteúdo a estoura, os
+            // filhos transbordam por baixo do limite — o que está no fim da coluna sai da
+            // tela. Medido em 07/10/2026, com o rascunho cheio o "Mudar" fica com 0 px de
+            // altura em 1,5x, e em 2,0x no aparelho dela. É o único caminho para corrigir o
+            // recado (o `onDismissRequest` só cancela e o "Salvar" grava o que está), então
+            // ele não pode sair da tela.
+            //
+            // O resumo rola dentro do que sobra, e o "Mudar" fica **fora** do que rola, logo
+            // abaixo: dentro, ele desceria junto e sumiria de novo. O `weight(1f, fill =
+            // false)` é o que faz a coluna de cima caber no espaço que resta — sem o
+            // `fill`, ela tomaria a altura toda e a caixa cresceria em 1,0x também.
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(draft.title, style = MaterialTheme.typography.titleLarge)
+                    promise?.let {
+                        Text(it.recap, style = MaterialTheme.typography.bodyLarge)
+                        it.droppedChoice?.let { linha ->
+                            Text(linha, style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
+                    // A nota do que a IA devolveu e o app descartou. A tela de confirmação já as
+                    // mostrava (`ConfirmDraftScreen`), e a caixa rápida — o caminho em que o
+                    // salvamento é silencioso, sem passar por tela nenhuma — não: a nota que explica
+                    // o descarte era justamente a que ela nunca via. Mesmo tom e mesmo lugar da outra
+                    // tela, logo abaixo do que a nota explica.
+                    draft.notes.forEach { nota ->
+                        Text(nota, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                    }
+                    draft.amountCents?.let {
+                        Text(Money.formatReais(it), style = MaterialTheme.typography.bodyLarge)
+                    }
+                    if (draft.observation.isNotBlank()) {
+                        Text(draft.observation, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(
+                        "Para mudar o texto, a data, o horário ou o valor, toque em Mudar.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
-                // A nota do que a IA devolveu e o app descartou. A tela de confirmação já as
-                // mostrava (`ConfirmDraftScreen`), e a caixa rápida — o caminho em que o
-                // salvamento é silencioso, sem passar por tela nenhuma — não: a nota que explica
-                // o descarte era justamente a que ela nunca via. Mesmo tom e mesmo lugar da outra
-                // tela, logo abaixo do que a nota explica.
-                draft.notes.forEach { nota ->
-                    Text(nota, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                }
-                draft.amountCents?.let {
-                    Text(Money.formatReais(it), style = MaterialTheme.typography.bodyLarge)
-                }
-                if (draft.observation.isNotBlank()) {
-                    Text(draft.observation, style = MaterialTheme.typography.bodyMedium)
-                }
-                Text(
-                    "Para mudar o texto, a data, o horário ou o valor, toque em Mudar.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
                 SecondaryButton("Mudar", enabled = !saving) { onEdit(draft) }
             }
         },

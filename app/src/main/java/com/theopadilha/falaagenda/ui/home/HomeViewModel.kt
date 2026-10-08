@@ -874,16 +874,20 @@ class HomeViewModel(
                 // Sem alvo de pé não é "não achei": é um recado. Engolir a tarefa seria o mesmo
                 // defeito pelo avesso — ela fala "apaga a luz" e a luz não é cadastrada.
                 //
-                // A exceção é a tarefa que EXISTE e já foi feita: aí não há recado nenhum a
-                // salvar, e voltar para a captura faria nascer o rascunho "Apaga remédio" com a
-                // tarefa ainda na tela — o mesmo engano silencioso, agora com a frase de "não
-                // achei" por cima.
-                SpeechTargetResolution.None ->
-                    if (encontrado.jaFeita) {
-                        publishStatus(TARGET_ALREADY_DONE_MESSAGE)
-                    } else {
-                        speech.understand(text)
-                    }
+                // A CONCLUÍDA homônima NÃO muda isso, e a recusa aqui seria pior que o rascunho:
+                // este é o verbo cuja ausência de alvo é captura POR DESENHO, e "tira o lixo"
+                // (querendo criar a de amanhã) engolido por uma "Tirar o lixo" feita ontem não
+                // tem volta — ela não fica sabendo de nada. `sections.completed` não tem poda
+                // nem janela (`TaskRepository.sectionsOf`, `HomeScreen`), então o engolimento
+                // valeria para sempre, sobre qualquer nome que colidisse com qualquer concluída
+                // histórica. O rascunho, esse, é recuperável: ele aparece na confirmação com o
+                // título à vista e ela não toca em salvar. "Criar uma tarefa a mais é menos grave
+                // que engolir uma tarefa que ela queria" (ver `SpeechIntent.Capture`).
+                //
+                // Não é a mesma coisa no `Cancel`/`Complete` ([resolveTarget]): ali o desfecho
+                // sem alvo é uma FRASE que afirma ter procurado pelo nome, e é a frase que
+                // mente — não a decisão de não agir, que continua a mesma nos dois caminhos.
+                SpeechTargetResolution.None -> speech.understand(text)
                 is SpeechTargetResolution.Ambiguous -> publishStatus(AMBIGUOUS_TARGET_MESSAGE)
             }
         }
@@ -952,8 +956,15 @@ class HomeViewModel(
         return partes.joinToString(" ")
     }
 
+    /**
+     * Os títulos para a resposta falada, sem repetição.
+     *
+     * Duas séries podem carregar o mesmo título (ela cadastrou "Tomar remédio" duas vezes), e a
+     * resposta saía "Não consegui avisar hoje: Tomar remédio, Tomar remédio" — que parece dois
+     * problemas onde há um. `distinct` preserva a ordem de exibição.
+     */
     private fun titulos(itens: List<AgendaItem>): String =
-        itens.joinToString(", ") { it.series.title }
+        itens.map { it.series.title }.distinct().joinToString(", ")
 
     /**
      * Casa o alvo falado com a agenda e só age sobre UM candidato. Nome ambíguo (dois

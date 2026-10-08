@@ -365,7 +365,13 @@ class FalaComandoTest {
 
         viewModel.understandSpeech("já tomei o remédio")
 
-        assertThat(proximoRecado()).doesNotContain("Não achei")
+        val resposta = proximoRecado()
+        assertThat(resposta).doesNotContain("Não achei")
+        assertThat(resposta).contains("já está feita")
+        // E não é "Feito.": concluir de novo uma ocorrência já concluída é um no-op, e anunciar
+        // sucesso aqui seria a resposta confirmar o que não aconteceu.
+        assertThat(resposta).isNotEqualTo("Feito.")
+        assertThat(statusDa(serie.id, hoje)).isEqualTo(OccurrenceStatus.COMPLETED)
     }
 
     /**
@@ -425,24 +431,78 @@ class FalaComandoTest {
     }
 
     /**
-     * "apaga o remédio" com o remédio já feito NÃO pode virar recado novo.
+     * O `apaga` com uma CONCLUÍDA homônima continua sendo um recado.
      *
-     * É o `EraseNamed`, em que a ausência de alvo vivo manda a fala de volta para a captura:
-     * o rascunho "Apaga remédio" nasceria e a tarefa continuaria lá — o mesmo engano
-     * silencioso, agora com a frase de "não achei" por cima.
+     * O outro lado do [apagaALuzSemTarefaViraRecadoNovo], e o que aquele teste não cobria: com
+     * uma "Tirar o lixo" já feita no banco, "tira o lixo" (querendo criar a de amanhã) tem de
+     * nascer como rascunho do mesmo jeito. Recusar aqui engolia a captura para sempre — o
+     * `sections.completed` não tem poda nem janela, então qualquer nome que colidisse com
+     * qualquer concluída histórica nunca mais viraria tarefa, e ela não ficaria sabendo.
+     *
+     * O rascunho é recuperável (a confirmação mostra o título e ela não salva); o engolimento
+     * não é. É a mesma assimetria de `SpeechIntent.Capture`: criar uma tarefa a mais é menos
+     * grave que engolir uma que ela queria.
      */
     @Test
-    fun apagarAlvoJaConcluidoNaoViraRecadoNovo() {
-        val serie = serie("s-rem", "Tomar remédio", hoje)
-        semear(serie, listOf(ocorrenciaConcluida(serie, hoje)))
+    fun apagaComConcluidaHomonimaContinuaVirandoRecado() {
+        val antiga = serie("s-lixo", "Tirar o lixo", hoje.minusDays(1))
+        semear(antiga, listOf(ocorrenciaConcluida(antiga, hoje.minusDays(1))))
+
+        viewModel.understandSpeech("tira o lixo")
+
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("lixo")
+        // A concluída continua onde estava: o rascunho não a tocou.
+        assertThat(statusDa(antiga.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    /**
+     * A mesma colisão com um nome curto e uma concluída VELHA — o caso do revisor: "apaga a
+     * luz" com uma "Luz" concluída há um mês. O tempo não pode ser o critério, porque não há
+     * janela nenhuma em "Concluídas" para servir de referência.
+     */
+    @Test
+    fun apagaALuzComLuzConcluidaAntigaContinuaVirandoRecado() {
+        val antiga = serie("s-luz", "Luz", hoje.minusDays(30))
+        semear(antiga, listOf(ocorrenciaConcluida(antiga, hoje.minusDays(30))))
+
+        viewModel.understandSpeech("apaga a luz")
+
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("luz")
+        assertThat(statusDa(antiga.id, hoje.minusDays(30))).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    /**
+     * O `apaga` com pendente viva continua APAGANDO: a distinção acima vale só para o desfecho
+     * sem alvo de pé, e a colisão com o histórico não pode roubar a ação de quem tem alvo.
+     */
+    @Test
+    fun apagaComPendenteVivaApagaMesmoComConcluidaHomonima() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(1), diario())
+        semear(
+            serie,
+            listOf(
+                ocorrenciaConcluida(serie, hoje.minusDays(1)),
+                ocorrenciaPendente(serie, hoje),
+            ),
+        )
 
         viewModel.understandSpeech("apaga o remédio")
 
-        val resposta = proximoRecado()
-        assertThat(resposta).doesNotContain("Não achei")
-        assertThat(resposta).contains("já está feita")
-        assertThat(viewModel.speech.state.value.draft).isNull()
-        assertThat(statusDa(serie.id, hoje)).isEqualTo(OccurrenceStatus.COMPLETED)
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje))).isNull()
+        assertThat(statusDa(serie.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.COMPLETED)
     }
 
     // --- reconhecer e não fazer ------------------------------------------------------

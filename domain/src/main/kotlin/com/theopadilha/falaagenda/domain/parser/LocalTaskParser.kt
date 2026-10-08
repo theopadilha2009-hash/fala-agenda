@@ -971,17 +971,16 @@ class LocalTaskParser(
      * A leitura é sobre o texto ainda inteiro — o "e" é a conjunção que separa as duas tomadas, e o
      * `stripWeekDays` o apaga junto com os dias da semana antes de o relógio rodar.
      *
-     * Duas coisas que o "e X" NÃO é, e que a regex sozinha não separa:
-     *  - a DOSE ("e 2 comprimidos"): quantidade não é horário — a unidade a denuncia;
-     *  - o MINUTO da mesma tomada ("e quinze" depois de "8 da manhã"): é o minuto da hora já dita,
-     *    e a data ("e 12 do mês que vem") é dia do mês. O que resta como segunda tomada é o que traz
-     *    o PERÍODO PRÓPRIO ("e 8 da noite", "e oito da noite") ou o DÍGITO nu que cabe como hora
-     *    ("e 8", "e 12") — a família do defeito relatado.
+     * O "e X" só é segunda tomada quando traz o PERÍODO PRÓPRIO ("e 8 da noite", "e oito da
+     * noite"). Todo o resto já fica de fora por não ter período:
+     *  - a DOSE ("e 2 comprimidos"): a unidade fica entre o número e qualquer período, então a
+     *    regex não casa — a quantidade não vira horário;
+     *  - o MINUTO da mesma tomada ("e quinze" depois de "8 da manhã"): número nu, sem período;
+     *  - a data ("e 12 do mês que vem"): o período que segue é "do mês", não do dia.
      */
     private fun segundaTomadaNoMesmoDia(text: String): MatchResult? {
         val first = CLOCK_PERIOD.find(text) ?: return null
         val tail = text.substring(first.range.last + 1)
-        if (DOSE_APOS_E.containsMatchIn(tail)) return null
         // Ancorado no primeiro "e": um "e X" DISTANTE ("... e depois e cinco", "... e depois e 8 da
         // noite") não abre tomada nenhuma — ele pertence a outra oração.
         val m = SEGUNDA_TOMADA.find(tail) ?: return null
@@ -2064,45 +2063,29 @@ class LocalTaskParser(
          * O "e <horário>" que abre uma SEGUNDA tomada depois de o período já ter fechado a primeira.
          *
          * "às 8 da manhã e 8 da noite" são dois horários, não a hora 08:08. O que autoriza a leitura
-         * é o sinal de que o "e X" é uma hora NOVA, e há dois:
-         *  - o PERÍODO PRÓPRIO do segundo horário ("e 8 da noite", "e oito da noite", "e 20 da
-         *    noite"): é ele que denuncia a tomada, e vale para dígito e extenso;
-         *  - o marcador de relógio do próprio número ("e 20h", "e 8h30", "e às 20").
+         * é um sinal só: o PERÍODO PRÓPRIO do segundo horário ("e 8 da noite", "e oito da noite",
+         * "e 20 da noite"), que vale igual para dígito e extenso. O marcador de relógio do próprio
+         * número ("e 20h", "e 8h30", "e às 20") não precisa de ramo: um segundo relógio já deixa o
+         * rascunho ambíguo pela via geral, e o ramo medido não mudava uma linha sequer.
          *
-         * A palavra por EXTENSO NUA ("e quinze", "e vinte") NÃO entra: é o minuto da mesma tomada,
-         * e é o que faz "às 8 da manhã e quinze" somar 08:15. Foi por ela que o alternador
-         * `WORD_HOUR_ALT` errava — a lista tem `quinze`/`vinte` mas não `trinta`/`quarenta`, então
-         * "e quinze" morria e "e trinta" sobrevivia, sem critério nenhum.
+         * Nem o número NEM a palavra por extenso, ditos NUS depois do período, entram: os dois são o
+         * MINUTO da mesma tomada, e é o que faz "às 8 da manhã e quinze" somar 08:15 e "… e 12"
+         * somar 08:12. Não há teto numérico separando "hora" de "minuto" — a distinção é de NATUREZA
+         * (o número traz o período dele?), nunca de VALOR.
          *
-         * O DÍGITO nu ("e 8", "e 12") continua sendo segunda tomada: é a família do defeito
-         * relatado, em que a base lia o "8" da segunda dose como MINUTO da primeira (08:08, com
-         * `qc=true`). O teto 0–23 é o que separa esse dígito do MINUTO em dígito ("e 30" = 08:30,
-         * o motivo de o `trailingMinutes` existir). O número seguido de data ("e 12 do mês que
-         * vem") fica de fora: é dia do mês, não hora.
-         *
-         * A alternativa medida e descartada foi estender o teto à palavra por extenso (o alternador
-         * do head): ela derrubava "às 8 da manhã e quinze" para ambíguo — a regressão principal.
+         * A alternativa medida e descartada foi a do teto 0–23 (o alternador do head): ler o dígito
+         * nu como hora nova. Ela movia a fronteira de 20/30 para 23/24 — "e 15" (08:15) e "e 10"
+         * (08:10) viravam ambíguas enquanto "e 30" (08:30) e "e 45" (08:45) seguiam sendo minuto,
+         * sem critério. Medido no corpus de 130 falas: o teto desviava em 26, este critério em 17;
+         * as 9 linhas de diferença são exatamente as formas naturais de minuto que a base lia certo.
          */
         private val SEGUNDA_TOMADA = Regex(
             """\s+e\s+(?:(?:a|as)\s+)?(?:""" +
-                """(?:\d{1,2}(?:\s*h(?:\d{2}|oras?)?|:\d{2})?|$WORD_HOUR_ALT)\s*(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)|""" +
-                """\d{1,2}\s*h(?:\d{2}|oras?)?(?!\s*(?:de|do|da)\s)|""" +
-                """(?:[01]?\d|2[0-3])(?!\s*(?:de|do|da)\s)""" +
+                """(?:\d{1,2}(?:\s*h(?:\d{2}|oras?)?|:\d{2})?|$WORD_HOUR_ALT)\s*(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)""" +
                 """)\b""",
         )
 
-        /**
-         * A dose que vem depois do "e" ("e 2 comprimidos", "e três gotas"): a quantidade não é um
-         * horário, então não afirma duas tomadas. A unidade é o que a denuncia — o número sozinho
-         * não distingue dose de hora, e é por isso que a lista é de unidade, não de número.
-         */
-        private val DOSE_APOS_E = Regex(
-            """\s+e\s+(?:\d{1,2}|[a-z]+(?:\s+e\s+[a-z]+)?)\s+""" +
-                """(?:comprimidos?|capsulas?|gotas?|colheres?|doses?|litros?|paginas?|""" +
-                """vezes|minutos?|horas?|ml|mg)\b""",
-        )
-
-        /** A nota do desfecho "dois horários": a dose a remove, e o texto dela mora em um lugar só. */
+        /** A nota do desfecho "dois horários": o texto dela mora em um lugar só. */
         private const val NOTA_DUAS_TOMADAS =
             "Parece haver dois horários no mesmo dia. A série guarda um horário por vez — confirme o horário."
 

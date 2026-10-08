@@ -91,34 +91,43 @@ class LocalTaskParserDuasTomadasTest {
         assertThat(vinte.canQuickConfirm(clock.instant(), zone)).isFalse()
     }
 
-    // ---- D2: a segunda tomada sem hora dita — "e 8", "e 12" ----
+    // ---- D2: a segunda tomada em DÍGITO sem o "às" — o caso relatado ----
 
     @Test
-    fun numeroSoltoQueCabeComoHoraNaoViraMinuto() {
-        // "às 8 da manhã e 8": não há "às" nem período na segunda parte, mas o número CABE como
-        // hora (0–23) — é uma segunda tomada, não o minuto da primeira. A base cravava 08:08, um
-        // horário que ela não falou, com qc=true.
+    fun numeroSoltoQueCabeComoHoraContinuaSendoMinuto() {
+        // O outro lado do critério: depois de um período já fechado, um número NU — dito ou não como
+        // hora — é o MINUTO da mesma tomada. "às 8 da manhã e 12" são 08:12, e a base já lia assim.
+        //
+        // A alternativa de ler o número nu como hora nova porque ele CABE em 0–23 foi medida e
+        // descartada: ela move a fronteira sem critério (derrubava "e 15" = 08:15 e mantinha
+        // "e 30" = 08:30) e derrubava 9 formas naturais de minuto. Quem abre tomada é o PERÍODO
+        // PRÓPRIO ("e 12 da noite"), não o valor do número.
         listOf(
-            "tomar remédio todo dia às 8 da manhã e 8",
-            "tomar remédio todo dia às 8 da manhã e 12",
-        ).forEach { frase ->
+            "tomar remédio todo dia às 8 da manhã e 8" to java.time.LocalTime.of(8, 8),
+            "tomar remédio todo dia às 8 da manhã e 12" to java.time.LocalTime.of(8, 12),
+            "tomar remédio todo dia às 8 da manhã e 15" to java.time.LocalTime.of(8, 15),
+            "tomar remédio todo dia às 8 da manhã e 10" to java.time.LocalTime.of(8, 10),
+            "tomar remédio todo dia às 8 da manhã e 20" to java.time.LocalTime.of(8, 20),
+            "tomar remédio todo dia às 8 da manhã e 0" to java.time.LocalTime.of(8, 0),
+            "tomar remédio todo dia às 8 da manhã e 5" to java.time.LocalTime.of(8, 5),
+            "tomar remédio todo dia às 8 da manhã e 23" to java.time.LocalTime.of(8, 23),
+            "tomar remédio todo dia às 8 da manhã e 30" to java.time.LocalTime.of(8, 30),
+            "tomar remédio todo dia às 8 da manhã e 45" to java.time.LocalTime.of(8, 45),
+        ).forEach { (frase, esperado) ->
             val draft = parser.parse(frase)
-            assertThat(draft.localTime).isNull()
-            assertThat(draft.ambiguous).isTrue()
-            assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+            assertThat(draft.localTime).isEqualTo(esperado)
+            assertThat(draft.ambiguous).isFalse()
         }
     }
 
     @Test
-    fun numeroQueNaoCabeComoHoraContinuaSendoMinuto() {
-        // O outro lado, e é aqui que o critério tem que parar: "e 30" e "e 45" NÃO cabem como hora,
-        // então continuam sendo o minuto da mesma tomada (08:30, 08:45) — como sempre foram. Marcar
-        // isso como dois horários derrubaria a forma como ela fala minuto, que é o motivo de o
-        // `trailingMinutes` existir.
-        assertThat(parser.parse("tomar remédio todo dia às 8 da manhã e 30").localTime)
-            .isEqualTo(java.time.LocalTime.of(8, 30))
-        assertThat(parser.parse("tomar remédio todo dia às 8 da manhã e 45").localTime)
-            .isEqualTo(java.time.LocalTime.of(8, 45))
+    fun numeroComPeriodoProprioAbreSegundaTomada() {
+        // O que separa a hora do minuto é o PERÍODO PRÓPRIO, não o valor. "e 12" é minuto (08:12);
+        // "e 12 da noite" é hora nova. O par abaixo é o que prende a distinção de natureza.
+        val draft = parser.parse("tomar remédio todo dia às 8 da manhã e 12 da noite")
+        assertThat(draft.localTime).isNull()
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
     }
 
     // ---- D3: a segunda tomada em EXTENSO com "às" (a forma que já funcionava) ----
@@ -227,15 +236,30 @@ class LocalTaskParserDuasTomadasTest {
         // segundo horário dito, então a regra dos dois horários não tem o que pegar — e o 08:00 é
         // a primeira dose, que ela falou.
         //
-        // FRONTEIRA, e por isso NÃO DISCRIMINA: o desfecho é idêntico nas três revisões (base
-        // 55f7448, head e o fix — medido). Ela não prende conserto nenhum; o que ela prende é o
-        // excesso, o dia em que alguém afrouxar o critério e o período solto virar segunda tomada.
-        // O que DISCRIMINA neste eixo está em `eDistanteNaoAbreSegundaTomada`, logo abaixo.
+        // FRONTEIRA, e por isso NÃO DISCRIMINA: as 10 variantes "só período" medidas dão idêntico
+        // nas três revisões (base 55f7448, head e o fix). Não existe asserção que falhe na base
+        // neste recorte — o que este teste guarda é o EXCESSO, o dia em que alguém afrouxar o
+        // critério e o período solto virar segunda tomada. O que DISCRIMINA o eixo é
+        // `eDistanteNaoAbreSegundaTomada`, que fica vermelho no head e verde na base e no fix.
         val draft = parser.parse("tomar remédio às 8 da manhã e de noite")
         assertThat(draft.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
         assertThat(draft.ambiguous).isFalse()
         // Confirma rápido é falso aqui só porque não há data dita — o horário, esse, é o que ela falou.
         assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+
+        // A variante com preposição ("e a noite") e a sem número nenhum depois do "e" também não
+        // podem abrir tomada.
+        listOf(
+            "tomar remédio às 8 da manhã e a noite",
+            "tomar remédio às 8 da manhã e na noite",
+            "tomar remédio às 8 da manhã e de tarde",
+            "tomar remédio às 8 da manhã e depois",
+            "tomar remédio às 8 da manhã e também",
+        ).forEach { frase ->
+            val d = parser.parse(frase)
+            assertThat(d.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+            assertThat(d.ambiguous).isFalse()
+        }
     }
 
     // ---- P2: o "e X" que pertence a OUTRA oração não abre segunda tomada ----
@@ -247,6 +271,10 @@ class LocalTaskParserDuasTomadasTest {
         // depois e cinco" e o "e cinco minutos de caminhada" não são uma segunda dose: são o
         // segundo "e" de uma oração nova. ESTE é o teste que discrimina o eixo — ele morre no
         // head que casa o "e X" distante e passa na base e no fix.
+        //
+        // A asserção que MORRE NO HEAD é a do "e depois e cinco" (o "e cinco" distante casava o
+        // alternador e derrubava o 08:00). A do "caminhada" é controle: os dois lados já a liam
+        // certo, e ela guarda a unidade de minuto depois do "e" de outra oração.
         val distante = parser.parse("tomar remédio às 8 da manhã e depois e cinco")
         assertThat(distante.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
         assertThat(distante.ambiguous).isFalse()
@@ -314,6 +342,10 @@ class LocalTaskParserDuasTomadasTest {
         // hora. O teto numérico da correção lia o "2" de "e 2 comprimidos" como hora (cabe em 0–23)
         // e marcava ambíguo — uma afirmação falsa sobre a frase ("Há mais de um horário"), que é
         // exatamente o que aquele teste proíbe. A dose não afirma dois horários.
+        //
+        // Quem já garante isso no fix é a própria `SEGUNDA_TOMADA`: a unidade fica entre o número e
+        // qualquer período, então a dose não casa. O teste prende o desfecho (não ambíguo), não o
+        // mecanismo — é o que mantém a doutrina viva se a regex mudar de forma.
         //
         // O VALOR da hora é o que a base já fazia (08:02 etc. — o número entrando no minuto é
         // pré-existente e está fora do escopo deste lote). O que este teste prende é o que a

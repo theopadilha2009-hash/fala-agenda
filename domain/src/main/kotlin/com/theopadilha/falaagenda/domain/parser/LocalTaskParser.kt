@@ -75,6 +75,17 @@ class LocalTaskParser(
             remaining = hit.remaining
         }
 
+        // O texto para a checagem das duas tomadas: a frase INTEIRA com o valor em reais já fora.
+        //
+        // Dois extratores mexem no texto antes desta checagem, e os dois não podem valer igual para
+        // ela. O `extractAmount` PRECISA valer: o "12" de "… às 8 da manhã e 12 reais" é dinheiro,
+        // não um segundo horário, e ler a frase inteira fazia o preço derrubar o 08:00 que ela disse.
+        // O `stripWeekDays` NÃO pode valer: ele apaga o "e" junto com os dias da semana, e ali o "e"
+        // É a conjunção que separa as duas tomadas ("toda segunda às 8 da manhã e 8 da noite").
+        //
+        // Tirar o valor de `working` (antes do `stripWeekDays`) dá as duas coisas de uma vez: sem o
+        // dinheiro e com a conjunção. O `remaining` do relógio só serve para o preço.
+        val semValor = extractAmount(working)?.remaining ?: working
         val timeHit = extractTime(remaining)
         remaining = timeHit.remaining
         var localTime = timeHit.time
@@ -82,6 +93,43 @@ class LocalTaskParser(
             ambiguous = true
             confidence = minOf(confidence, 0.5)
             notes += timeHit.note ?: "O horário ficou ambíguo."
+        }
+
+        // Duas tomadas no mesmo dia ("às 8 da manhã e 8 da noite"): o período dito FECHOU a primeira
+        // hora, então o "e <horário>" que vem depois é uma SEGUNDA tomada — não o minuto da primeira.
+        // O relógio acha uma hora só (apenas o primeiro "8" casa o "às") e o `trailingMinutes` lia o
+        // "8" da noite como minuto, cravando 08:08 sem nota e com `qc=true`: a caixa "Pode salvar?"
+        // oferecia um horário que ela não falou, e a segunda dose (20h) não existia em campo nenhum.
+        // É o mesmo modo de falha mais caro do app — número errado confirmável em um toque.
+        //
+        // A leitura é sobre `semValor` — o texto que ainda tem o "e" e já não tem o dinheiro —, e
+        // não sobre o `remaining` do relógio nem sobre o `working` cru. Ver a montagem de
+        // `semValor` acima: o `stripWeekDays` apaga o "e" junto com os dias da semana ("toda
+        // segunda às 8 da manhã e 8 da noite") e ali o "e" É a conjunção que separa as tomadas;
+        // o valor em reais, ao contrário, tem que sair do caminho, senão o preço vira horário.
+        //
+        // O `TaskSeries` guarda UM `localTime` — não há onde pôr as duas, e escolher uma delas seria
+        // inventar. Ambíguo com nota, como quando a hora não foi dita, e o horário sai do rascunho:
+        // uma hora só com uma dose a menos é o mesmo dano em dose menor. O minuto da MESMA tomada não
+        // é tocado — nele o período vem DEPOIS do "e" ("às 8 e meia da noite") ou não vem ("às 8 e
+        // meia"), então não há período fechando a hora antes da conjunção.
+        //
+        // "às 8 da manhã e de noite" (período só, sem número) fica de fora de propósito: ali não há
+        // um segundo horário dito, e o 08:00 do rascunho é a primeira dose, que ela falou.
+        if (localTime != null && timeHit.hadPeriod) {
+            segundaTomadaNoMesmoDia(semValor)?.let { segunda ->
+                ambiguous = true
+                confidence = minOf(confidence, 0.5)
+                notes += NOTA_DUAS_TOMADAS
+                localTime = null
+                // O segundo horário sai do texto: ele não é minuto da primeira tomada nem título da
+                // tarefa. O relógio pode já ter engolido o número dele ("e 8" virou o minuto de
+                // 08:08) e deixado só o período no fim, então as duas formas são removidas — a
+                // inteira, quando sobrou, e o período pendurado, quando foi só ele que sobrou.
+                remaining = TextNormalizer.compactSpaces(
+                    remaining.replace(segunda.value.trim(), " ").replace(PERIODO_PENDURADO, " "),
+                )
+            }
         }
 
         val dateHit = extractDate(remaining, recurrence)
@@ -912,6 +960,31 @@ class LocalTaskParser(
     private fun consumirEmPonto(remaining: String): String {
         val m = EM_PONTO_TAIL.find(remaining) ?: return remaining
         return TextNormalizer.compactSpaces(remaining.replaceRange(m.range.first, m.range.last + 1, " "))
+    }
+
+    /**
+     * A frase diz DUAS tomadas no mesmo dia: uma hora já fechada por um período dito ("da manhã") e,
+     * depois do "e", um segundo horário. "às 8 da manhã e 8 da noite" são dois horários; o
+     * `trailingMinutes` lia o segundo como minuto da primeira e cravava 08:08. Devolve o casamento
+     * do segundo horário — quem chama o usa também para tirá-lo do texto que segue para o título.
+     *
+     * A leitura é sobre o texto ainda inteiro — o "e" é a conjunção que separa as duas tomadas, e o
+     * `stripWeekDays` o apaga junto com os dias da semana antes de o relógio rodar.
+     *
+     * O "e X" só é segunda tomada quando traz o PERÍODO PRÓPRIO ("e 8 da noite", "e oito da
+     * noite"). Todo o resto já fica de fora por não ter período:
+     *  - a DOSE ("e 2 comprimidos"): a unidade fica entre o número e qualquer período, então a
+     *    regex não casa — a quantidade não vira horário;
+     *  - o MINUTO da mesma tomada ("e quinze" depois de "8 da manhã"): número nu, sem período;
+     *  - a data ("e 12 do mês que vem"): o período que segue é "do mês", não do dia.
+     */
+    private fun segundaTomadaNoMesmoDia(text: String): MatchResult? {
+        val first = CLOCK_PERIOD.find(text) ?: return null
+        val tail = text.substring(first.range.last + 1)
+        // Ancorado no primeiro "e": um "e X" DISTANTE ("... e depois e cinco", "... e depois e 8 da
+        // noite") não abre tomada nenhuma — ele pertence a outra oração.
+        val m = SEGUNDA_TOMADA.find(tail) ?: return null
+        return if (m.range.first == 0) m else null
     }
 
     /**
@@ -1974,8 +2047,56 @@ class LocalTaskParser(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
         private val EM_PONTO_TAIL = Regex("""\bem\s+ponto\b""")
+
+        /**
+         * Uma hora dita COM o período dela ("..., 8 da manhã"): é este par que FECHA a tomada, e é
+         * depois dele que um "e <horário>" passa a ser uma segunda tomada em vez de minuto.
+         */
+        private val CLOCK_PERIOD = Regex(
+            """\b(?:\d{1,2}(?:\s*h(?:\d{2}|oras?)?|:\d{2})?|$WORD_HOUR_ALT)\s*(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)\b""",
+        )
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
+        )
+
+        /**
+         * O "e <horário>" que abre uma SEGUNDA tomada depois de o período já ter fechado a primeira.
+         *
+         * "às 8 da manhã e 8 da noite" são dois horários, não a hora 08:08. O que autoriza a leitura
+         * é um sinal só: o PERÍODO PRÓPRIO do segundo horário ("e 8 da noite", "e oito da noite",
+         * "e 20 da noite"), que vale igual para dígito e extenso. O marcador de relógio do próprio
+         * número ("e 20h", "e 8h30", "e às 20") não precisa de ramo: um segundo relógio já deixa o
+         * rascunho ambíguo pela via geral, e o ramo medido não mudava uma linha sequer.
+         *
+         * Nem o número NEM a palavra por extenso, ditos NUS depois do período, entram: os dois são o
+         * MINUTO da mesma tomada, e é o que faz "às 8 da manhã e quinze" somar 08:15 e "… e 12"
+         * somar 08:12. Não há teto numérico separando "hora" de "minuto" — a distinção é de NATUREZA
+         * (o número traz o período dele?), nunca de VALOR.
+         *
+         * A alternativa medida e descartada foi a do teto 0–23 (o alternador do head): ler o dígito
+         * nu como hora nova. Ela movia a fronteira de 20/30 para 23/24 — "e 15" (08:15) e "e 10"
+         * (08:10) viravam ambíguas enquanto "e 30" (08:30) e "e 45" (08:45) seguiam sendo minuto,
+         * sem critério. Medido no corpus de 130 falas: o teto desviava em 26, este critério em 17;
+         * as 9 linhas de diferença são exatamente as formas naturais de minuto que a base lia certo.
+         */
+        private val SEGUNDA_TOMADA = Regex(
+            """\s+e\s+(?:(?:a|as)\s+)?(?:""" +
+                """(?:\d{1,2}(?:\s*h(?:\d{2}|oras?)?|:\d{2})?|$WORD_HOUR_ALT)\s*(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)""" +
+                """)\b""",
+        )
+
+        /** A nota do desfecho "dois horários": o texto dela mora em um lugar só. */
+        private const val NOTA_DUAS_TOMADAS =
+            "Parece haver dois horários no mesmo dia. A série guarda um horário por vez — confirme o horário."
+
+        /**
+         * O período que fica pendurado no fim quando o segundo horário já saiu do texto: em
+         * "às 8 da manhã e vinte da noite" o `trailingMinutes` engole o "e vinte" como minuto e
+         * deixa só o "da noite" — que não é título de nada. Só roda quando a segunda tomada foi
+         * detectada, então o período no fim é comprovadamente o dela.
+         */
+        private val PERIODO_PENDURADO = Regex(
+            """\s+(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)\s*$""",
         )
 
         private val MINUTE_TAIL_WORDS = mapOf(

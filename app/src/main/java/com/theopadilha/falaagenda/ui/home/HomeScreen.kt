@@ -451,19 +451,7 @@ fun HomeScreen(
                 onShareDay = {
                     closeAnd {
                         val today = LocalDate.now()
-                        val text = AgendaFormat.todayShare(
-                            agenda.today.map {
-                                AgendaFormat.DayShareLine(
-                                    title = it.series.title,
-                                    time = it.series.localTime,
-                                    observation = it.series.observation,
-                                    // A pendente que atravessou a meia-noite entra em
-                                    // "Hoje": sem a marca, ela era mandada para a família
-                                    // como se fosse de hoje.
-                                    dayMark = AgendaFormat.shareDayMark(it.occurrence.localDate, today),
-                                )
-                            },
-                        )
+                        val text = AgendaFormat.todayShare(shareLinesOf(agenda.today, today))
                         openOrReport(
                             DeviceIntents.shareText(text, "Enviar o dia"),
                             "Não consegui abrir o compartilhamento neste celular.",
@@ -954,13 +942,42 @@ internal fun homeHeadline(
         nowTime = nowTime,
         today = today,
         nextTitle = next?.series?.title,
-        nextDate = next?.occurrence?.localDate,
-        nextTime = next?.series?.localTime,
+        // A manchete anuncia o **aviso**, como o cartão logo abaixo e o widget: a mesma peça
+        // (`AgendaFormat.occurrenceDay`/`occurrenceTime`), senão a home se contradiz dentro da
+        // própria tela — o cartão dizendo 08:00 e a frase do topo dizendo 14:00 sobre a mesma
+        // tarefa. Fechar uma superfície não fecha o eixo: foi assim que o #107 fechou o widget e
+        // deixou a home com o mesmo defeito.
+        nextDate = next?.let(AgendaFormat::occurrenceDay),
+        nextTime = next?.let(AgendaFormat::occurrenceTime),
         missedCount = agendaUi.sections.missed.size,
         leituraFalhou = agendaUi.failed,
         naoAvisados = naoAvisados,
     )
 }
+
+/**
+ * As linhas do "Enviar o dia" — o texto que sai do aplicativo para a família.
+ *
+ * Extraído do composable porque a hora que ele carrega é a do **aviso** que vai tocar, e não a
+ * da série: com a série, ela mandava "Remédio às 14:00" para quem cuida dela e o alarme tocava
+ * às 8h — e quem recebe não tem como conferir na tela, nem ela volta a ver o texto depois de
+ * enviado. A decisão é a mesma do cartão, da manchete e do widget (`AgendaFormat.occurrenceTime`),
+ * e o dia acompanha pela mesma peça.
+ *
+ * O `today` entra por parâmetro para a decisão ser pura, como em [homeHeadline]: é ela que decide
+ * a marca "ontem" da pendente que atravessou a meia-noite.
+ */
+internal fun shareLinesOf(items: List<AgendaItem>, today: LocalDate): List<AgendaFormat.DayShareLine> =
+    items.map { item ->
+        AgendaFormat.DayShareLine(
+            title = item.series.title,
+            time = AgendaFormat.occurrenceTime(item),
+            observation = item.series.observation,
+            // A pendente que atravessou a meia-noite entra em "Hoje": sem a marca, ela era
+            // mandada para a família como se fosse de hoje.
+            dayMark = AgendaFormat.shareDayMark(AgendaFormat.occurrenceDay(item), today),
+        )
+    }
 
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -1149,9 +1166,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     } else {
         items(items, key = { it.occurrence.id }) { item ->
             val today = LocalDate.now()
-            val date = AgendaFormat.dateLabel(item.occurrence.localDate, today)
-            val time = AgendaFormat.time(item.series.localTime)
-            val relative = AgendaFormat.fromNow(item.occurrence.scheduledAt, Instant.now())
+            // A hora mostrada é a do **aviso**, não a da série: com o horário da série o cartão
+            // dizia 14:00 para a dose cujo alarme estava armado às 08:00. Mesma decisão do
+            // widget (#107), ver `AgendaFormat.occurrenceTime`. O dia acompanha — o aviso
+            // deslocado pelo silêncio noturno toca às 08:00 de amanhã.
+            val date = AgendaFormat.dateLabel(AgendaFormat.occurrenceDay(item), today)
+            val time = AgendaFormat.time(AgendaFormat.occurrenceTime(item))
+            val relative = AgendaFormat.fromNow(AgendaFormat.avisoInstant(item), Instant.now())
             // A pendente de ontem vive na seção "Hoje": ela diz que está atrasada em vez de
             // um "há N h" que se lê igual ao das tarefas de hoje.
             val late = if (item.occurrence.status == OccurrenceStatus.PENDING) {

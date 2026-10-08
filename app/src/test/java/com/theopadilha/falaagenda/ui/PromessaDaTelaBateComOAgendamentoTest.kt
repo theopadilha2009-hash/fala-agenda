@@ -458,6 +458,105 @@ class PromessaDaTelaBateComOAgendamentoTest {
         assertThat(promessa.recap).contains(AgendaFormat.longDate(depoisDeDepois))
     }
 
+    /**
+     * O resumo da edição não anuncia uma regra que não rege a primeira ocorrência.
+     *
+     * O caso é o da caçada: série diária, ela abre a dose de 22/08 (um sábado) e escolhe "Toda
+     * semana" + quinta. O que a edição grava está certo — a data tocada vale, e a série segue
+     * dela (é o contrato, ver `ChoiceSchedule`) —, mas o resumo dizia "Vai avisar Sábado, 22 de
+     * agosto de 2026 às 08:00. Dias úteis.": as duas metades da frase se contradizem, e ela salva
+     * achando que o aviso é na segunda.
+     *
+     * A criação do mesmo caso nunca disse isso: lá a data escolhida é descartada e o resumo
+     * promete a segunda. As duas metades aparecem aqui lado a lado de propósito — é a divergência
+     * entre os dois caminhos que o defeito produzia.
+     *
+     * A data tocada continua sendo a que vale (o `droppedChoice` segue nulo, e o teste
+     * `editandoADataEscolhidaEADataQueVale` continua verdadeiro): o que sai da frase é só o
+     * anúncio da regra, que é a metade que não rege nada nesta edição. Quem diz a regra é o chip
+     * "Repetir", que ela tocou e continua vendo na tela.
+     */
+    @Test
+    fun aEdicaoNaoAnunciaARegraQueNaoRegeAPrimeiraOcorrencia() = runBlocking {
+        val sabado = LocalDate.of(2026, 10, 3)
+        val rule = recurrenceFor(RecurrenceKind.WEEKDAYS, sabado, emptySet())
+        val oitoDaManha = sabado.atTime(8, 0).atZone(zone).toInstant()
+
+        val edicao = AgendaFormat.promiseOfChoice(
+            chosenDate = sabado,
+            chosenTime = LocalTime.of(9, 0),
+            recurrence = rule,
+            today = sabado,
+            now = oitoDaManha,
+            zone = zone,
+            editing = true,
+        )
+        val criacao = AgendaFormat.promiseOfChoice(
+            chosenDate = sabado,
+            chosenTime = LocalTime.of(9, 0),
+            recurrence = rule,
+            today = sabado,
+            now = oitoDaManha,
+            zone = zone,
+        )
+
+        // A edição mantém a data tocada — e é isso que o resumo promete.
+        assertThat(edicao.recap).contains(AgendaFormat.longDate(sabado))
+        assertThat(edicao.recap).doesNotContain(rule.describePtBr())
+        // E não há data descartada a explicar: a escolhida é a que vale.
+        assertThat(edicao.droppedChoice).isNull()
+        // A criação do mesmo caso é o contraste: lá a regra rege a primeira ocorrência e o
+        // resumo a anuncia.
+        assertThat(criacao.recap).contains(rule.describePtBr())
+    }
+
+    /**
+     * O outro lado do critério: quando a regra **rege** a data da edição, o resumo continua
+     * anunciando-a. Sem este caso, tirar a regra do resumo em toda edição passaria no teste de
+     * cima — e ela perderia a informação de que a tarefa repete.
+     */
+    @Test
+    fun aEdicaoAnunciaARegraQuandoElaRegeAPrimeiraOcorrencia() = runBlocking {
+        val segunda = LocalDate.of(2026, 10, 5)
+        val rule = recurrenceFor(RecurrenceKind.WEEKDAYS, segunda, emptySet())
+
+        val promessa = AgendaFormat.promiseOfChoice(
+            chosenDate = segunda,
+            chosenTime = LocalTime.of(9, 0),
+            recurrence = rule,
+            today = segunda,
+            now = segunda.atTime(8, 0).atZone(zone).toInstant(),
+            zone = zone,
+            editing = true,
+        )
+
+        assertThat(promessa.recap).contains(AgendaFormat.longDate(segunda))
+        assertThat(promessa.recap).contains(rule.describePtBr())
+    }
+
+    /**
+     * E a escolha vencida da edição continua anunciando a regra: ali a data prometida vem da
+     * própria regra, então ela rege a primeira ocorrência e a frase não se contradiz.
+     */
+    @Test
+    fun aEdicaoVencidaContinuaAnunciandoARegra() = runBlocking {
+        val noite = terca.atTime(20, 0).atZone(zone).toInstant()
+        val rule = recurrenceFor(RecurrenceKind.DAILY, terca, emptySet())
+
+        val promessa = AgendaFormat.promiseOfChoice(
+            chosenDate = terca,
+            chosenTime = LocalTime.of(18, 0),
+            recurrence = rule,
+            today = terca,
+            now = noite,
+            zone = zone,
+            editing = true,
+        )
+
+        assertThat(promessa.recap).contains(AgendaFormat.longDate(terca.plusDays(1)))
+        assertThat(promessa.recap).contains(rule.describePtBr())
+    }
+
     /** O que a tela monta: os mesmos argumentos que a `ConfirmDraftScreen` tem em mãos. */
     private fun promessa(draft: ParsedTaskDraft, today: LocalDate, now: Instant) =
 

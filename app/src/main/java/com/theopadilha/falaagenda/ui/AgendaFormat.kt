@@ -1,6 +1,8 @@
 package com.theopadilha.falaagenda.ui
 
+import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.data.repo.ChoiceSchedule
+import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.domain.model.RecurrenceRule
 import com.theopadilha.falaagenda.domain.reminder.DraftSchedule
 import java.time.Duration
@@ -45,6 +47,21 @@ object AgendaFormat {
         "Vai avisar ${longDate(date)} às ${time(time)}. ${recurrence.describePtBr()}."
 
     /**
+     * O resumo sem a metade da regra, para quando ela não rege a data anunciada.
+     *
+     * A frase "Vai avisar Sábado, 22 de agosto de 2026 às 08:00. Dias úteis." se contradiz: as
+     * duas metades são verdadeiras sobre coisas diferentes — a edição mantém a data tocada e a
+     * regra vale das próximas em diante —, e quem lê a manhã do sábado não tem como saber que o
+     * primeiro aviso é na segunda. A criação do mesmo caso nunca disse isso: lá a data escolhida
+     * é descartada e o resumo promete a segunda.
+     *
+     * A regra não some da tela: ela continua escrita no chip "Repetir", que ela acabou de tocar e
+     * segue vendo. O que sai da frase é só o anúncio que a data ao lado desmente.
+     */
+    fun recapWithoutRule(date: LocalDate, time: LocalTime): String =
+        "Vai avisar ${longDate(date)} às ${time(time)}."
+
+    /**
      * O que a tela promete antes de salvar: o resumo, a linha que explica uma data descartada
      * e o rótulo do botão. Os três saem das mesmas contas, para não voltarem a divergir entre
      * si — o defeito de origem foram duas contas para a mesma data.
@@ -62,6 +79,12 @@ object AgendaFormat {
      * enquanto editar decide por [ChoiceSchedule]: a data escolhida vale, mas se ela já venceu a
      * ocorrência é arquivada e, na regra que repete, quem é armada é a próxima data da regra. A
      * tela descreve o contrato que vai valer, e não o que ela tocou.
+     *
+     * A regra só é anunciada quando rege a data anunciada. Na edição em que a data tocada vale e
+     * a regra só passa a valer das próximas em diante, a metade da regra saía da frase como uma
+     * segunda promessa — "Vai avisar Sábado, 22 de agosto de 2026 às 08:00. Dias úteis." —, e as
+     * duas metades eram verdadeiras sobre coisas diferentes. O dado gravado sempre esteve certo
+     * (a edição mantém a data tocada; é o contrato); a frase é que prometia o que o app não faz.
      */
     fun promiseOfChoice(
         chosenDate: LocalDate,
@@ -95,6 +118,20 @@ object AgendaFormat {
             promisedDate = first.date
             movedBecause = first.movedBecause
         }
+        // A metade da regra só entra na frase quando ela **rege** a data anunciada. Na criação
+        // isso é sempre verdade: a data prometida sai da própria regra (ver [DraftSchedule]) e a
+        // escolha descartada tem a sua própria linha explicando por quê. Na edição, não: ali a
+        // data tocada vale e a regra só passa a reger das próximas em diante, então anunciar as
+        // duas na mesma frase produzia "Vai avisar Sábado, 22 de agosto de 2026 às 08:00. Dias
+        // úteis." — verdade sobre duas coisas diferentes, e mentira para quem lê a manhã do
+        // sábado. A escolha vencida é a exceção: ali a data prometida é a próxima da regra, ela
+        // rege, e a frase continua inteira.
+        // A regra rege a data anunciada em três casos: na criação (a data prometida sai da própria
+        // regra), na escolha vencida da edição (idem) e quando a data tocada **é** a primeira
+        // ocorrência da regra — aí a regra e a data dizem a mesma coisa, e omitir a regra tiraria
+        // dela a informação de que a tarefa repete. O que não rege é o quarto caso, que é o
+        // defeito: a data tocada vale e a regra só passa a valer das próximas em diante.
+        val ruleGovernsThePromisedDate = !editing || movedBecause != null || first.date == chosenDate
         val promisedAt = promisedDate.atTime(chosenTime).atZone(zone).toInstant()
         // A escolha que já passou e não repete: o salvar arquiva a ocorrência como não
         // realizada e não cria alarme nenhum (ver `TaskRepository.occurrencesForChoice`).
@@ -111,7 +148,11 @@ object AgendaFormat {
             )
         }
         return DraftPromise(
-            recap = recap(promisedDate, chosenTime, recurrence),
+            recap = if (ruleGovernsThePromisedDate) {
+                recap(promisedDate, chosenTime, recurrence)
+            } else {
+                recapWithoutRule(promisedDate, chosenTime)
+            },
             droppedChoice = droppedChoiceLine(
                 chosenDate = chosenDate,
                 chosenTime = chosenTime,
@@ -177,6 +218,59 @@ object AgendaFormat {
      */
     fun lateMark(date: LocalDate, today: LocalDate): String? =
         if (date.isBefore(today)) "atrasada" else null
+
+    /**
+     * O instante do aviso que vai tocar nesta ocorrência: o mesmo que o `AlarmManager` tem
+     * armado.
+     *
+     * `scheduledAt` é a hora marcada e `series.localTime` o horário da **série** — os dois
+     * podem estar defasados do aviso real, e é o aviso que a tela precisa anunciar. Quem
+     * decide é a mesma peça que decide o disparo: `ReminderScheduler.schedule` entrega ao
+     * alarme exatamente `occurrence.nextReminderAt`, e é essa a verdade.
+     *
+     * Sem aviso armado (`nextReminderAt` nulo: escada encerrada, ou ocorrência nascida vencida
+     * sem alarme) não há instante de aviso, e o que resta é a hora marcada — o que a tela
+     * sempre mostrou.
+     *
+     * Mesma decisão, e pelo mesmo motivo, do `AgendaWidgetProvider.instanteDoAviso` (#107): a
+     * escolha de qual item mostrar saía de um campo e o rótulo de hora de outro, e os dois
+     * divergem por desenho em três situações medidas — a edição de uma dose de outra data (que
+     * preserva o `scheduledAt` das que ela não tocou enquanto a série passa a carregar o
+     * horário novo), o adiamento (`snooze` grava `nextReminderAt`/`snoozedUntil` sem tocar em
+     * `scheduledAt` nem em `localTime`) e o silêncio noturno (a repetição é deslocada para as
+     * 08:00 do dia seguinte). O widget fechou a superfície de fora; esta é a de dentro.
+     */
+    fun avisoInstant(item: AgendaItem): Instant =
+        item.occurrence.nextReminderAt ?: item.occurrence.scheduledAt
+
+    /**
+     * A hora que o cartão da agenda mostra para a ocorrência: a do **aviso**, não a da série.
+     *
+     * Com o horário da série ela lia "Remédio, hoje · 14:00" para a dose cujo alarme o
+     * `AlarmManager` tinha armado às 08:00 — e perdia a dose, ou tomava duas.
+     *
+     * Lida no fuso da série, como o widget: o repositório já entrega `series.zoneId` com o fuso
+     * do relógio (`TaskRepository.toTaskSeries`), então este é o fuso em que ela lê a hora no
+     * aparelho.
+     */
+    fun occurrenceTime(item: AgendaItem): LocalTime =
+        avisoInstant(item).atZone(item.series.zoneId).toLocalTime()
+
+    /**
+     * O dia que o cartão anuncia: o do **aviso** enquanto ele está por vir, e o da ocorrência
+     * quando o desfecho já aconteceu.
+     *
+     * O aviso deslocado pelo silêncio noturno toca às 08:00 de amanhã, e anunciá-lo como
+     * "Hoje · 08:00" seria a mesma mentira com outra roupa — um instante já passado sob o rótulo
+     * do que ainda vem. A concluída e a não realizada ficam com o dia do registro: ali o aviso já
+     * foi, e `nextReminderAt` pode ter sobrado preenchido.
+     */
+    fun occurrenceDay(item: AgendaItem): LocalDate =
+        if (item.occurrence.status == OccurrenceStatus.PENDING) {
+            avisoInstant(item).atZone(item.series.zoneId).toLocalDate()
+        } else {
+            item.occurrence.localDate
+        }
 
     fun todayShare(lines: List<DayShareLine>): String {
         if (lines.isEmpty()) return "Hoje no Fala Agenda não tem nada marcado."

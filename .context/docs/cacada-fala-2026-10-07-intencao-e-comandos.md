@@ -14,6 +14,18 @@ Décima primeira leva de caçadas. As anteriores estão em `auditoria-fala-2026-
 `cacada-fala-2026-10-07-recorrencia.md` e
 `cacada-fala-2026-10-07-data-e-hora.md`.
 
+**As levas seguintes** (o índice parou na décima primeira e várias delas apontam para cá
+dizendo "as anteriores estão listadas lá" — a lista abaixo é a que fecha a contagem):
+
+| Leva | Doc |
+|---|---|
+| 12ª | `cacada-fala-2026-10-07-recado.md` |
+| 13ª | `cacada-fala-2026-10-07-fonte-grande.md` |
+| 14ª | `cacada-fala-2026-10-07-funcoes-de-limpeza.md` |
+| 15ª | `cacada-fala-2026-10-07-acumulo-de-dados.md` |
+| 16ª | `cacada-fala-2026-10-07-widget.md` |
+| 17ª | `cacada-fala-2026-10-08-segunda-porta.md` |
+
 Esta mede a **primeira porta do pipeline**: o classificador de intenção. Duas caçadas
 anteriores declararam explicitamente que **não o mediram** ("ele roda antes do parser e
 poderia desviar alguma fala"). Se ele classifica errado, o parser nunca vê a fala.

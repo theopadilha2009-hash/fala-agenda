@@ -671,6 +671,7 @@ class LocalTaskParser(
         val hit = extractClockTime(remaining)
         val note = "“${intervalDay.value}” é um intervalo, não uma data. Confirme o dia e o horário da primeira vez."
         return hit.copy(
+            remaining = TextNormalizer.compactSpaces(STARTS_AT.replace(hit.remaining, " ")),
             ambiguous = true,
             note = listOfNotNull(hit.note, note).joinToString(" "),
         )
@@ -685,18 +686,27 @@ class LocalTaskParser(
             // "a cada 12 horas começando amanhã às 8h": o "8h" é a primeira dose, não um horário
             // qualquer. Antes o intervalo devolvia antes de ler o relógio e o app pedia justamente
             // a hora que ela acabou de falar. Sem hora dita, continua pedindo — não inventamos.
-            val clockHit = extractClock(rest)
-            if (clockHit?.time != null) {
+            // O MESMO pipeline de hora do ramo dos dias (`extractTime` chama `extractClockTime`):
+            // RANGE, DAS_CLOCK, meio-dia/meia-noite, `em ponto` e SOON. Com `extractClock` direto, a
+            // faixa "das 14 às 16h" não era lida e o "16h" (fim da faixa) virava a hora do alarme,
+            // e "ao meio-dia"/"das 8" ficavam sem hora nenhuma — a paridade declarada não valia.
+            val clockHit = extractClockTime(rest)
+            if (clockHit.time != null) {
                 // A primeira dose dita preenche a hora, mas o INTERVALO continua sendo um intervalo:
                 // a série "de 8 em 8 horas" não é uma tarefa única. Sem isto o rascunho saía
                 // ambiguous=false/notes=[] e a caixa rápida gravava uma vez só, sem nunca dizer que
                 // tinha ignorado o intervalo. Espelha o ramo irmão do intervalo em DIAS (`extractTime`):
                 // mesma marcação, mesma família de nota.
+                //
+                // A nota do relógio só sobrevive quando ela é VERDADEIRA: "às 20h" não é ambíguo
+                // (o relógio marca 1..6 sem período dito), e preservá-la incondicionalmente fazia a
+                // tela ler "“as 20h” pode ser de manhã ou de tarde" às 20h — a nota contradizendo a
+                // hora que ela acabou de dizer. É o espelho do F10 do ramo dos dias.
                 val note = "“${m.value}” é um intervalo, não um horário do dia. Confirme o horário da primeira dose."
                 return clockHit.copy(
                     remaining = TextNormalizer.compactSpaces(STARTS_AT.replace(clockHit.remaining, " ")),
                     ambiguous = true,
-                    note = listOfNotNull(clockHit.note, note).joinToString(" "),
+                    note = listOfNotNull(clockHit.note.takeIf { clockHit.ambiguous }, note).joinToString(" "),
                 )
             }
             return TimeHit(

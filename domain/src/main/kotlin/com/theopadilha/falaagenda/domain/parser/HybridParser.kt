@@ -122,7 +122,7 @@ class HybridParser(
         } else {
             localDraft.recurrence
         }
-        val notes = notasDomescladas(
+        val notas = notasDomescladas(
             locais = localDraft.notes,
             remotas = remoteDraft.notes,
             remotoTrouxeData = remoteDraft.localDate != null,
@@ -139,14 +139,29 @@ class HybridParser(
             amountCents = remoteDraft.amountCents ?: localDraft.amountCents,
             observation = remoteDraft.observation.ifBlank { localDraft.observation },
             missingFields = missing,
-            // Preenchido o essencial, o rascunho deixa de ser ambíguo — do contrário a caixa
-            // rápida continuaria barrada (`canQuickConfirm`) por uma dúvida que a IA já resolveu.
-            ambiguous = remoteDraft.ambiguous && missing.isNotEmpty(),
+            // A ambiguidade **local** que a IA não endereçou sobrevive ao merge.
+            //
+            // A metade de antes (`remoteDraft.ambiguous && missing.isNotEmpty()`) só cobria a dúvida
+            // que NASCE da ausência de um campo: "faltava a hora, a IA preencheu, a dúvida acabou".
+            // Mas `missing = []` significa "o remoto **preencheu** tudo", não "o remoto **resolveu**
+            // o conflito" — são coisas diferentes. O intervalo em horas ("de 8 em 8 horas ... às
+            // 8h") deixa o rascunho local ambíguo com data e hora JÁ preenchidas (a primeira dose foi
+            // dita), então `missing` vinha vazio e o `&&` apagava a ambiguidade do intervalo sem que
+            // a IA tivesse dito nada sobre ele: a caixa verde confirmava em um toque e a série
+            // virava tarefa única — o dano que o ramo local acabou de fechar, ainda aberto no
+            // caminho com a IA ligada, que é o padrão do app configurado.
+            //
+            // O juiz é o mesmo que já decide as notas: `notasDomescladas` sabe se o remoto endereçou
+            // cada assunto (a IA trazendo a data desmente as notas sobre a data, e só elas), então a
+            // ambiguidade sobrevive junto da nota local que a expressa. Um critério para o mesmo
+            // fenômeno, em vez de um segundo que divergiria do primeiro.
+            ambiguous = (remoteDraft.ambiguous && missing.isNotEmpty()) ||
+                (localDraft.ambiguous && notas.locaisQueFicaram.isNotEmpty()),
             transcript = transcript,
             notes = if (tituloDivergiu) {
-                notes + "A ajuda extra chamou de “$tituloRemoto”. Ficou “$tituloLocal”."
+                notas.finais + "A ajuda extra chamou de “$tituloRemoto”. Ficou “$tituloLocal”."
             } else {
-                notes
+                notas.finais
             },
         )
     }
@@ -191,7 +206,7 @@ class HybridParser(
         finalTemData: Boolean,
         finalTemHora: Boolean,
         recorrenciaFinalRepete: Boolean,
-    ): List<String> {
+    ): NotasDomescladas {
         val desmentidas = buildSet {
             if (remotoTrouxeData) addAll(NotasDoRascunho.SOBRE_A_DATA)
             if (remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_A_HORA)
@@ -255,8 +270,27 @@ class HybridParser(
                 (nota.startsWith(NOTA_RECORRENCIA_PERDIDA) || nota.startsWith(NOTA_FAIXA_DESCARTADA))) ||
                 notasQueOFinalDesmente.any { nota.startsWith(it) }
         }
-        return (doLocal + doRemoto).distinct()
+        // As notas do local que sobreviveram são a evidência de que o remoto não endereçou aquele
+        // assunto — e é sobre essa evidência que o `mergeRemote` decide se a ambiguidade local
+        // sobrevive. Devolver as duas listas juntas mantém o juiz em um lugar só.
+        return NotasDomescladas(
+            finais = (doLocal + doRemoto).distinct(),
+            locaisQueFicaram = doLocal,
+        )
     }
+
+    /**
+     * O que o merge manda para a tela, e — à parte — quais notas **do local** sobreviveram.
+     *
+     * As duas saídas andam juntas de propósito: quem sabe se a nota sobreviveu é o mesmo juiz que
+     * decide se a ambiguidade que ela expressa sobreviveu, e separar as contas em dois lugares
+     * faria o par divergir sem que nada avisasse. A lista `finais` é o que vai para o rascunho; a
+     * `locaisQueFicaram` é a evidência de que o remoto não endereçou o assunto.
+     */
+    private data class NotasDomescladas(
+        val finais: List<String>,
+        val locaisQueFicaram: List<String>,
+    )
 
     /**
      * Decide quando vale gastar uma chamada de IA.

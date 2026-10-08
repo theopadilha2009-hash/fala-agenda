@@ -1,9 +1,12 @@
 package com.theopadilha.falaagenda.domain.parser
 
 import com.google.common.truth.Truth.assertThat
+import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.MissingDraftField
+import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -344,27 +347,37 @@ class LocalTaskParserValoresEFaixasTest {
     }
 
     @Test
-    fun oCustoDoAvisoDeIntervaloEmHorasEstaPresoNosDoisLados() {
+    fun oAvisoDeIntervaloEmHorasEstaPresoNosDoisLados() {
         // O aviso novo tem dois lados, e o número de cada um fica preso por igualdade — não pode
         // subir calado. Lado do BENEFÍCIO: falas com intervalo em horas e a primeira dose dita
-        // passam a escalar. Lado do CUSTO: falas com hora dita e SEM intervalo não podem virar
-        // pergunta (a regra "só age se tiver certeza" já quebrou `não quero mais` uma vez).
+        // passam a escalar E avisar (a nota não pode ficar de fora: é ela que explica o porquê de
+        // a caixa verde ter ficado barrada).
         val comIntervalo = listOf(
             "tomar o remédio de 8 em 8 horas começando amanhã às 8h",
             "remédio a cada 12 horas amanhã às 8h",
             "antibiótico de 6 em 6 horas amanhã às 7h",
         )
+        val escaladas = comIntervalo.count { parser.parse(it).ambiguous }
+        val avisadas = comIntervalo.count { parser.parse(it).notes.joinToString().contains("intervalo") }
+        assertThat(escaladas).isEqualTo(comIntervalo.size)
+        assertThat(avisadas).isEqualTo(comIntervalo.size)
+
+        // Lado do CUSTO — o que o teste realmente prende: o aviso não VAZA para fala sem intervalo.
+        // A versão anterior media zero em falas que não contêm o padrão do `INTERVAL`, então nunca
+        // alcançavam o ramo: o zero estava garantido antes do fix existir, e a asserção não prendia
+        // nada. Aqui as falas têm a hora dita e a palavra "horas" — a vizinhança do padrão — e
+        // continuam sem escalar por causa dele.
         val semIntervalo = listOf(
             "tomar remédio amanhã às 8h",
             "dentista amanhã às 9h",
             "pagar a conta amanhã às 10h",
             "comprar 2 caixas de leite amanhã às 10h",
+            "trabalhar 8 horas amanhã",
+            "esperar 12 horas amanhã",
+            "consulta às 15 horas",
         )
-        val escaladas = comIntervalo.count { parser.parse(it).ambiguous }
-        val perguntadas = semIntervalo.count { parser.parse(it).ambiguous }
-        println("PROBE-RESUMO|intervaloEmHoras|beneficio=$escaladas/${comIntervalo.size}|custo=$perguntadas/${semIntervalo.size}")
-        assertThat(escaladas).isEqualTo(comIntervalo.size)
-        assertThat(perguntadas).isEqualTo(0)
+        val escaladasSemIntervalo = semIntervalo.filter { parser.parse(it).ambiguous }
+        assertThat(escaladasSemIntervalo).isEmpty()
     }
 
     @Test
@@ -376,6 +389,170 @@ class LocalTaskParserValoresEFaixasTest {
         assertThat(draft.missingFields).contains(MissingDraftField.TIME)
         assertThat(draft.title).isEqualTo("Remédio")
         assertThat(draft.notes.joinToString()).contains("intervalo")
+    }
+
+    // ---- A nota do relógio não vaza para a nota do intervalo ----
+
+    @Test
+    fun oIntervaloNaoHerdaANotaDoRelogioQuandoOHorarioNaoEraAmbiguo() {
+        // "às 20h" não é ambíguo — o relógio só marca 1..6 sem período dito. A nota do relógio era
+        // preservada incondicionalmente no ramo do intervalo, então ela lia "“as 20h” pode ser de
+        // manhã ou de tarde. Confirme o horário." às 20h: a nota contradizendo a hora que ela
+        // acabou de dizer. É o espelho do F10 do ramo dos dias (a nota que contradiz a hora dita),
+        // e a mesma classe: uma frase que o app não pode mostrar.
+        val draft = parser.parse("tomar remédio de 8 em 8 horas amanhã às 20h")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(20, 0))
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.notes.joinToString()).contains("intervalo")
+        assertThat(draft.notes.joinToString()).doesNotContain("de manhã ou de tarde")
+    }
+
+    @Test
+    fun oIntervaloMantemANotaDoRelogioQuandoOHorarioEraAmbiguo() {
+        // O outro lado da mesma condição: quando o relógio MARCOU ambíguo ("às 3" sem período), a
+        // nota dele é verdadeira e tem que sobreviver ao lado da nota do intervalo. Prende a
+        // correção acima por mutação: trocar `if (clockHit.ambiguous)` por preservar a nota
+        // incondicionalmente mata o teste anterior; tirar a nota do relógio de vez mata este.
+        val draft = parser.parse("tomar remédio de 8 em 8 horas amanhã às 3h")
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(3, 0))
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.notes.joinToString()).contains("intervalo")
+        assertThat(draft.notes.joinToString()).contains("de manhã ou de tarde")
+    }
+
+    // ---- O ramo das horas vê o mesmo pipeline de hora que o ramo dos dias ----
+
+    @Test
+    fun oIntervaloEmHorasVeAFaixaDeHorasComoORamoDosDias() {
+        // A paridade declarada no PR ("mesmo pipeline de hora do ramo dos dias") não valia para a
+        // faixa: `extractClock` não conhece RANGE, e o "16h" (fim da faixa) virava a hora do
+        // alarme — 2h depois do que ela disse, com a caixa rápida confirmando.
+        val horas = parser.parse("de 8 em 8 horas das 14 às 16h")
+        val dias = parser.parse("de 15 em 15 dias das 14 às 16h")
+        assertThat(horas.localTime).isEqualTo(LocalTime.of(14, 0))
+        assertThat(horas.localTime).isEqualTo(dias.localTime)
+    }
+
+    @Test
+    fun oIntervaloEmHorasVeOMeioDiaEODasSemHComoORamoDosDias() {
+        val horasMeioDia = parser.parse("de 8 em 8 horas começando amanhã ao meio-dia")
+        val diasMeioDia = parser.parse("de 15 em 15 dias começando amanhã ao meio-dia")
+        assertThat(horasMeioDia.localTime).isEqualTo(LocalTime.of(12, 0))
+        assertThat(horasMeioDia.localTime).isEqualTo(diasMeioDia.localTime)
+
+        val horasDas = parser.parse("de 8 em 8 horas começando amanhã das 8")
+        val diasDas = parser.parse("de 15 em 15 dias começando amanhã das 8")
+        assertThat(horasDas.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(horasDas.localTime).isEqualTo(diasDas.localTime)
+    }
+
+    @Test
+    fun osDoisRamosDeIntervaloTiramOMesmoQualificadorDoTitulo() {
+        // O "começando" é qualificador do intervalo, não parte do nome da tarefa. O ramo das horas
+        // já o tirava; o dos dias o deixava no título ("Tomar remédio começando"). O ramo dos dias
+        // era o pior dos dois, e a paridade que o PR declara exige que os dois limpem igual.
+        val horas = parser.parse("tomar remédio de 8 em 8 horas começando amanhã às 9h")
+        val dias = parser.parse("tomar remédio de 15 em 15 dias começando amanhã às 9h")
+        assertThat(horas.title).isEqualTo("Tomar remédio")
+        assertThat(dias.title).isEqualTo(horas.title)
+    }
+
+    // ---- O intervalo em horas no caminho HÍBRIDO (IA ligada, o padrão do app configurado) ----
+
+    /** Ajuda extra que devolve data e hora completas: `missing = []`, `ambiguous = false`. */
+    private fun ajudaExtraCompleta() = object : RemoteDraftParser {
+        override suspend fun parse(
+            transcript: String,
+            nowIso: String,
+            timezone: String,
+            locale: String,
+        ): ParsedTaskDraft = ParsedTaskDraft(
+            title = "Remédio",
+            localDate = LocalDate.of(2026, 8, 21),
+            localTime = LocalTime.of(8, 0),
+            confidence = 0.9,
+            missingFields = emptySet(),
+            ambiguous = false,
+            transcript = transcript,
+            notes = emptyList(),
+            source = DraftSource.AI,
+        )
+    }
+
+    private fun hibrido() = HybridParser(
+        local = parser,
+        clock = clock,
+        remote = ajudaExtraCompleta(),
+        network = NetworkStatus { true },
+        isAiEnabled = { true },
+    )
+
+    @Test
+    fun aAmbiguidadeDoIntervaloSobreviveAoParserHibrido() = runBlocking {
+        // O P0 do review: o fix fechava o caminho local e deixava aberto o híbrido, que é o padrão
+        // do app configurado. `missing = []` significa "o remoto PREENCHEU tudo", não "o remoto
+        // RESOLVEU o conflito" — e o intervalo deixa o rascunho local ambíguo com data e hora já
+        // preenchidas, então o `&& missing.isNotEmpty()` apagava a ambiguidade sem que a IA tivesse
+        // dito nada sobre o intervalo. A caixa verde confirmava em um toque e a série virava
+        // tarefa única.
+        val fala = "tomar o remédio de 8 em 8 horas começando amanhã às 8h"
+        assertThat(parser.parse(fala).ambiguous).isTrue()
+
+        val draft = hibrido().parse(fala)
+        assertThat(draft.ambiguous).isTrue()
+        assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+        assertThat(draft.notes.joinToString()).contains("intervalo")
+        // O merge não regride o contrato fechado: a hora dita continua valendo.
+        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
+        assertThat(draft.missingFields).doesNotContain(MissingDraftField.TIME)
+    }
+
+    @Test
+    fun oCustoDoMergeDaAmbiguidadeEstaPresoNosDoisLados() = runBlocking {
+        // O desfecho do merge fica preso por IGUALDADE nos dois lados, com a IA ligada.
+        //
+        // BENEFÍCIO: toda fala cujo rascunho local era ambíguo por um conflito que a IA não
+        // endereçou — o intervalo — continua ambígua depois do merge.
+        val comIntervalo = listOf(
+            "tomar o remédio de 8 em 8 horas começando amanhã às 8h",
+            "remédio a cada 12 horas amanhã às 8h",
+            "antibiótico de 6 em 6 horas amanhã às 7h",
+            "de 15 em 15 dias às 9h",
+            "tomar remédio de 8 em 8 horas na segunda às 8h",
+        )
+        // CUSTO: a ambiguidade local que a IA **resolveu** — ela traz o campo sobre o qual a dúvida
+        // local falava, e a nota que declarava a dúvida sai do rascunho (`notasDomescladas`). A
+        // saída ingênua (`localAmbiguous || remoteAmbiguous`) reabre este custo: a caixa verde
+        // ficaria barrada numa fala sem nenhuma nota em vermelho para explicar o porquê — a
+        // contradição inversa, e pior que a original.
+        val resolvidasPelaIa = listOf(
+            "reunião 05/08 às 10h",
+            "consulta 31/02/2027 às 10h",
+        )
+        val escaladas = comIntervalo.count { hibrido().parse(it).ambiguous }
+        val liberadas = resolvidasPelaIa.count { hibrido().parse(it).canQuickConfirm(clock.instant(), zone) }
+
+        assertThat(escaladas).isEqualTo(comIntervalo.size)
+        assertThat(liberadas).isEqualTo(resolvidasPelaIa.size)
+    }
+
+    @Test
+    fun aCaixaVerdeSoFicaBarradaQuandoHaNotaQueExpliqueOPorque() = runBlocking {
+        // A invariante que separa as duas formas: `canQuickConfirm = false` só pode acontecer com
+        // uma nota no rascunho declarando a dúvida. A forma ingênua barra a caixa numa fala cuja
+        // única nota de dúvida o merge já desmentiu — a tela fica sem explicação nenhuma.
+        val falas = listOf(
+            "tomar o remédio de 8 em 8 horas começando amanhã às 8h",
+            "de 15 em 15 dias às 9h",
+            "reunião 05/08 às 10h",
+            "consulta 31/02/2027 às 10h",
+            "tomar remédio amanhã às 8h",
+        )
+        val semExplicacao = falas.filter { fala ->
+            val draft = hibrido().parse(fala)
+            !draft.canQuickConfirm(clock.instant(), zone) && draft.notes.isEmpty()
+        }
+        assertThat(semExplicacao).isEmpty()
     }
 
     // ---- Review adversarial: o valor só quando a leitura é inequívoca ----

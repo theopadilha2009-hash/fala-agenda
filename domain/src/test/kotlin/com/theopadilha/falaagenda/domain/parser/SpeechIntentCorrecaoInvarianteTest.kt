@@ -60,6 +60,47 @@ class SpeechIntentCorrecaoInvarianteTest {
         ", melhor, ", ", errei, ", ", ao invés disso, ", ", em vez disso, ", ", não ",
     )
 
+    /**
+     * A família que o corpus do #83 NÃO media, e é onde o defeito mora: depois da CÓPULA, o
+     * complemento nomeia o alvo novo sem determinante — o substantivo nu ("não é dentista"), a
+     * preposição ("não é de diabetes") e o pronome ("não é ele").
+     *
+     * As dez caudas de [alvos] abrem por determinante, temporal ou são vazias, e é justamente por
+     * isso que a suíte do #83 ficava verde com o buraco vivo: o veredito de [SpeechIntentClassifier]
+     * perguntava "o token seguinte é determinante?" e, quando não era, respondia "continuação" — o
+     * app agia sobre o alvo que ela DESCARTou. Medido no classificador real, antes do fix: o
+     * substantivo nu age em 36 de 36 casos, a preposição em 36 de 36, o pronome em 18 de 36 (só
+     * "ele"/"ela"; os demonstrativos já bloqueavam) e a correção explícita em 9 de 27.
+     *
+     * O conector é a CÓPULA porque é ela que dá o sinal estrutural: sem ela, o token nominal é
+     * indistinguível do verbo que abre uma continuação ("não vou poder ir", "não da tempo"), e
+     * medi-lo fora da cópula derrubaria o corpus de continuação inteiro. A forma `", não dentista"`
+     * fica como limite declarado, presa em [aFormaSemCopulaContinuaAgindo] .
+     */
+    private val complementosDepoisDaCopula = listOf(
+        // Determinante — já bloqueia hoje; está aqui para o eixo não regredir.
+        Alvos("o médico", "medico", "o dentista", true),
+        Alvos("o remédio de pressão", "remedio de pressao", "o de diabetes", true),
+        // Substantivo nu — o caso mais grave: "não é diabetes" registrava a DOSE errada.
+        Alvos("o médico", "medico", "dentista", true),
+        Alvos("o remédio de pressão", "remedio de pressao", "diabetes", true),
+        Alvos("a consulta", "consulta", "pressão", true),
+        // Preposição.
+        Alvos("o médico", "medico", "de diabetes", true),
+        Alvos("o remédio de pressão", "remedio de pressao", "de pressão", true),
+        Alvos("o médico", "medico", "pra mim", true),
+        // Pronome.
+        Alvos("o médico", "medico", "ele", true),
+        Alvos("a consulta", "consulta", "ela", true),
+        Alvos("o médico", "medico", "esse", true),
+        // Correção EXPLÍCITA: ela nomeia o alvo novo depois da vírgula, e o app apagava o velho.
+        Alvos("o médico", "medico", "ele, é o dentista", true),
+        Alvos("o médico", "medico", "isso, é amanhã", true),
+        // Depois da cópula vem um dia: não é alvo de tarefa de tarefa, mas também é correção.
+        Alvos("o médico", "medico", "hoje", false),
+        Alvos("o médico", "medico", "amanhã", false),
+    )
+
     /** O preâmbulo com que ela abre a fala espontaneamente. */
     private val preambulos = listOf("", "por favor, ", "ah, ")
 
@@ -119,6 +160,84 @@ class SpeechIntentCorrecaoInvarianteTest {
         assertThat(agiuComCorrecao).isEqualTo(0)
     }
 
+    /**
+     * O eixo que o #83 deixou em aberto: o complemento depois da CÓPULA, por FORMA.
+     *
+     * O invariante é o mesmo de [nenhumaCorrecaoAgeSobreOAlvoDescartado] — nenhuma correção pode
+     * agir sobre o alvo que ela descartou —, mas o corpus é o que o primeiro não media. Antes do
+     * fix, este teste morre com **117 de 405** casos agindo no descartado (o substantivo nu em 36 de
+     * 36, a preposição em 36 de 36, o pronome em 18 de 36 e a correção explícita em 9 de 27); com o
+     * fix ele fica em zero.
+     *
+     * O custo é declarado e preso separadamente em [asFormasDeContinuacaoQueTemDeContinuarAgindo].
+     */
+    @Test
+    fun correcaoDepoisDaCopulaNuncaAgeSobreOAlvoDescartado() {
+        var casos = 0
+        var casosComAlvoNovo = 0
+        var agiuNoDescartado = 0
+        var bloqueouCorrecao = 0
+        var bloqueouNaoAlvo = 0
+
+        preambulos.forEach { preambulo ->
+            verbos.forEach { verbo ->
+                complementosDepoisDaCopula.forEach { alvo ->
+                    casos++
+                    if (alvo.corrigidoEhAlvo) casosComAlvoNovo++
+                    val frase = "$preambulo$verbo${alvo.descartado}, não é ${alvo.corrigido}"
+                    val intent = SpeechIntentClassifier.classify(frase)
+                    if (alvoDe(intent) == alvo.alvoDescartado) {
+                        agiuNoDescartado++
+                        if (agiuNoDescartado <= 12) println("PROBE-VIOL-CO|«$frase» → $intent")
+                    }
+                    if (intent is SpeechIntent.Unknown && intent.kind == UnsupportedKind.CORRECTION) {
+                        if (alvo.corrigidoEhAlvo) bloqueouCorrecao++ else bloqueouNaoAlvo++
+                    }
+                }
+            }
+        }
+
+        println(
+            "PROBE-RESUMO|correcaoDepoisDaCopula|casos=$casos|casosComAlvoNovo=$casosComAlvoNovo|" +
+                "agiuNoDescartado=$agiuNoDescartado|bloqueouCorrecao=$bloqueouCorrecao|" +
+                "bloqueouNaoAlvo=$bloqueouNaoAlvo",
+        )
+        assertThat(agiuNoDescartado).isEqualTo(0)
+        // O complemento que NOMEIA alvo novo tem de bloquear em TODOS os casos — é a metade do
+        // benefício. O dia ("não é amanhã") também bloqueia, e é o lado seguro: não age sobre o
+        // descartado nem inventa um alvo "amanha".
+        assertThat(bloqueouCorrecao).isEqualTo(casosComAlvoNovo)
+        assertThat(bloqueouNaoAlvo).isEqualTo(casos - casosComAlvoNovo)
+    }
+
+    /**
+     * O LIMITE DECLARADO da correção sem cópula: `"cancela o médico, não dentista"` (a 8ª forma do
+     * conector, sem a segunda vírgula, e sem o `é`).
+     *
+     * Aqui o complemento é um substantivo nu, e a FORMA da frase não o separa do verbo que abre uma
+     * continuação: `"cancela o médico, não da tempo"` tem exatamente o mesmo desenho — `não` seguido
+     * de uma palavra que pode ser substantivo ou verbo. Qualquer critério que bloqueie o primeiro
+     * derruba o segundo, e "não da tempo"/"não quero mais" é a família de razão que o corpus de
+     * continuação prende (é o custo do lado seguro, medido no #83). Por isso a decisão é DECLARAR:
+     * o app continua agindo, e o número fica aqui para a troca ser explícita em vez de silenciosa.
+     */
+    @Test
+    fun aFormaSemCopulaContinuaAgindo() {
+        val frases = listOf(
+            "cancela o médico, não dentista",
+            "cancela o médico, não diabetes",
+            "cancela o médico, não pressão",
+        )
+        var agiram = 0
+        frases.forEach { frase ->
+            val intent = SpeechIntentClassifier.classify(frase)
+            if (alvoDe(intent) == "medico") agiram++
+            println("PROBE-FRASE|«$frase» → $intent")
+        }
+        println("PROBE-RESUMO|formaSemCopula|casos=${frases.size}|agiram=$agiram")
+        assertThat(agiram).isEqualTo(frases.size)
+    }
+
     // --- o corpus de CONTINUAÇÃO: o custo, preso em teste -----------------------------
     //
     // O review do PR #83 mediu que o gatilho largo do "não" bloqueava 2400 de 3360 frases que
@@ -126,7 +245,14 @@ class SpeechIntentCorrecaoInvarianteTest {
     // preciso mais" deixava de registrar a dose. Este é o corpus que prende a regressão — sem
     // ele, trocar o gatilho de volta para o largo não derruba teste nenhum.
 
-    /** As caudas de RAZÃO: depois do "não" vem uma oração, não um alvo. */
+    /**
+     * As caudas de RAZÃO: depois do "não" vem uma oração, não um alvo.
+     *
+     * O `"não é possível"` saiu daqui e está em [caudasQueACopulaBloqueia] — ele é o custo do fix da
+     * cópula (ver [correcaoDepoisDaCopulaNuncaAgeSobreOAlvoDescartado]), e tirá-lo de uma lista de
+     * tolerância ZERO sem o destino explícito seria esconder a troca. Ele não está sozinho no
+     * arquivo: continua preso, com o número, no teste do custo.
+     */
     private val caudasDeContinuacao = listOf(
         "não vou poder ir",
         "não preciso mais",
@@ -144,12 +270,30 @@ class SpeechIntentCorrecaoInvarianteTest {
         "não funciona assim",
         "não fui ainda",
         "não foi possível",
-        "não é possível",
         "não tem como",
         "não vou",
         "não queria",
         "não precisa",
         "não perdi",
+    )
+
+    /**
+     * O custo DECLARADO do fix da cópula: a continuação cujo complemento tem a forma de sintagma
+     * nominal é lida como correção, e o app pergunta em vez de agir.
+     *
+     * `"não é possível"` e `"não é pra mim"` são as duas formas que a frase NÃO separa de uma
+     * correção: "possível" é adjetivo predicativo e "dentista" é substantivo, mas a FORMA do
+     * complemento é a mesma (palavra nua depois da cópula), e distingui-los pediria léxico, não
+     * sintaxe. O desfecho é o lado seguro — deixa de agir, não age sobre o descartado —, e o número
+     * fica preso para não subir calado.
+     *
+     * O que NÃO entrou aqui: a família clínica ("não quero mais", "não tenho como", "não vou poder
+     * ir"), que não tem cópula e por isso não é tocada pelo critério. Ela segue em
+     * [asFormasDeContinuacaoQueTemDeContinuarAgindo], com tolerância zero.
+     */
+    private val caudasQueACopulaBloqueia = listOf(
+        "não é possível",
+        "não é pra mim",
     )
 
     /** Os alvos do corpus de continuação, com o alvo que o app age hoje (sem correção nenhuma). */
@@ -189,11 +333,12 @@ class SpeechIntentCorrecaoInvarianteTest {
     )
 
     /**
-     * O espaço do review: 5 verbos × 32 alvos × **22** caudas = **3520** casos.
+     * O espaço do review: 5 verbos × 32 alvos × **21** caudas = **3360** casos.
      *
-     * A conta estava escrita "21 caudas = 3360" e não batia com a lista — que tem 22 desde que
-     * "não tem como" entrou. O número do log é 3520, e é ele que vale: contagem errada em
-     * comentário é o que a próxima pessoa usa para decidir.
+     * A conta estava escrita "21 caudas = 3360" e depois corrigida para "22 = 3520" — e agora
+     * voltou a 21 porque `"não é possível"` saiu de [caudasDeContinuacao] para
+     * [caudasQueACopulaBloqueia], onde ele é o custo do fix da cópula. O número do log é 3360, e é
+     * ele que vale: contagem errada em comentário é o que a próxima pessoa usa para decidir.
      */
     private val verbosDeContinuacao = verbos + listOf("exclui ", "tira ")
 
@@ -224,6 +369,39 @@ class SpeechIntentCorrecaoInvarianteTest {
 
         println("PROBE-RESUMO|corpusDeContinuacao|casos=$casos|bloqueados=$bloqueados|exemplos=$exemplos")
         assertThat(bloqueados).isEqualTo(0)
+    }
+
+    /**
+     * O custo do fix da cópula, preso no lado em que ele EXISTE: as duas caudas cujo complemento tem
+     * a forma de sintagma nominal e que são, na verdade, continuação.
+     *
+     * A asserção é de igualdade — o número não pode subir (regressão do lado seguro) nem cair sem
+     * alguém remover a linha. É o par de [asFormasDeContinuacaoQueTemDeContinuarAgindo], que prende o
+     * lado onde o custo tem de ser ZERO.
+     */
+    @Test
+    fun oCustoDaCopulaFicaDeclarado() {
+        var casos = 0
+        var bloqueados = 0
+        val naoBloqueadas = mutableListOf<String>()
+
+        verbosDeContinuacao.forEach { verbo ->
+            alvosDeContinuacao.forEach { (alvo, _) ->
+                caudasQueACopulaBloqueia.forEach { cauda ->
+                    casos++
+                    val intent = SpeechIntentClassifier.classify("$verbo$alvo, $cauda")
+                    if (intent is SpeechIntent.Unknown && intent.kind == UnsupportedKind.CORRECTION) {
+                        bloqueados++
+                    } else {
+                        naoBloqueadas += "$verbo$alvo, $cauda → $intent"
+                    }
+                }
+            }
+        }
+
+        println("PROBE-RESUMO|custoDaCopulaDeclarado|casos=$casos|bloqueados=$bloqueados")
+        if (naoBloqueadas.isNotEmpty()) println("PROBE-NAO-BLOQUEADAS|$naoBloqueadas")
+        assertThat(bloqueados).isEqualTo(casos)
     }
 
     /**
@@ -276,6 +454,77 @@ class SpeechIntentCorrecaoInvarianteTest {
         }
         println("PROBE-RESUMO|caudasAmbiguas|casos=${ambiguas.size}|bloqueadas=$bloqueadas")
         assertThat(bloqueadas).isEqualTo(ambiguas.size)
+    }
+
+    /**
+     * O CUSTO do fix da cópula, medido pelo outro lado: as continuações que chegam à cópula têm de
+     * continuar agindo no alvo certo.
+     *
+     * A cópula é o discriminador estrutural (ver [complementosDepoisDaCopula]) e é isso que separa
+     * esta família da que o corpus de continuação prende: `"não vou poder ir"`, `"não da tempo"` e
+     * `"não tenho como"` NÃO têm cópula, então o critério não as toca. As que TÊM cópula e são
+     * continuação — `"não é possível"`, `"não é pra mim"`, `"não é o momento"`, `"não é meu médico"`
+     * — são o custo declarado: o app deixa de agir e pergunta, que é o lado seguro. Este teste prende
+     * que as duas primeiras famílias seguem agindo, e o resíduo ambíguo fica preso em
+     * [oResidualDaCopulaContinuaBloqueadoENaoAge] com o número explícito.
+     */
+    @Test
+    fun asFormasDeContinuacaoQueTemDeContinuarAgindo() {
+        val frases = listOf(
+            "cancela o médico, não vou poder ir" to "medico",
+            "cancela o médico, não da tempo" to "medico",
+            "cancela o médico, não tenho como" to "medico",
+            "cancela o médico, não quero mais" to "medico",
+            "já tomei o remédio de pressão, não quero mais" to "remedio de pressao",
+            "já tomei o remédio de pressão, não tenho como" to "remedio de pressao",
+            "cancela o médico, não vou a pé" to "medico",
+            "cancela o médico, não chegou o dinheiro" to "medico",
+            "cancela o médico, não vale a pena" to "medico",
+        )
+        var casos = 0
+        var quebrados = 0
+        frases.forEach { (frase, alvoEsperado) ->
+            casos++
+            if (alvoDe(SpeechIntentClassifier.classify(frase)) != alvoEsperado) {
+                quebrados++
+                println("PROBE-VIOL-CO-CUSTO|«$frase» → ${SpeechIntentClassifier.classify(frase)}")
+            }
+        }
+        println("PROBE-RESUMO|custoDaCopula|casos=$casos|quebrados=$quebrados")
+        assertThat(quebrados).isEqualTo(0)
+    }
+
+    /**
+     * O resíduo declarado do lado da cópula: as continuações cujo complemento TEM a forma de alvo
+     * ("não é **possível**", "não é **pra mim**", "não é **o** momento", "não é **meu** médico") são
+     * lidas como correção, e o app pergunta em vez de agir.
+     *
+     * O número é o custo do fix, preso para não subir calado. Ele NÃO pode cair na família clínica
+     * ("não quero mais", "não tenho como", "não vou poder ir"), que é presa em
+     * [asFormasDeContinuacaoQueTemDeContinuarAgindo]: essas não têm cópula e não são tocadas.
+     */
+    @Test
+    fun oResidualDaCopulaContinuaBloqueadoENaoAge() {
+        val residuais = listOf(
+            "cancela o médico, não é possível",
+            "cancela o médico, não é pra mim",
+            "cancela o médico, não é o momento",
+            "cancela o médico, não é meu médico",
+        )
+        var bloqueadas = 0
+        var agiram = 0
+        residuais.forEach { frase ->
+            val intent = SpeechIntentClassifier.classify(frase)
+            if (intent is SpeechIntent.Unknown && intent.kind == UnsupportedKind.CORRECTION) {
+                bloqueadas++
+            } else if (alvoDe(intent) != null) {
+                agiram++
+                println("PROBE-VIOL-CO-RESID|«$frase» → $intent")
+            }
+        }
+        println("PROBE-RESUMO|residualDaCopula|casos=${residuais.size}|bloqueadas=$bloqueadas|agiram=$agiram")
+        assertThat(bloqueadas).isEqualTo(residuais.size)
+        assertThat(agiram).isEqualTo(0)
     }
 
     @Test

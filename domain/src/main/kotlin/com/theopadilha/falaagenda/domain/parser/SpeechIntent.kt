@@ -215,10 +215,33 @@ object SpeechIntentClassifier {
         // o alvo sozinho — ele é o próprio alvo sem substantivo, e exigir uma palavra depois dele
         // deixava a correção passar justamente quando não havia continuação nenhuma, que é o caso
         // mais perigoso: ela abandonou o comando e o app executa assim mesmo.
-        if (tokens[i] !in DEMONSTRATIVOS) return false
-        if (i + 1 >= tokens.size) return true
-        // "não é o que eu queria": o "que" não é substantivo.
-        return tokens[i + 1] !in PALAVRAS_FUNCIONAIS
+        if (tokens[i] in DEMONSTRATIVOS) {
+            if (i + 1 >= tokens.size) return true
+            // "não é o que eu queria": o "que" não é substantivo.
+            return tokens[i + 1] !in PALAVRAS_FUNCIONAIS
+        }
+        // ...ou, DEPOIS DA CÓPULA, qualquer sintagma nominal. Aqui está o buraco que o #83 não
+        // fechou: o veredito perguntava só por determinante, e o complemento que nomeia o alvo novo
+        // SEM determinante — o substantivo nu ("não é dentista"), a preposição ("não é de diabetes")
+        // e o pronome ("não é ele") — respondia "continuação", e o app agia sobre o alvo que ela
+        // DESCARTou. Medido: o substantivo nu em 36 de 36 casos, a preposição em 36 de 36, o pronome
+        // em 18 de 36 (só "ele"/"ela"; os demonstrativos já bloqueavam) e a correção explícita
+        // ("não é ele, é o dentista") em 9 de 27.
+        //
+        // A CÓPULA é o discriminador, e é ela que separa esta família da continuação: o
+        // complemento de "não é X" é NOMEADO (predicativo do sujeito — um substantivo, um adjetivo,
+        // uma preposição com nome), e é aí que a correção se parece com um alvo. Sem a cópula, a
+        // palavra nua pode ser o VERBO que abre uma continuação ("não da tempo", "não vou poder
+        // ir", "não quero mais"), e bloqueá-la derrubaria a família clínica — a dose que o corpus de
+        // continuação prende. Por isso a forma `"cancela o médico, não dentista"` (sem o `é`) fica
+        // de fora, declarada em teste.
+        //
+        // O custo declarado: "possível" é adjetivo predicativo e "pra mim" é sintagma preposicional,
+        // e a FORMA não os separa de "dentista"/"de diabetes" (palavra nua depois da cópula). O app
+        // passa a PERGUNTAR em vez de agir nesses dois — o lado seguro, medido em teste. Ver
+        // [PALAVRAS_FUNCIONAIS] para o que ainda poda um complemento que não nomeia nada.
+        if (i > 0 && tokens[i - 1] in COPULAS) return tokens[i] !in PALAVRAS_FUNCIONAIS
+        return false
     }
 
     /**
@@ -279,16 +302,25 @@ object SpeechIntentClassifier {
      * "ta errado", "alias", "esquece", "perai", "deixa pra la" e "desculpa" — todos são ela
      * voltando atrás no que acabou de dizer.
      *
+     * A quarta rodada acrescentou a família que o comentário declarava fora e que TAMBÉM volta
+     * atrás: "espera", "calma", "ops", "pera" e "deixa eu ver". A caçada de 07/10 mediu o dano
+     * ponta-a-ponta — `"cancela o médico, espera, o dentista"` apagava o MÉDICO (recado="Tarefa
+     * excluída", restam=[Dentista]), e `"já tomei o remédio, espera, o de pressão"` registrava a
+     * DOSE ERRADA. "espera" e "calma" são a mesma interrupção de quem se corrige; "ops" e "pera"
+     * são a forma coloquial dela. Cobertura de teste era ZERO para todas.
+     *
+     * Ficaram DE FORA os que não voltam atrás de nada: "depois", "agora" e "então" — o "depois" é
+     * justamente a continuação ("cancela o médico, depois eu vejo"), e bloqueá-lo custaria o
+     * comando. "não é isso" não é um conector à parte — é o próprio `não` seguido de demonstrativo,
+     * e cai no veredito de alvo como qualquer outra fala do `não`.
+     *
      * O `não` NÃO está aqui: ele é o único com ambiguidade de continuação, e por isso o veredito
      * dele passa por [negaComCorrecao] e [nomeiaAlvoDepois] em vez da presença.
-     *
-     * Ficaram DE FORA os que não voltam atrás de nada: "espera", "depois", "agora" e "então".
-     * "não é isso" não é um conector à parte — é o próprio `não` seguido de demonstrativo, e cai
-     * no veredito de alvo como qualquer outra fala do `não`.
      */
     private val CONTENT_CUE = Regex(
         "(^|[\\s,])(quero dizer|quis dizer|quer dizer|na verdade|ao inves disso|em vez disso|" +
-            "ta errado|deixa pra la|me enganei|corrigindo|mentira|alias|esquece|perai|desculpa|" +
+            "ta errado|deixa pra la|deixa eu ver|me enganei|corrigindo|mentira|alias|esquece|" +
+            "perai|pera|espera|calma|ops|desculpa|" +
             "digo|melhor|errei)([\\s,.!?;:]|$)",
     )
 

@@ -35,6 +35,23 @@ class SpeechIntentTest {
     }
 
     /**
+     * "cancela" nu — o par do `"já tomei"`: a intenção é reconhecida, o alvo sai VAZIO e quem
+     * resolve é a matcher, que sem nome não escolhe nada ("Não achei nenhuma tarefa com esse
+     * nome"). É o lado seguro: não age no escuro.
+     *
+     * Este teste existe porque o `Complete("")` irmão já estava preso em [jaTomeiViraComandoDeConcluir]
+     * e o `Cancel("")` não estava: a mutação que rejeita `Cancel` vazio deixava a suíte inteira
+     * verde (domain 489 / app 756, 0 falhas), ou seja, metade da decisão estava só na cabeça de
+     * quem escreveu o código.
+     */
+    @Test
+    fun cancelaSemAlvoViraComandoDeCancelarSemNome() {
+        val intent = intent("cancela")
+        assertThat(intent).isInstanceOf(SpeechIntent.Cancel::class.java)
+        assertThat((intent as SpeechIntent.Cancel).target).isEmpty()
+    }
+
+    /**
      * "já tomei o remédio": o alvo sai do resto da frase, sem o artigo.
      */
     @Test

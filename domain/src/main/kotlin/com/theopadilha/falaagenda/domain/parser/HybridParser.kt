@@ -52,6 +52,42 @@ class HybridParser(
          * parte" é falso: a parte está lá, e o descarte do campo inválido não custou nada.
          */
         const val NOTA_FAIXA_DESCARTADA = "A ajuda extra devolveu uma data fora do calendário"
+
+        /**
+         * Os trechos das notas que o parser local escreve quando detectou um **conflito** — duas
+         * coisas ditas que discordam entre si, ou um valor que não é o que o campo pede.
+         *
+         * É o par oposto das notas de **falta**. A distinção decide o merge, e é a informação que
+         * o `&& missing.isNotEmpty()` descartava: as duas razões pelas quais o local escala são
+         * diferentes, e só uma delas o remoto pode resolver.
+         *
+         *  - **falta**: o local não tinha o campo ("Falta o horário", "de manhã" sem hora, a
+         *    recorrência ambígua). O remoto preenchendo o campo, a dúvida acabou — é o que o
+         *    `missing.isNotEmpty()` foi escrito para reconhecer, e continua valendo.
+         *  - **conflito**: o local reconheceu a contradição ("a fala diz mais de um dia", "e a
+         *    hora dita não batem", "é um intervalo, não um horário do dia"). O remoto que devolve
+         *    data e hora completas **preencheu** o campo sem nunca ter reconhecido o conflito —
+         *    preencher não é resolver. Apagar a ambiguidade aqui é o defeito que dois revisores
+         *    acharam por caminhos independentes (#105 pelo intervalo, #98 pelos dois dias), e que
+         *    deixava a caixa rápida confirmar em um toque o que o parser tinha marcado como duvidoso.
+         *
+         * A marca mora aqui, e não em [NotasDoRascunho], por uma razão de contrato: o lote que
+         * corrige o merge não pode editar a origem das notas. O lugar certo dela é junto das
+         * outras marcas — o mesmo argumento que fez `SOBRE_A_DATA` descer para lá vale aqui: a
+         * lista própria só reconhece a nota que alguém lembrou de escrever nela, e a nota nova do
+         * parser passa em silêncio. Fica registrado como dívida do lote; o casamento por trecho
+         * estável (e não por prefixo) é o que mantém a lista curta.
+         */
+        val NOTAS_DE_CONFLITO = listOf(
+            NotasDoRascunho.DATA_AMBIGUA,
+            "O horário ficou ambíguo.",
+            "e a hora dita não batem",
+            "não a hora que você disse",
+            "pode ser de manhã ou de tarde",
+            "mais de uma tarefa",
+            "é um intervalo",
+            "não é um horário válido",
+        )
     }
 
     suspend fun parse(transcript: String): ParsedTaskDraft {
@@ -122,6 +158,24 @@ class HybridParser(
         } else {
             localDraft.recurrence
         }
+        // A ambiguidade que o remoto **resolveu** pode cair; a que ele **atropelou** não.
+        //
+        // `missing = []` significa "o remoto preencheu tudo", não "o remoto resolveu o conflito" —
+        // são coisas diferentes, e a linha antiga (`remoteDraft.ambiguous && missing.isNotEmpty()`)
+        // tratava a primeira como a segunda. Quando o local escalou por um **conflito** (a fala diz
+        // dois dias, a faixa do dia contradiz a hora, "de 8 em 8 horas" não é um horário), o remoto
+        // que devolve data e hora completas não endereçou nada: ele preencheu o campo por cima.
+        // Mantida a ambiguidade, `canQuickConfirm` continua `false` e a caixa verde não confirma em
+        // um toque o que o parser duvidou.
+        //
+        // A assimetria é deliberada, e o custo dos dois lados foi medido antes do desenho (corpus
+        // de 498 falas extraídas das suítes do parser, todas ambíguas locais = 113):
+        //  - a saída ingênua (`localDraft.ambiguous || remoteDraft.ambiguous`) preservaria as 113 —
+        //    **52 a mais** que este critério, todas de "falta" (a hora que o local não tinha, a
+        //    recorrência ambígua). São justamente as que o merge resolvia de propósito, e o custo
+        //    que o `missing.isNotEmpty()` foi criado para conter.
+        //  - este critério preserva **61**, todas de conflito e **nenhuma** de falta.
+        val ambiguidadeDoLocalAtropelada = localDraft.ambiguous && temConflito(localDraft.notes)
         val notes = notasDomescladas(
             locais = localDraft.notes,
             remotas = remoteDraft.notes,
@@ -130,6 +184,10 @@ class HybridParser(
             finalTemData = mergedDate != null,
             finalTemHora = mergedTime != null,
             recorrenciaFinalRepete = recurrence.isRecurring,
+            // O conflito que o remoto atropelou não é desmentido pela data que ele trouxe: a nota
+            // continua verdadeira, e apagá-la ao lado da ambiguidade preservada seria dizer que a
+            // fala está resolvida sem que nada tenha mudado.
+            conflitoLocalPreservado = ambiguidadeDoLocalAtropelada,
         )
         return remoteDraft.copy(
             title = title,
@@ -139,9 +197,10 @@ class HybridParser(
             amountCents = remoteDraft.amountCents ?: localDraft.amountCents,
             observation = remoteDraft.observation.ifBlank { localDraft.observation },
             missingFields = missing,
-            // Preenchido o essencial, o rascunho deixa de ser ambíguo — do contrário a caixa
-            // rápida continuaria barrada (`canQuickConfirm`) por uma dúvida que a IA já resolveu.
-            ambiguous = remoteDraft.ambiguous && missing.isNotEmpty(),
+            // Preenchido o essencial, o rascunho deixa de ser ambíguo — do contrário a caixa rápida
+            // continuaria barrada (`canQuickConfirm`) por uma dúvida que a IA já resolveu. A exceção
+            // é a ambiguidade que o remoto **atropelou**, calculada acima.
+            ambiguous = ambiguidadeDoLocalAtropelada || (remoteDraft.ambiguous && missing.isNotEmpty()),
             transcript = transcript,
             notes = if (tituloDivergiu) {
                 notes + "A ajuda extra chamou de “$tituloRemoto”. Ficou “$tituloLocal”."
@@ -150,6 +209,17 @@ class HybridParser(
             },
         )
     }
+
+    /**
+     * O local marcou um **conflito** — e não só a falta de um campo.
+     *
+     * A pergunta é pelo texto da nota, e não pelo campo que falta, porque é o texto que carrega a
+     * informação: "Falta o horário" e "de 8 em 8 horas não é um horário do dia" descrevem rascunhos
+     * com o mesmo `missingFields`, mas significam coisas opostas para o merge. O remoto pode
+     * preencher a hora que falta; ele não pode desfazer a contradição que a fala já tinha.
+     */
+    private fun temConflito(notas: List<String>): Boolean =
+        notas.any { nota -> NOTAS_DE_CONFLITO.any { nota.contains(it) } }
 
     /**
      * As notas do local que a IA acabou de tornar falsas saem do rascunho.
@@ -191,13 +261,25 @@ class HybridParser(
         finalTemData: Boolean,
         finalTemHora: Boolean,
         recorrenciaFinalRepete: Boolean,
+        conflitoLocalPreservado: Boolean,
     ): List<String> {
         val desmentidas = buildSet {
             if (remotoTrouxeData) addAll(NotasDoRascunho.SOBRE_A_DATA)
             if (remotoTrouxeHora) addAll(NotasDoRascunho.SOBRE_A_HORA)
             if (finalTemData && finalTemHora) addAll(NotasDoRascunho.SOBRE_O_INSTANTE)
         }
-        val doLocal = locais.filterNot { nota -> desmentidas.any { nota.startsWith(it) } }
+        // A nota do conflito que o remoto **atropelou** fica. Ela é a única informação que o parser
+        // tinha sobre a contradição, e o remoto que preencheu o campo não a endereçou: desmenti-la
+        // pela data que ele trouxe deixaria o rascunho ambíguo **e** mudo — a caixa diria "Pode
+        // salvar?" barrada sem explicar por quê.
+        //
+        // A exceção é só para a nota que **carrega** o conflito. As de "falta" seguem caindo quando
+        // o remoto traz o campo: mantê-las ao lado do campo preenchido é a contradição visível que
+        // esta função existe para evitar ("Falta a data" logo acima da data que a IA acabou de dar).
+        val doLocal = locais.filterNot { nota ->
+            val desmentida = desmentidas.any { nota.startsWith(it) }
+            desmentida && !(conflitoLocalPreservado && temConflito(listOf(nota)))
+        }
         // As notas **do remoto** não passam pelo desmentido por prefixo do local: quem decide se
         // elas são verdade é o desfecho do merge, não quem as escreveu.
         //

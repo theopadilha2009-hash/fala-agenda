@@ -2,6 +2,9 @@ package com.theopadilha.falaagenda.domain.parser
 
 import com.theopadilha.falaagenda.domain.model.MissingDraftField
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
+import com.theopadilha.falaagenda.domain.model.RecurrenceKind
+import com.theopadilha.falaagenda.domain.model.RecurrenceRule
+import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import com.theopadilha.falaagenda.domain.time.AppClock
 import java.time.LocalDate
 import java.time.LocalTime
@@ -54,29 +57,42 @@ class HybridParser(
         const val NOTA_FAIXA_DESCARTADA = "A ajuda extra devolveu uma data fora do calendário"
 
         /**
-         * Os trechos das notas que o parser local escreve quando detectou um **conflito** — duas
-         * coisas ditas que discordam entre si, ou um valor que não é o que o campo pede.
+         * A nota do parser local para a recorrência que ele não cravou.
          *
-         * É o par oposto das notas de **falta**. A distinção decide o merge, e é a informação que
-         * o `&& missing.isNotEmpty()` descartava: as duas razões pelas quais o local escala são
-         * diferentes, e só uma delas o remoto pode resolver.
+         * O texto é **o mesmo** para duas causas opostas (`LocalTaskParser.extractRecurrence`):
          *
-         *  - **falta**: o local não tinha o campo ("Falta o horário", "de manhã" sem hora, a
-         *    recorrência ambígua). O remoto preenchendo o campo, a dúvida acabou — é o que o
-         *    `missing.isNotEmpty()` foi escrito para reconhecer, e continua valendo.
-         *  - **conflito**: o local reconheceu a contradição ("a fala diz mais de um dia", "e a
-         *    hora dita não batem", "é um intervalo, não um horário do dia"). O remoto que devolve
-         *    data e hora completas **preencheu** o campo sem nunca ter reconhecido o conflito —
-         *    preencher não é resolver. Apagar a ambiguidade aqui é o defeito que dois revisores
-         *    acharam por caminhos independentes (#105 pelo intervalo, #98 pelos dois dias), e que
-         *    deixava a caixa rápida confirmar em um toque o que o parser tinha marcado como duvidoso.
+         *  - campo **ausente** — "toda as" sem o dia (`:631`). É falta: o remoto completando o
+         *    campo, a dúvida acabou, e liberar a caixa verde está certo;
+         *  - valor **fora da faixa** — `YEARLY(31/04)`, `YEARLY(32/02)` (`:506`/`:520`/`:531`). É
+         *    **conflito**: o `31 de abril` não existe em calendário nenhum. A regra do local
+         *    sobrevive ao merge (`mergedDate` só cuida de `localDate`; a recorrência do local
+         *    vence quando a do remoto não repete), então a caixa verde gravaria uma **série
+         *    impossível**.
          *
-         * A marca mora aqui, e não em [NotasDoRascunho], por uma razão de contrato: o lote que
-         * corrige o merge não pode editar a origem das notas. O lugar certo dela é junto das
-         * outras marcas — o mesmo argumento que fez `SOBRE_A_DATA` descer para lá vale aqui: a
-         * lista própria só reconhece a nota que alguém lembrou de escrever nela, e a nota nova do
-         * parser passa em silêncio. Fica registrado como dívida do lote; o casamento por trecho
-         * estável (e não por prefixo) é o que mantém a lista curta.
+         * A causa não está no texto — por isso [temConflito] olha o rascunho, e não só as notas,
+         * quando é esta a nota. Sem isso, o `32 de fevereiro` saía `qc=true`.
+         */
+        const val NOTA_RECORRENCIA_AMBIGUA = "A recorrência ficou ambígua."
+
+        /**
+         * As notas que o parser local escreve quando detectou um **conflito** — duas coisas ditas
+         * que discordam entre si, ou um valor que não é o que o campo pede.
+         *
+         * É o par oposto das notas de **falta**, e a distinção decide o merge. O critério é
+         * operacional, não estético: para cada entrada, **a causa some quando o remoto preenche o
+         * campo?** As oito respondem *não* — e é isso que as separa das de falta, que respondem
+         * *sim*. Não é uma lista de trechos escolhidos a dedo como a `WORD_HOUR_ALT` do #102 (que
+         * declarava no comentário uma exclusão que o código não fazia): cada entrada aqui é o texto
+         * de um ramo do `LocalTaskParser` em que a fala já se contradizia.
+         *
+         * A nota da recorrência **não** entra: o texto dela cobre as duas causas, e por isso o
+         * juiz dela é o rascunho ([temConflito]).
+         *
+         * A lista mora aqui, e não em [NotasDoRascunho], por uma razão de contrato: este lote não
+         * pode editar a origem das notas. O lugar certo dela é junto das outras marcas — o mesmo
+         * argumento que fez `SOBRE_A_DATA` descer para lá vale aqui. **Não** é porque a origem é
+         * intocável: o #105 edita `LocalTaskParser.kt` e este PR depende dele. É porque o lote do
+         * merge tem escopo próprio, e mover a lista pede um terceiro lote que toque os dois lados.
          */
         val NOTAS_DE_CONFLITO = listOf(
             NotasDoRascunho.DATA_AMBIGUA,
@@ -168,14 +184,15 @@ class HybridParser(
         // Mantida a ambiguidade, `canQuickConfirm` continua `false` e a caixa verde não confirma em
         // um toque o que o parser duvidou.
         //
-        // A assimetria é deliberada, e o custo dos dois lados foi medido antes do desenho (corpus
-        // de 498 falas extraídas das suítes do parser, todas ambíguas locais = 113):
-        //  - a saída ingênua (`localDraft.ambiguous || remoteDraft.ambiguous`) preservaria as 113 —
-        //    **52 a mais** que este critério, todas de "falta" (a hora que o local não tinha, a
-        //    recorrência ambígua). São justamente as que o merge resolvia de propósito, e o custo
-        //    que o `missing.isNotEmpty()` foi criado para conter.
-        //  - este critério preserva **61**, todas de conflito e **nenhuma** de falta.
-        val ambiguidadeDoLocalAtropelada = localDraft.ambiguous && temConflito(localDraft.notes)
+        // A assimetria é deliberada, e o custo dos dois lados foi medido antes do desenho. Corpus
+        // de 885 falas extraídas das suítes do parser, 790 viram tarefa e 114 são ambíguas locais
+        // (**número deste corpus, não do app** — outro recorte dá outro total):
+        //  - a saída ingênua (`localDraft.ambiguous || remoteDraft.ambiguous`) preservaria as 114 —
+        //    **59 a mais** que este critério, todas de "falta" (a hora que o local não tinha, a
+        //    recorrência com o campo ausente). São justamente as que o merge resolvia de propósito,
+        //    e o custo que o `missing.isNotEmpty()` foi criado para conter.
+        //  - este critério preserva **55**, todas de conflito e **nenhuma** de falta.
+        val ambiguidadeDoLocalAtropelada = localDraft.ambiguous && temConflito(localDraft)
         val notes = notasDomescladas(
             locais = localDraft.notes,
             remotas = remoteDraft.notes,
@@ -213,13 +230,57 @@ class HybridParser(
     /**
      * O local marcou um **conflito** — e não só a falta de um campo.
      *
-     * A pergunta é pelo texto da nota, e não pelo campo que falta, porque é o texto que carrega a
-     * informação: "Falta o horário" e "de 8 em 8 horas não é um horário do dia" descrevem rascunhos
-     * com o mesmo `missingFields`, mas significam coisas opostas para o merge. O remoto pode
-     * preencher a hora que falta; ele não pode desfazer a contradição que a fala já tinha.
+     * A pergunta principal é pelo texto da nota, e não pelo campo que falta, porque é o texto que
+     * carrega a informação: "Falta o horário" e "de 8 em 8 horas não é um horário do dia" descrevem
+     * rascunhos com o mesmo `missingFields`, mas significam coisas opostas para o merge. O remoto
+     * pode preencher a hora que falta; ele não pode desfazer a contradição que a fala já tinha.
+     *
+     * A exceção é a nota da recorrência ([NOTA_RECORRENCIA_AMBIGUA]), cujo texto cobre duas causas
+     * opostas: campo **ausente** (falta, liberar está certo) e valor **fora da faixa** — `YEARLY(31/04)`,
+     * `YEARLY(32/02)` (conflito: a série não existe em calendário nenhum). A causa não está no
+     * texto, então quem responde é a **regra**: um `dayOfMonth`/`monthOfYear` fora da faixa, ou o
+     * campo que o tipo da regra exige e não veio (`isCoherent`). O que a regra devolve já basta
+     * para saber que a série é impossível, e é isso que barra a caixa verde.
      */
-    private fun temConflito(notas: List<String>): Boolean =
-        notas.any { nota -> NOTAS_DE_CONFLITO.any { nota.contains(it) } }
+    private fun temConflito(localDraft: ParsedTaskDraft): Boolean {
+        if (localDraft.notes.any { notaCarregaConflito(it) }) return true
+        // Só a nota da recorrência precisa do rascunho: as outras causas estão no próprio texto.
+        if (localDraft.notes.none { it.contains(NOTA_RECORRENCIA_AMBIGUA) }) return false
+        return !regraRecorrenciaUtilizavel(localDraft.recurrence)
+    }
+
+    /**
+     * O texto **de uma nota** carrega o conflito?
+     *
+     * É a granularidade certa para a nota isolada (o desmentido, que decide nota a nota), e é por
+     * isso que ela é uma função e não uma chamada a [temConflito]: aquela olha o rascunho, e para
+     * uma nota avulsa o rascunho não está em jogo. A nota da recorrência fica de fora das duas —
+     * o texto dela cobre as duas causas, e quem responde por ela é a regra.
+     */
+    private fun notaCarregaConflito(nota: String): Boolean =
+        NOTAS_DE_CONFLITO.any { nota.contains(it) }
+
+    /**
+     * A regra que o parser local devolveu descreve uma série que existe?
+     *
+     * Duas perguntas, e a segunda não é redundante: `isCoherent` responde pelo **campo que falta**
+     * (`MONTHLY` sem dia, `YEARLY` sem mês ou sem dia) e a faixa responde pelo **valor impossível**
+     * (`31/04`, `32/02`). `YEARLY(31/04)` é coerente — dia e mês estão lá — e ainda assim não
+     * existe em calendário nenhum; sem a faixa, ele passaria.
+     *
+     * A faixa é `RecurrenceEngine.dayExistsInMonth`, a mesma função que o `LocalTaskParser` usa
+     * para marcar a ambiguidade, e não uma segunda conta escrita aqui: duas cópias da mesma régua
+     * divergem, e o que este lote conserta é justamente um critério que não olhava a causa.
+     */
+    private fun regraRecorrenciaUtilizavel(regra: RecurrenceRule): Boolean {
+        if (!regra.isCoherent) return false
+        if (regra.kind == RecurrenceKind.YEARLY) {
+            val dia = regra.dayOfMonth ?: return false
+            val mes = regra.monthOfYear ?: return false
+            if (!RecurrenceEngine.dayExistsInMonth(dia, mes)) return false
+        }
+        return true
+    }
 
     /**
      * As notas do local que a IA acabou de tornar falsas saem do rascunho.
@@ -273,12 +334,23 @@ class HybridParser(
         // pela data que ele trouxe deixaria o rascunho ambíguo **e** mudo — a caixa diria "Pode
         // salvar?" barrada sem explicar por quê.
         //
-        // A exceção é só para a nota que **carrega** o conflito. As de "falta" seguem caindo quando
-        // o remoto traz o campo: mantê-las ao lado do campo preenchido é a contradição visível que
-        // esta função existe para evitar ("Falta a data" logo acima da data que a IA acabou de dar).
+        // A exceção é só para a nota que **carrega** o conflito, e as duas condições dela são
+        // necessárias — não é guarda redundante com a de fora:
+        //
+        //  - `conflitoLocalPreservado` (o rascunho escalou por conflito): sem ele, uma fala **sem**
+        //    conflito local passaria a preservar as notas do remoto por prefixo. Foi medido: mutar
+        //    para `desmentida && !conflitoLocalPreservado` derruba 3 testes, entre eles o
+        //    `HybridParserTest.aNotaDoInstanteVencidoSaiQuandoORascunhoFinalEhFuturo` (pré-existente).
+        //  - `notaCarregaConflito(nota)`: o rascunho pode ter conflito **e** notas de falta juntas
+        //    ("hoje e amanhã de manhã" tem a data ambígua e o "Falta o horário"). Sem esta metade,
+        //    a nota de falta ficaria ao lado do campo que a IA preencheu — a contradição visível que
+        //    esta função existe para evitar. Medido: remover só o `conflitoLocalPreservado` derruba
+        //    o invariante; "hoje e amanhã às 9h" mantém o `FALTA_DATA` no final com a guarda.
+        //
+        // As de "falta" seguem caindo quando o remoto traz o campo.
         val doLocal = locais.filterNot { nota ->
             val desmentida = desmentidas.any { nota.startsWith(it) }
-            desmentida && !(conflitoLocalPreservado && temConflito(listOf(nota)))
+            desmentida && !(conflitoLocalPreservado && notaCarregaConflito(nota))
         }
         // As notas **do remoto** não passam pelo desmentido por prefixo do local: quem decide se
         // elas são verdade é o desfecho do merge, não quem as escreveu.

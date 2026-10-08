@@ -3,6 +3,8 @@ package com.theopadilha.falaagenda.domain.parser
 import com.google.common.truth.Truth.assertThat
 import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
+import com.theopadilha.falaagenda.domain.model.RecurrenceKind
+import com.theopadilha.falaagenda.domain.recurrence.RecurrenceEngine
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -244,6 +246,13 @@ class HybridParserAmbiguidadeLocalTest {
             "tomar remédio às vinte e cinco",
             "meio da manhã às onze",
         )
+        // O outro juiz, e a razão de ele ser outro: a nota da recorrência cobre as duas causas, e
+        // o que decide é a **regra**, não o texto. As falas abaixo têm a MESMA nota das de campo
+        // ausente (que vão na lista de baixo) e desfecho oposto.
+        val deConflitoPelaRegra = listOf(
+            "todo ano dia 31 de abril remédio às 10h",
+            "todo dia 32 de fevereiro remédio às 10h",
+        )
         // O lado que NÃO pode ser preservado: o local só não tinha o campo. Inclui as duas portas —
         // as que o local já marcava ambíguas e as que escalam pela ausência (`missingFields`).
         val deFalta = listOf(
@@ -251,7 +260,7 @@ class HybridParserAmbiguidadeLocalTest {
             "tomar remédio pela manhã",
             "daqui a pouco",
             "tomar remédio depois do jantar",
-            "todo ano dia 31 de abril remédio às 10h",
+            "toda as reunião às 9h",
             "tomar remédio amanhã",
             "reunião amanhã",
         )
@@ -276,6 +285,28 @@ class HybridParserAmbiguidadeLocalTest {
             }
         }
 
+        for (fala in deConflitoPelaRegra) {
+            val localDraft = local.parse(fala)
+            assertThat(localDraft.ambiguous).isTrue()
+            assertThat(localDraft.notes.joinToString())
+                .contains(HybridParser.NOTA_RECORRENCIA_AMBIGUA)
+            // O oráculo é a REGRA, lida do rascunho local — não a lista de notas: é justamente por
+            // o texto não distinguir as causas que este juiz existe. As primitivas são as do
+            // domínio (`isCoherent` + `dayExistsInMonth`), não uma cópia de `temConflito`.
+            val regra = localDraft.recurrence
+            val dia = regra.dayOfMonth
+            val mes = regra.monthOfYear
+            val regraUtilizavel = regra.isCoherent &&
+                (regra.kind != RecurrenceKind.YEARLY ||
+                    (dia != null && mes != null && RecurrenceEngine.dayExistsInMonth(dia, mes)))
+            assertThat(regraUtilizavel).isFalse()
+            val draft = hybrid(remotoCompleto()).parse(fala)
+            conflitos++
+            if (!draft.ambiguous) {
+                conflitosPerdidos += "fala='$fala' (regra fora da faixa) notas=[${localDraft.notes}]"
+            }
+        }
+
         for (fala in deFalta) {
             val draft = hybrid(remotoCompleto()).parse(fala)
             faltas++
@@ -297,6 +328,78 @@ class HybridParserAmbiguidadeLocalTest {
         assertThat(faltas).isAtLeast(5)
         assertThat(conflitosPerdidos).isEmpty()
         assertThat(faltasPreservadas).isEmpty()
+    }
+
+    // --------------------------------------------------------- F1: a recorrência fora da faixa
+
+    /**
+     * A nota da recorrência cobre **duas causas opostas**, e o texto é o mesmo nas duas:
+     *
+     *  - campo **ausente** ("toda as" sem o dia): é falta, o remoto completando libera a caixa;
+     *  - valor **fora da faixa** (`YEARLY(32/02)`, `YEARLY(31/04)`): é **conflito** — a série não
+     *    existe em calendário nenhum. A regra do local sobrevive ao merge (`mergedDate` só cuida de
+     *    `localDate`), então a caixa verde gravaria uma série impossível.
+     *
+     * O defeito medido no head anterior a esta correção, com a lista fechando antes de olhar a
+     * regra: `"todo dia 32 de fevereiro remédio às 10h"` → `amb=false qc=true finalRec=YEARLY/32/2`.
+     */
+    @Test
+    fun aRecorrenciaForaDaFaixaNaoLiberaACaixaVerde() = runBlocking {
+        val falas = listOf(
+            "todo dia 32 de fevereiro remédio às 10h",
+            "todo ano dia 32 de fevereiro remédio às 10h",
+            "todo ano dia 31 de abril remédio às 10h",
+        )
+        for (fala in falas) {
+            val localDraft = local.parse(fala)
+            assertThat(localDraft.ambiguous).isTrue()
+            assertThat(localDraft.notes.joinToString()).contains(HybridParser.NOTA_RECORRENCIA_AMBIGUA)
+
+            val draft = hybrid(remotoCompleto()).parse(fala)
+
+            assertThat(draft.ambiguous).isTrue()
+            assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+            // A nota que explica a dúvida fica: o rascunho barrado não pode ficar mudo.
+            assertThat(draft.notes.joinToString()).contains(HybridParser.NOTA_RECORRENCIA_AMBIGUA)
+        }
+    }
+
+    /**
+     * O outro lado do F1, e o que a correção **não** pode derrubar: a recorrência cujo campo
+     * simplesmente não veio é **falta**, não conflito. O remoto completa a data e o rascunho
+     * libera — é o caminho comum da escalação.
+     */
+    @Test
+    fun aRecorrenciaComCampoAusenteContinuaLiberando() = runBlocking {
+        val falas = listOf("toda as reunião às 9h", "todo os remédio às 9h")
+        for (fala in falas) {
+            val localDraft = local.parse(fala)
+            assertThat(localDraft.ambiguous).isTrue()
+            assertThat(localDraft.notes.joinToString()).contains(HybridParser.NOTA_RECORRENCIA_AMBIGUA)
+
+            val draft = hybrid(remotoCompleto()).parse(fala)
+
+            assertThat(draft.ambiguous).isFalse()
+            assertThat(draft.canQuickConfirm(clock.instant(), zone)).isTrue()
+        }
+    }
+
+    /**
+     * A régua da faixa não pode ser larga: a regra que **existe** continua liberando a caixa
+     * verde, inclusive as que o calendário resolve sozinho (`31 de maio` existe; `29 de fevereiro`
+     * existe em ano bissexto e o `dayExistsInMonth` o aceita de propósito).
+     */
+    @Test
+    fun aRegraQueExisteContinuaLiberandoACaixaVerde() = runBlocking {
+        val falas = listOf(
+            "todo dia 31 de maio remédio às 10h",
+            "todo 29 de fevereiro revisar documentos às 11h",
+            "dia 31 de cada mês",
+        )
+        for (fala in falas) {
+            val draft = hybrid(remotoCompleto()).parse(fala)
+            assertThat(draft.canQuickConfirm(clock.instant(), zone)).isTrue()
+        }
     }
 
     /**

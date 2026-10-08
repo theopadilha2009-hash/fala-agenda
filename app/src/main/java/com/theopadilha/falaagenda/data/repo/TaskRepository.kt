@@ -766,14 +766,42 @@ class TaskRepository(
         // ter saído porque ela corrigiu o horário. Data nova é id novo, e aí não há aviso para
         // herdar (ver `missedSections`).
         val inherited = previous?.takeIf { it.localDate == chosenDate }?.lastReminderAt
-        val chosen = OccurrenceLifecycle.materialize(series, chosenDate, now)
-            .copy(lastReminderAt = inherited)
+        // A linha que já existe na data escolhida carrega o que ela viveu NESTA dose — o
+        // adiamento que ela pediu, o degrau que a escada já andou, o registro de ter tomado.
+        // Reconstruí-la do zero a cada edição (o que este caminho fazia) apagava tudo isso: ela
+        // corrigia só o título da dose adiada e o aviso voltava para a hora que ela adiou.
+        val naDataEscolhida = existing.firstOrNull { it.localDate == chosenDate }
+        // A escada só vale para o horário em que foi pedida: mover o horário reinicia no horário
+        // novo — o degrau das 08:00 não diz nada sobre as 14:00, e o adiamento das 08:30 num
+        // remédio que passou a ser das 14:00 toca na hora errada. A escada JÁ ENCERRADA não é
+        // reiniciada: sem `nextReminderAt` não há degrau a reiniciar, e rearmar o primeiro é a
+        // dose que já tocou ganhando um segundo aviso. O desfecho registrado (concluída, não
+        // realizada) não depende do horário — é fato —, e sobrevive à correção.
+        val escadaAberta = naDataEscolhida?.status == OccurrenceStatus.PENDING &&
+            naDataEscolhida.nextReminderAt != null
+        val horarioMudou = naDataEscolhida != null &&
+            naDataEscolhida.scheduledAt != OccurrenceLifecycle.scheduledInstant(series, chosenDate)
+        val preservada = naDataEscolhida?.takeIf { !(escadaAberta && horarioMudou) }
+        val chosen = OccurrenceLifecycle.materialize(series, chosenDate, now, existing = preservada)
+            // `inherited` é o aviso que ela ouviu NESTA dose — o cartão tocado carrega o
+            // `lastReminderAt` dele, e é esse que vale. A herança da anterior só entra quando
+            // não há linha nesta data (o `previous` de outra data, ou o "Desfazer"); escrevê-la
+            // por cima do valor preservado apagaria um aviso mais novo que o herdado.
+            .copy(lastReminderAt = preservada?.lastReminderAt ?: inherited)
         if (!plan.expired) return ChoiceOccurrences(armed = chosen, expired = null)
-        val expired = chosen.copy(
-            status = OccurrenceStatus.MISSED,
-            missedAt = now,
-            nextReminderAt = null,
-        )
+        // A escolha venceu. A linha que ela já tinha resolvido é fato consumado e não vira
+        // arquivo: corrigir o horário da dose que ela TOMOU movia o registro para "Não
+        // realizadas" — `completedAt` zerado, `missedAt` carimbado com a hora da edição —, e o
+        // aplicativo passava a acusá-la de não ter tomado o remédio que ela tomou.
+        val expired = if (chosen.status == OccurrenceStatus.COMPLETED) {
+            chosen
+        } else {
+            chosen.copy(
+                status = OccurrenceStatus.MISSED,
+                missedAt = now,
+                nextReminderAt = null,
+            )
+        }
         // A escolha venceu e a regra não repete: não há próxima, e nenhum alarme é armado.
         if (!series.recurrence.isRecurring) return ChoiceOccurrences(armed = null, expired = expired)
         // `plan.date` já é a próxima data **viva** da regra: a peça pulou as datas excluídas.

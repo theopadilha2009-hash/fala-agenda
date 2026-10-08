@@ -97,6 +97,15 @@ tela abre **dois meses à frente** do que ela pediu. Além disso o cartão diz "
 **app 798 / 0 falhas da suíte** (só a `FonteGrandeGeometriaTest`, pré-existente). A sonda S15 mata
 a mutação pela razão certa (`expected: Outubro de 2026 / but was: Setembro de 2026`).
 
+**Cegueira de teste (achado, não limitação):** a **janela do recap** (`HomeScreen.kt:702-706`) é
+função do **dia real** e **não é medível por composição** nesta suíte. MUT-2 (dias 1–3 passam a
+mostrar o mês corrente) fica **verde em 798/0**. Tentei forçar a data e não há caminho:
+`android.os.SystemClock.setCurrentTimeMillis` **não** move `LocalDate.now()` sob Robolectric 4.14.1
+(medido: `LocalDate.now()` continuou `2026-10-08`). O eixo do recap da home **não tem relógio
+injetável na tela** — a `HomeScreen` lê `LocalDate.now()` direto (`:701`), fora do `AppClock` do
+`AppContainer`. Isso não é falta de esforço da sonda: é um ponto cego estrutural do código, e a
+janela em que o cartão aparece pode mudar de comportamento sem nenhum teste acusar.
+
 ## P2 — F3: "O que mais você fez" corta em 8 e não conta que cortou
 
 `MonthInsights.kt:80` (`.take(8)`). Medido com 9 títulos distintos concluídos:
@@ -175,7 +184,7 @@ do SO; aparece igual em `origin/main` puro e em toda execução, mutada ou não)
 | Run | Mutação | domain | app | Falhas | Veredito |
 |---|---|---|---|---|---|
 | MUT-1 | a tela do mês abre no mês passado por padrão | — | 798 | **0** | **invisível** (sonda S15 mata) |
-| MUT-2 | recap da home: dias 1–3 mostram o mês corrente | — | 798 | **0** | **invisível** (não consegui matar) |
+| MUT-2 | recap da home: dias 1–3 mostram o mês corrente | — | 798 | **0** | **invisível** (cego: sem relógio injetável — ver F2) |
 | MUT-3 | `.take(8)` → `.take(4)` | 538 | 798 | **1** (sonda) | pega só pela sonda |
 | MUT-4 | `insightRows`: `naoAvisada = false` | — | 798 | **5** | pega |
 | MUT-5 | `monthMissedLines` usa `missed` | — | 798 | **2** | pega |
@@ -188,11 +197,11 @@ do SO; aparece igual em `origin/main` puro e em toda execução, mutada ou não)
 | MUT-16 | o mês deixa de dizer "Não consegui avisar" | — | 798 | **2** | pega |
 
 **3 mutações invisíveis à suíte de 1336 testes** (MUT-1, MUT-2, MUT-9): o **mês em que a tela abre**
-— o eixo de F2 — e a inclusão de `CANCELLED` não são prendidos por nenhum teste. MUT-2 não foi
-possível matar: o cartão de recap da home é função do **dia real** (`HomeScreen.kt:702`), e o
-Robolectric desta suíte não muda `LocalDate.now()` (medido: `android.os.SystemClock.setCurrentTimeMillis`
-não afeta `LocalDate.now()`). Fica registrado para a próxima leva: **a janela do recap da home não é
-medível por composição sem um relógio injetável.**
+— o eixo de F2 — e a inclusão de `CANCELLED` não são prendidos por nenhum teste. MUT-1 é matável
+por sonda (S15); **MUT-2 não é** — a janela do recap da home é função do **dia real** e o eixo não
+tem relógio injetável (ver a cegueira de teste registrada em F2). Fica para a próxima leva: **a
+janela do recap da home não é medível por composição sem um relógio injetável, e enquanto isso o
+cartão pode mudar de comportamento sem teste nenhum acusar.**
 
 Restauração: backup em `/tmp/fala-backup-mes/`, refeito **antes de cada mutação**, restaurado por
 `cp` com `sha256` conferido; `git diff -- app/src/main domain/src/main` **vazio** ao fim.

@@ -1808,13 +1808,28 @@ class LocalTaskParser(
         return found
     }
 
+    /**
+     * Tira SÓ os dias da semana do texto. A conjunção e a vírgula ficam para quem sabe o papel
+     * delas.
+     *
+     * A limpeza antiga (`replace(Regex("""\b(e|,)\b"""), " ")`) rodava sobre todo o resto da frase
+     * sem saber se o token era conjunção de dia, conector de hora, "e" de número ou a vírgula
+     * DECIMAL. Como `extractRecurrence` roda antes de `extractAmount` e de `extractTime`, o dano
+     * era silencioso: "toda segunda pagar 30,50 reais" virava "30 50" e o valor saía R$50,00;
+     * "toda segunda tomar remédio oito e meia" perdia o minuto e ficava sem hora; "às sete e meia"
+     * saía 07:00. Tudo com `ambiguous=false`, que a caixa rápida confirma em um toque.
+     *
+     * O "e" e a vírgula do TÍTULO não dependem desta limpeza: o "e" já está em [FILLERS] e a
+     * vírgula solta já sai no `.trim(',', '.', '!', '?')` do `extractTitle`. Por isso a limpeza sai
+     * daqui inteira, em vez de ganhar um guard de papel: quem interpreta o token é o motor que o
+     * entende (`extractAmount`, `extractClock`, `extractTitle`), não o removedor do dia.
+     */
     private fun stripWeekDays(text: String): String {
         // "quinta que vem" / "próxima sexta": sai inteiro, senão "vem" sobra no título.
         var remaining = text.replace(WEEKDAY_NEXT_WEEK, " ")
         WEEKDAY_PATTERNS.forEach { (regex, _) ->
             remaining = remaining.replace(regex, " ")
         }
-        remaining = remaining.replace(Regex("""\b(e|,)\b"""), " ")
         return TextNormalizer.compactSpaces(stripFeiraSuffix(remaining))
     }
 

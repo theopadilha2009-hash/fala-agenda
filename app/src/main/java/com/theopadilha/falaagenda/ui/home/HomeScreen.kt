@@ -15,6 +15,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -54,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,7 +66,10 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
@@ -1046,72 +1051,113 @@ internal fun MicDock(
         state == VoiceState.IDLE -> "Falar uma tarefa"
         else -> "Parar de ouvir"
     }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    // O dock é o `bottomBar` do `Scaffold` e não tinha teto nem rolagem: medido em 07/10/2026,
+    // em 2,0x o conteúdo dele mede 983 px dos 1600 da janela e sobram 228 px para a lista —
+    // menos que um cartão (280 px), então nenhuma tarefa aparece inteira e o "Concluir" do
+    // cartão sai da árvore de toque (`boundsInRoot = (0,0,0,0)`). A lista tem que continuar
+    // sendo a tela: o dock ganha um teto e o que não couber rola dentro dele, em vez de
+    // empurrar o dia dela para fora.
+    //
+    // O teto é a metade da janela. Ele só entra em cena com a **fonte do sistema aumentada**:
+    // em 1,0x a home fica exatamente como sempre foi — uma única área rolável, a lista — e
+    // nenhum teste de escala normal muda de resultado. Em 1,3x/1,5x o dock inteiro ainda cabe
+    // folgado (748-800 px dos 1600) e o teto também não morde; ele morde em 2,0x, que é onde o
+    // defeito mora.
+    //
+    // A altura que decide é a **natural**, medida no `Column` interno: com a rolagem no
+    // `Column` externo, o `verticalScroll` mede o filho com altura livre, então a medida do
+    // interno não é a já limitada pelo teto — sem isso o teto se confirmaria sozinho e o dock
+    // ficaria preso em metade da tela para sempre.
+    val teto = LocalConfiguration.current.screenHeightDp.dp / 2
+    var alturaNatural by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val fonteGrande = density.fontScale > 1f
+    val tetoEmPx = with(density) { teto.roundToPx() }
+    val precisaRolar = fonteGrande && alturaNatural > tetoEmPx
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.background)
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .navigationBarsPadding(),
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = TextAlign.Center,
-            // O anúncio da leitura de tela sai daqui, do texto que ela vê — e não da
-            // descrição do microfone, que descreve a *ação* do toque ("Falar uma tarefa" →
-            // "Parar de ouvir" já nasce em PREPARING). De PREPARING para LISTENING aquela
-            // descrição é a mesma string, e o "Pode falar agora" ficava mudo no momento em
-            // que ela precisa falar. Só a troca deste texto gera o anúncio, e ele muda nos
-            // três estados que interessam.
-            //
-            // Com o recado cortado, o anúncio passa para a linha do corte: dois anúncios no
-            // mesmo instante é pior que o silêncio, e o do corte é o que ela precisa ouvir.
-            modifier = Modifier.semantics {
-                if (!truncated) liveRegion = LiveRegionMode.Polite
-            },
-        )
-        if (truncated) {
-            Text(
-                TRUNCATED_NOTICE,
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
-        }
-        if (state == VoiceState.ERROR) {
-            Text("Toque de novo, ou escreva o recado.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-        }
-        if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
-            Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-        }
-        PulsingMic(
-            state = state,
-            contentDescription = action,
-            onClick = onMic,
-        )
-        // Entendendo o recado a saída continua à mão: com a IA o parse leva até 20 s, e
-        // sem estes botões ela ficava sem como escrever a tarefa nem usar os atalhos
-        // enquanto esperava — com o microfone fora da mão dela, era ficar sem saída.
-        if (state == VoiceState.IDLE || state == VoiceState.UNDERSTANDING || state == VoiceState.ERROR) {
-            // No erro a saída de escrever é obrigatória: se o microfone não vai, é por aqui que ele cria a tarefa.
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth(),
+        // A coluna de fora é quem rola (e só quando precisa); a de dentro é o conteúdo, e é a
+        // altura **dela** que decide — o `verticalScroll` mede o filho com altura livre, então
+        // a medida não é a já limitada pelo teto. Sem isso o teto se confirmaria sozinho e o
+        // dock ficaria preso em metade da tela para sempre.
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (precisaRolar) Modifier.heightIn(max = teto) else Modifier)
+                .then(if (precisaRolar) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { alturaNatural = it.height }
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                listOf(5L to "5 min", 15L to "15 min", 60L to "1 hora").forEach { (minutes, chip) ->
-                    FilterChip(
-                        selected = false,
-                        onClick = { onQuick(minutes) },
-                        modifier = Modifier.heightIn(min = 56.dp),
-                        label = { Text(chip, style = MaterialTheme.typography.labelLarge) },
-                    )
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                // O anúncio da leitura de tela sai daqui, do texto que ela vê — e não da
+                // descrição do microfone, que descreve a *ação* do toque ("Falar uma tarefa" →
+                // "Parar de ouvir" já nasce em PREPARING). De PREPARING para LISTENING aquela
+                // descrição é a mesma string, e o "Pode falar agora" ficava mudo no momento em
+                // que ela precisa falar. Só a troca deste texto gera o anúncio, e ele muda nos
+                // três estados que interessam.
+                //
+                // Com o recado cortado, o anúncio passa para a linha do corte: dois anúncios no
+                // mesmo instante é pior que o silêncio, e o do corte é o que ela precisa ouvir.
+                modifier = Modifier.semantics {
+                    if (!truncated) liveRegion = LiveRegionMode.Polite
+                },
+            )
+            if (truncated) {
+                Text(
+                    TRUNCATED_NOTICE,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+            if (state == VoiceState.ERROR) {
+                Text("Toque de novo, ou escreva o recado.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+            }
+            if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
+                Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+            }
+            PulsingMic(
+                state = state,
+                contentDescription = action,
+                onClick = onMic,
+            )
+            // Entendendo o recado a saída continua à mão: com a IA o parse leva até 20 s, e
+            // sem estes botões ela ficava sem como escrever a tarefa nem usar os atalhos
+            // enquanto esperava — com o microfone fora da mão dela, era ficar sem saída.
+            if (state == VoiceState.IDLE || state == VoiceState.UNDERSTANDING || state == VoiceState.ERROR) {
+                // No erro a saída de escrever é obrigatória: se o microfone não vai, é por aqui que ele cria a tarefa.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    listOf(5L to "5 min", 15L to "15 min", 60L to "1 hora").forEach { (minutes, chip) ->
+                        FilterChip(
+                            selected = false,
+                            onClick = { onQuick(minutes) },
+                            modifier = Modifier.heightIn(min = 56.dp),
+                            label = { Text(chip, style = MaterialTheme.typography.labelLarge) },
+                        )
+                    }
+                }
+                TextButton(onClick = onWrite, modifier = Modifier.heightIn(min = 56.dp)) {
+                    Text("Escrever tarefa", style = MaterialTheme.typography.labelLarge)
                 }
             }
-            TextButton(onClick = onWrite, modifier = Modifier.heightIn(min = 56.dp)) {
-                Text("Escrever tarefa", style = MaterialTheme.typography.labelLarge)
             }
         }
     }

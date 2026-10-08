@@ -30,6 +30,7 @@ dizendo "as anteriores estão listadas lá" — a lista abaixo é a que fecha a 
 | 20ª | `cacada-fala-2026-10-08-voz-de-saida.md` |
 | 21ª | `cacada-fala-2026-10-08-mes.md` |
 | 22ª | `cacada-fala-2026-10-08-config-e-onboarding.md` |
+| 23ª | `cacada-fala-2026-10-08-acessibilidade.md` |
 
 Esta mede a **primeira porta do pipeline**: o classificador de intenção. Duas caçadas
 anteriores declararam explicitamente que **não o mediram** ("ele roda antes do parser e

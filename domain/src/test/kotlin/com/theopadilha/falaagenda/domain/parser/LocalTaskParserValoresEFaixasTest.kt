@@ -459,7 +459,13 @@ class LocalTaskParserValoresEFaixasTest {
 
     // ---- O intervalo em horas no caminho HÍBRIDO (IA ligada, o padrão do app configurado) ----
 
-    /** Ajuda extra que devolve data e hora completas: `missing = []`, `ambiguous = false`. */
+    /**
+     * Ajuda extra que devolve data e hora completas: `missing = []`, `ambiguous = false`.
+     *
+     * O título vem **vazio** de propósito: com título divergente, o merge acrescenta a nota
+     * "A ajuda extra chamou de …" a todo rascunho, e a invariante de `aCaixaVerdeSoFicaBarrada…`
+     * ("barrada exige nota") passaria a valer por acidente — qualquer rascunho teria nota.
+     */
     private fun ajudaExtraCompleta() = object : RemoteDraftParser {
         override suspend fun parse(
             transcript: String,
@@ -467,7 +473,7 @@ class LocalTaskParserValoresEFaixasTest {
             timezone: String,
             locale: String,
         ): ParsedTaskDraft = ParsedTaskDraft(
-            title = "Remédio",
+            title = "",
             localDate = LocalDate.of(2026, 8, 21),
             localTime = LocalTime.of(8, 0),
             confidence = 0.9,

@@ -26,6 +26,9 @@ dizendo "as anteriores estão listadas lá" — a lista abaixo é a que fecha a 
 | 16ª | `cacada-fala-2026-10-07-widget.md` |
 | 17ª | `cacada-fala-2026-10-08-segunda-porta.md` |
 | 18ª | `cacada-fala-2026-10-08-resposta-ao-usuario.md` |
+| 19ª | `cacada-fala-2026-10-08-adiamento.md` |
+| 20ª | *(sem doc catalogado — a leva não deixou documento no repositório)* |
+| 21ª | `cacada-fala-2026-10-08-mes.md` |
 
 Esta mede a **primeira porta do pipeline**: o classificador de intenção. Duas caçadas
 anteriores declararam explicitamente que **não o mediram** ("ele roda antes do parser e

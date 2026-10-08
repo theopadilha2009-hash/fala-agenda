@@ -197,29 +197,141 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
         val descobertas = cobertura.filterValues { !it }.keys
         println("CORPUS-DESCOBERTAS|${descobertas.ifEmpty { listOf("nenhuma") }}")
         assertThat(descobertas).isEqualTo(setOf(ClasseDaForma.SUJEITO_EXPLICITO))
-        assertThat(CLASSES_EXIGIDAS.none { cobertura[it] != true }).isTrue()
+        // Uma asserção por classe, e não uma sobre o conjunto: a linha `CLASSES_EXIGIDAS.none { ... }`
+        // é consequência algébrica do `descobertas == setOf(SUJEITO_EXPLICITO)` logo acima, e por isso
+        // não consegue falhar sozinha — asserção tautológica não prende nada. As duas juntas dizem
+        // "toda classe exigida está coberta", que é o invariante; uma basta.
     }
 
     /**
-     * O custo da convivência entre as duas doutrinas, medido e DECLARADO.
+     * A [MOLDURA_TEMPORAL] inteira, token por token. O código a chama de "porteira" — é ela que
+     * deixa a correção passar por um token de moldura ("não **era** hoje") sem abrir a mesma porta
+     * para a continuação ("não **vou poder** ir amanhã").
      *
-     * A correção sem a vírgula depois do conector ("amanhã, não hoje") é a MESMA string que o guard
-     * dos dois dias relativos do #98 já lê como NEGAÇÃO — "ela diz amanhã e recusa hoje" —, e essa
-     * leitura está presa por asserção em `LocalTaskParserDoisDiasRelativosTest`. As duas não podem
-     * valer: com o alvo sendo um DIA RELATIVO, vale a que já está em `main`, porque trocar o
-     * desfecho de uma fala que o outro PR prendia é regressão, não melhora.
+     * Cada token é um caso: com a lista vazia, `"amanhã às quinze, não era hoje"` deixa de escalar e
+     * passa a cravar 21/08 calado, e a suíte inteira ficava verde (mutação sobrevivente, achada pelo
+     * review). O token que não está na lista tem de dar o mesmo que a lista vazia — é ele que prova
+     * que a régua não é "pula qualquer coisa".
+     */
+    @Test
+    fun cadaTokenDaMolduraTemporalEstaPreso() {
+        val tokens = listOf(
+            "e", "eh", "era", "nao", "ate", "so", "agora", "melhor", "acho", "que", "pra", "para",
+        )
+        val violacoes = tokens.mapNotNull { token ->
+            val fala = "me lembra de tomar remedio amanha as quinze, nao $token hoje"
+            val d = parser.parse(fala)
+            // `nao` é o único que NÃO é moldura aqui: "não não hoje" é negação dupla degenerada, e
+            // ali o guard do #98 reconhece o dia recusado. Os outros 11 escalam.
+            val esperado = if (token == "nao") LocalDate.of(2026, 8, 21) else null
+            if (d.localDate == esperado) null else "«$token» esperado=$esperado obtido=${d.localDate} amb=${d.ambiguous}"
+        }
+        println("CORPUS-MOLDURA|casos=${tokens.size}|violacoes=${violacoes.size}")
+        violacoes.forEach { println("CORPUS-VIOL|moldura|$it") }
+        assertThat(violacoes).isEmpty()
+
+        // O token que NÃO está na lista não é pulado: a régua é a lista, não "qualquer palavra". Sem
+        // a lista, "não vou hoje" passaria a ser correção e o dia dela viraria o "hoje" da razão;
+        // com ela, é continuação e o dia dito antes (21/08) sobrevive, sem ambiguidade.
+        val foraDaLista = parser.parse("me lembra de tomar remedio amanha as quinze, nao vou hoje")
+        assertThat(foraDaLista.localDate).isEqualTo(LocalDate.of(2026, 8, 21))
+        assertThat(foraDaLista.ambiguous).isFalse()
+    }
+
+    /**
+     * O PERÍODO corrigido: ela troca o horário pelo período do dia ("amanhã às oito, não, de tarde"
+     * → 20:00), e o período é a CORREÇÃO, não o campo que ela deixou quieto.
      *
-     * Medido: **3 combinações × 4 prefixos × 2 formas = 24** falas de 7480 do eixo do dia (0,32%),
-     * e nenhuma do eixo da hora. Fora do alvo relativo, a correção sem vírgula continua valendo
-     * ("amanhã não segunda", "amanhã não dia 25", "amanhã não às nove") — é o que a segunda metade
-     * deste teste prende, e é ela que prova que o P1 (a vírgula não é o que separa a correção da
-     * continuação) segue fechado no resto do espaço.
+     * `extractPeriodHint` sempre devolve um `PeriodHit` não-nulo (o vazio é `hint = null`), e a
+     * versão que pegava o primeiro com `mapNotNull { it.periodHit }.firstOrNull()` pegava o período
+     * VAZIO do trecho 1 — o período corrigido era descartado e o rascunho saía 08:00, completo e
+     * confirmável num toque. Medido contra `388616a`: o `main` já dava 20:00; a regressão era do
+     * fix da fronteira, e é o P0 deste PR reintroduzido no eixo da hora.
+     */
+    @Test
+    fun oPeriodoCorrigidoVenceOPeriodoDoTrechoDescartado() {
+        val conectores = listOf(
+            "nao, " to 20, "nao " to 20, "quer dizer, " to 20, "digo, " to 20,
+            "errei, " to 20, "melhor, " to 20, "desculpa, " to 20,
+        )
+        val violacoes = mutableListOf<String>()
+        conectores.forEach { (conector, hora) ->
+            val fala = "me lembra de tomar remedio amanha as oito, ${conector}de tarde"
+            val d = parser.parse(fala)
+            if (d.localTime?.hour != hora || d.ambiguous) {
+                violacoes += "«$fala» esperado=${hora}h obtido=${d.localTime} amb=${d.ambiguous}"
+            }
+        }
+        // O controle: sem conector, o período vale o mesmo — a fronteira não muda a leitura dele.
+        val controle = parser.parse("me lembra de tomar remedio amanha as oito de tarde")
+        if (controle.localTime?.hour != 20) violacoes += "controle obtido=${controle.localTime}"
+        println("CORPUS-PERIODO|casos=${conectores.size + 1}|violacoes=${violacoes.size}")
+        violacoes.forEach { println("CORPUS-VIOL|periodo|$it") }
+        assertThat(violacoes).isEmpty()
+    }
+
+    /**
+     * A negação com moldura: `"amanhã às quinze, não era hoje"`. O dia depois do conector é um dia
+     * relativo (o guard do #98 o lê como RECUSADO), e a régua que pula a moldura é a MESMA nas duas
+     * perguntas — "nomeia tempo?" e "o dia que abre é relativo?".
+     *
+     * Quando cada uma pulava um número diferente de tokens, nada consumia a cauda: o último trecho
+     * falado vencia e o app cravava o dia RECUSADO, calado (`qc=true`). O `main` escalava; era
+     * regressão do fix da fronteira.
+     */
+    @Test
+    fun aNegacaoComMolduraEscalaComoEmMain() {
+        val falas = listOf(
+            "me lembra de tomar remedio amanha as quinze, nao era hoje",
+            "me lembra de tomar remedio amanha as quinze, nao so hoje",
+            "me lembra de tomar remedio amanha as quinze, nao acho que hoje",
+            "me lembra de tomar remedio amanha as quinze, nao ate hoje",
+            "me lembra de tomar remedio amanha as quinze, nao agora hoje",
+            "me lembra de tomar remedio amanha as quinze, nao melhor hoje",
+            "me lembra de tomar remedio amanha as quinze, nao que hoje",
+            "me lembra de tomar remedio amanha as quinze, nao pra hoje",
+            "me lembra de tomar remedio amanha as quinze, nao para hoje",
+        )
+        val violacoes = falas.mapNotNull { fala ->
+            val d = parser.parse(fala)
+            if (d.ambiguous && d.localDate == null) {
+                null
+            } else {
+                "«$fala» esperado=escalar obtido=${d.localDate} amb=${d.ambiguous}"
+            }
+        }
+        println("CORPUS-NEGACAO-MOLDURA|casos=${falas.size}|violacoes=${violacoes.size}")
+        violacoes.forEach { println("CORPUS-VIOL|negacao-moldura|$it") }
+        assertThat(violacoes).isEmpty()
+    }
+
+    /**
+     * O eixo da negação: a correção sem a vírgula depois do conector ("amanhã, não hoje").
+     *
+     * A correção sem a vírgula de fechamento é a MESMA string que o guard dos dois dias relativos do
+     * #98 já lê como NEGAÇÃO — "ela diz amanhã e recusa hoje" —, e essa leitura está presa por
+     * asserção em `LocalTaskParserDoisDiasRelativosTest`. As duas não podem valer para o mesmo par:
+     * com o alvo sendo um DIA RELATIVO, vale a que já está em `main`, porque trocar o desfecho de uma
+     * fala que o outro PR prendia é regressão, não melhora.
+     *
+     * **O número, e a moldura certa dele.** Medido no eixo (11 dias × 11 dias × 4 prefixos × 2 formas
+     * = 880 casos, menos os pares iguais):
+     *
+     * | base | perde |
+     * |---|---|
+     * | `388616a` (`main`) | **512** (58,18%) — 488 fora do alvo relativo, 24 nele |
+     * | este head | **24** (2,73%) — só no alvo relativo |
+     *
+     * Não é "o custo da convivência": é a **redução de 512 para 24**. O `main` não reconhecia a
+     * correção sem vírgula em nenhum alvo não relativo ("amanhã não segunda" cravava 21/08, calado);
+     * aqui ela vale em todo o espaço menos os 24 do alvo relativo, onde o #98 manda. As 24 restantes
+     * são 3 combinações × 4 prefixos × 2 formas, e o comentário abaixo as nomeia.
      *
      * O caminho alternativo está medido e é pior: deixar a correção vencer no alvo relativo
      * derrubaria as três linhas de `oDiaNegadoNaoContaComoSegundoDia`, que são o defeito que o #98
      * fechou. Não há como honrar as duas leituras da mesma string.
      */
-    private val CUSTO_DA_NEGACAO_SEM_VIRGULA = 24
+    private val PERDIDAS_NO_ALVO_RELATIVO = 24
 
     @Test
     fun aNegacaoSemVirgulaDeclaraOCusto() {
@@ -246,7 +358,13 @@ class LocalTaskParserCorrecaoDeDataCorpusTest {
         }
         println("CORPUS-NEGACAO|casos=$casos|naoCorrigiu=$naoCorrigiu")
         println("CORPUS-NEGACAO-CUSTO|${custo.toSet()}")
-        assertThat(naoCorrigiu).isEqualTo(CUSTO_DA_NEGACAO_SEM_VIRGULA)
+        assertThat(naoCorrigiu).isEqualTo(PERDIDAS_NO_ALVO_RELATIVO)
+        // Todas as 24 estão no ALVO relativo: nenhuma fora dele, que é o que a redução de 512 → 24
+        // afirma. Sem esta linha, um fix que reintroduzisse as perdas não relativas passaria com o
+        // mesmo total.
+        assertThat(custo.toSet()).isEqualTo(
+            setOf("amanha→hoje", "depois de amanha→hoje", "depois de amanha→amanha"),
+        )
         // O P1 segue fechado fora do alvo relativo: a correção sem vírgula vale para o dia da
         // semana, o dia do mês, o "semana que vem" e a hora.
         val naoRelativos = listOf("segunda", "dia 25", "semana que vem")

@@ -93,12 +93,19 @@ class LocalTaskParser(
         val comData = leituras.getOrNull(idxData)
         var localTime = comHora?.time
         var localDate = comData?.date
-        // O período dito acompanha a hora: vale o último a partir de onde a hora valeu ("amanhã às
-        // oito, não, de tarde" → 20:00). Um período ANTERIOR à hora corrigida não volta — ele
-        // pertencia à hora que ela descartou.
+        // O período dito acompanha a hora: vale o ÚLTIMO trecho a partir de onde a hora valeu
+        // ("amanhã às oito, não, de tarde" → 20:00). Um período ANTERIOR à hora corrigida não volta
+        // — ele pertencia à hora que ela descartou.
+        //
+        // `extractPeriodHint` devolve um `PeriodHit` NÃO-NULO sempre (o vazio é `hint = null`), então
+        // `mapNotNull { it.periodHit }` não filtrava nada e o `firstOrNull()` pegava o período VAZIO
+        // do primeiro trecho — o período corrigido era descartado e "amanhã às oito, não, de tarde"
+        // saía 08:00, completa e confirmável num toque. O filtro é o `hint`, e o vencedor é o ÚLTIMO
+        // que nomeia um período, que é a mesma doutrina dos outros campos ("vale o último trecho que
+        // falou dele").
         val periodHit = (if (idxHora >= 0) leituras.drop(idxHora) else leituras)
-            .mapNotNull { it.periodHit }
-            .firstOrNull()
+            .mapNotNull { it.periodHit?.takeIf { hit -> hit.hint != null } }
+            .lastOrNull()
         val periodHint = periodHit?.hint
         val timeHadPeriod = comHora?.hadPeriod == true
         if (comHora?.timeAmbiguous == true) {
@@ -961,8 +968,7 @@ class LocalTaskParser(
     private fun negaODiaRelativo(conector: String, terminadoComVirgula: Boolean, cauda: String): Boolean {
         if (terminadoComVirgula) return false
         if (!NAO_BARE.containsMatchIn(conector)) return false
-        val dito = cauda.trimStart(' ', ',', '.', '!', '?', ';', ':')
-        return DIAS_RELATIVOS.find(dito)?.range?.first == 0
+        return versoesSemMoldura(cauda).any { DIAS_RELATIVOS.find(it)?.range?.first == 0 }
     }
 
     /**
@@ -998,17 +1004,36 @@ class LocalTaskParser(
      * tokens de moldura são pulados — só de moldura, e só dois: pular qualquer coisa abriria a
      * porteira para a continuação ("não **vou poder** ir amanhã"), que é o caso clínico.
      */
-    private fun nomeiaTempo(cauda: String): Boolean {
+    private fun nomeiaTempo(cauda: String): Boolean = versoesSemMoldura(cauda).any { abreComTempo(it) }
+
+    /**
+     * O trecho e o que sobra depois de pular até dois tokens de [MOLDURA_TEMPORAL] — a MESMA régua
+     * para quem pergunta "nomeia tempo?" ([nomeiaTempo]) e para quem pergunta "o dia que abre é um
+     * dia relativo?" ([negaODiaRelativo]).
+     *
+     * A régua é uma só de propósito: as duas perguntas são sobre a mesma posição da cauda, e quando
+     * cada uma pulava um número diferente de tokens, `"amanhã às quinze, não era hoje"` passava pela
+     * primeira (o "hoje" nomeia tempo, então não era continuação) e era recusada pela segunda (o
+     * `DIAS_RELATIVOS` não casava em "era hoje") — nada consumia a cauda, o último trecho falado
+     * vencia e o app cravava o dia RECUSADO, calado. Medido: `main` escalava (lado seguro) e o
+     * rascunho saía 20/08 `qc=true`.
+     *
+     * A lista para no primeiro token que não é moldura: pular qualquer coisa abriria a porteira para
+     * a continuação ("não **vou poder** ir amanhã"), que é o caso clínico.
+     */
+    private fun versoesSemMoldura(cauda: String): List<String> {
+        val versoes = mutableListOf<String>()
         var dito = cauda.trimStart(' ', ',', '.', '!', '?', ';', ':')
+        versoes += dito
         var pulados = 0
         while (pulados < 2 && dito.isNotBlank()) {
-            if (abreComTempo(dito)) return true
             val primeiro = dito.substringBefore(' ')
-            if (primeiro !in MOLDURA_TEMPORAL) return false
+            if (primeiro !in MOLDURA_TEMPORAL) break
             dito = dito.substringAfter(' ', "").trimStart(' ', ',', '.', '!', '?', ';', ':')
+            versoes += dito
             pulados++
         }
-        return abreComTempo(dito)
+        return versoes
     }
 
     /** Um sinal de data, de período do dia ou de hora ABRINDO o trecho. */

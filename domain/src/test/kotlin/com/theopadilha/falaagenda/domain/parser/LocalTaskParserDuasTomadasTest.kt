@@ -225,13 +225,114 @@ class LocalTaskParserDuasTomadasTest {
     fun periodoDaSegundaParteSemNumeroNaoCravaNemInventa() {
         // "às 8 da manhã e de noite": a segunda parte só diz o período, sem número. NÃO há um
         // segundo horário dito, então a regra dos dois horários não tem o que pegar — e o 08:00 é
-        // a primeira dose, que ela falou. Isto é uma FRONTEIRA, não um conserto: o desfecho é o
-        // mesmo antes e depois da correção, e por isso o teste prende o valor positivo (08:00, sem
-        // ambiguidade) em vez de só "não confirma" — que era verdade na base por falta de data.
+        // a primeira dose, que ela falou.
+        //
+        // FRONTEIRA, e por isso NÃO DISCRIMINA: o desfecho é idêntico nas três revisões (base
+        // 55f7448, head e o fix — medido). Ela não prende conserto nenhum; o que ela prende é o
+        // excesso, o dia em que alguém afrouxar o critério e o período solto virar segunda tomada.
+        // O que DISCRIMINA neste eixo está em `eDistanteNaoAbreSegundaTomada`, logo abaixo.
         val draft = parser.parse("tomar remédio às 8 da manhã e de noite")
         assertThat(draft.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
         assertThat(draft.ambiguous).isFalse()
         // Confirma rápido é falso aqui só porque não há data dita — o horário, esse, é o que ela falou.
         assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
+    }
+
+    // ---- P2: o "e X" que pertence a OUTRA oração não abre segunda tomada ----
+
+    @Test
+    fun eDistanteNaoAbreSegundaTomada() {
+        // O casamento sem âncora lia o primeiro "e X" que aparecesse em QUALQUER lugar depois do
+        // período e derrubava o horário por causa de um "e" que pertence a outra oração. O "e
+        // depois e cinco" e o "e cinco minutos de caminhada" não são uma segunda dose: são o
+        // segundo "e" de uma oração nova. ESTE é o teste que discrimina o eixo — ele morre no
+        // head que casa o "e X" distante e passa na base e no fix.
+        val distante = parser.parse("tomar remédio às 8 da manhã e depois e cinco")
+        assertThat(distante.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+        assertThat(distante.ambiguous).isFalse()
+
+        val caminhada = parser.parse("tomar remédio às 8 da manhã e cinco minutos de caminhada")
+        assertThat(caminhada.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+        assertThat(caminhada.ambiguous).isFalse()
+
+        // E o caso em que o "e X" DISTANTE traz o período próprio — o que prende a ANCORA. Sem ela,
+        // o `SEGUNDA_TOMADA.find` casa este "e 8 da noite" (que está a uma oração de distância) e
+        // derruba o 08:00. Medido: com a âncora, 08:00/amb=false; sem ela, null/amb=true.
+        val oracao = parser.parse("tomar remédio às 8 da manhã e depois e 8 da noite")
+        assertThat(oracao.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+        assertThat(oracao.ambiguous).isFalse()
+    }
+
+    // ---- P1: o MINUTO dito depois de um período volta a somar ----
+
+    @Test
+    fun minutoPorExtensoDepoisDoPeriodoSoma() {
+        // A forma como ela diz o minuto depois de já ter dito o período: "às 8 da manhã e quinze"
+        // são 08:15. O alternador `WORD_HOUR_ALT` da correção incluía `quinze`/`vinte` e não
+        // incluía `trinta`/`quarenta` — daí "e quinze" virar ambíguo e "e trinta" continuar 08:30,
+        // sem critério nenhum. O minuto é o minuto: quem desempata é o PERÍODO PRÓPRIO do número
+        // ("e 20 da noite" é hora nova), não a palavra em si.
+        listOf(
+            "quinze" to 15,
+            "vinte" to 20,
+            "quarenta e cinco" to 45,
+            "vinte e cinco" to 25,
+            "vinte e dois" to 22,
+            "trinta" to 30,
+            "cinquenta" to 50,
+        ).forEach { (palavra, minuto) ->
+            val draft = parser.parse("tomar remédio às 8 da manhã e $palavra")
+            assertThat(draft.localTime).isEqualTo(java.time.LocalTime.of(8, minuto))
+            assertThat(draft.ambiguous).isFalse()
+        }
+
+        // "e dez" / "e cinco" NÃO somam — e nunca somaram: o `MINUTE_TAIL_WORDS` não os tem, então
+        // a palavra sobra no título e a hora fica 08:00, idêntico na base. É pré-existente e está
+        // registrado, não consertado. O que o teste prende é o que o head quebrou: a ambiguidade.
+        listOf("dez", "cinco").forEach { palavra ->
+            val draft = parser.parse("tomar remédio às 8 da manhã e $palavra")
+            assertThat(draft.localTime).isEqualTo(java.time.LocalTime.of(8, 0))
+            assertThat(draft.ambiguous).isFalse()
+        }
+
+        // Com a unidade de minuto dita: o mesmo minuto, não uma segunda tomada.
+        assertThat(parser.parse("tomar remédio às 8 da manhã e quinze minutos").localTime)
+            .isEqualTo(java.time.LocalTime.of(8, 15))
+        assertThat(parser.parse("tomar remédio às 8 da manhã e vinte minutos").localTime)
+            .isEqualTo(java.time.LocalTime.of(8, 20))
+
+        // O número que a régua lia como segunda tomada e é o DIA do mês: "e 12 do mês que vem"
+        // são 08:12, não 12h. A data é a outra leitura do número, e ela não é hora.
+        val doMes = parser.parse("tomar remédio às 8 da manhã e 12 do mês que vem")
+        assertThat(doMes.localTime).isEqualTo(java.time.LocalTime.of(8, 12))
+        assertThat(doMes.ambiguous).isFalse()
+    }
+
+    @Test
+    fun quantidadeDepoisDoEDoseNaoViraSegundaTomada() {
+        // A doutrina do `p2EmPontoComQuantidadeNaoViraHora`: o "e <quantidade>" é DOSE, não segunda
+        // hora. O teto numérico da correção lia o "2" de "e 2 comprimidos" como hora (cabe em 0–23)
+        // e marcava ambíguo — uma afirmação falsa sobre a frase ("Há mais de um horário"), que é
+        // exatamente o que aquele teste proíbe. A dose não afirma dois horários.
+        //
+        // O VALOR da hora é o que a base já fazia (08:02 etc. — o número entrando no minuto é
+        // pré-existente e está fora do escopo deste lote). O que este teste prende é o que a
+        // correção tinha quebrado: a AMBIGUIDADE. Por isso o esperado é `ambiguous = false` com o
+        // horário idêntico ao da base — quem quiser fechar o 08:02 abre outro lote.
+        listOf(
+            "tomar remédio às 8 da manhã e 2 comprimidos" to java.time.LocalTime.of(8, 2),
+            "tomar remédio às 8 da manhã e 1 comprimido" to java.time.LocalTime.of(8, 1),
+            "tomar remédio às 8 da manhã e 12 gotas" to java.time.LocalTime.of(8, 12),
+            "tomar remédio às 8 da manhã e 3 gotas" to java.time.LocalTime.of(8, 3),
+            "tomar remédio às 8 da manhã e uma colher" to java.time.LocalTime.of(8, 0),
+            "tomar água às 8 da manhã e 2 litros" to java.time.LocalTime.of(8, 2),
+            "estudar às 8 da manhã e 20 páginas" to java.time.LocalTime.of(8, 20),
+            "tomar remédio às 8 da manhã e 2 vezes ao dia" to java.time.LocalTime.of(8, 2),
+            "tomar remédio às 8 da manhã e 20 minutos" to java.time.LocalTime.of(8, 20),
+        ).forEach { (frase, esperado) ->
+            val draft = parser.parse(frase)
+            assertThat(draft.localTime).isEqualTo(esperado)
+            assertThat(draft.ambiguous).isFalse()
+        }
     }
 }

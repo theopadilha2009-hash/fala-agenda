@@ -323,6 +323,18 @@ private const val SEM_AVISO = "Salvo. Esse horário já passou e a tarefa não r
 private const val AMBIGUOUS_TARGET_MESSAGE =
     "Tem mais de uma tarefa com esse nome. Diga o nome completo, ou use os botões da lista."
 
+/**
+ * O alvo existe na agenda e já foi feito: a tarefa está na tela, na seção "Concluídas", com o
+ * nome exato que ela falou.
+ *
+ * "Não achei nenhuma tarefa com esse nome" aqui é falso — o app achou e descartou —, e a faz
+ * concluir que nunca cadastrou: ela cadastra de novo, ou fica procurando na lista o que não
+ * acha. A ação continua não acontecendo (uma tarefa feita não é alvo de concluir nem de
+ * apagar); o que muda é a frase.
+ */
+private const val TARGET_ALREADY_DONE_MESSAGE =
+    "Essa tarefa já está feita. Toque nela na lista para mudar ou apagar."
+
 class HomeViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
@@ -856,12 +868,22 @@ class HomeViewModel(
      */
     private fun eraseNamed(text: String, target: String) {
         viewModelScope.launch {
-            val (resolution, itemById) = lookupTarget(target) ?: return@launch
-            when (resolution) {
-                is SpeechTargetResolution.One -> itemById[resolution.id]?.let { delete(it) }
-                // Sem alvo na agenda não é "não achei": é um recado. Engolir a tarefa seria o
-                // mesmo defeito pelo avesso — ela fala "apaga a luz" e a luz não é cadastrada.
-                SpeechTargetResolution.None -> speech.understand(text)
+            val encontrado = lookupTarget(target) ?: return@launch
+            when (val resolution = encontrado.resolution) {
+                is SpeechTargetResolution.One -> encontrado.itemById[resolution.id]?.let { delete(it) }
+                // Sem alvo de pé não é "não achei": é um recado. Engolir a tarefa seria o mesmo
+                // defeito pelo avesso — ela fala "apaga a luz" e a luz não é cadastrada.
+                //
+                // A exceção é a tarefa que EXISTE e já foi feita: aí não há recado nenhum a
+                // salvar, e voltar para a captura faria nascer o rascunho "Apaga remédio" com a
+                // tarefa ainda na tela — o mesmo engano silencioso, agora com a frase de "não
+                // achei" por cima.
+                SpeechTargetResolution.None ->
+                    if (encontrado.jaFeita) {
+                        publishStatus(TARGET_ALREADY_DONE_MESSAGE)
+                    } else {
+                        speech.understand(text)
+                    }
                 is SpeechTargetResolution.Ambiguous -> publishStatus(AMBIGUOUS_TARGET_MESSAGE)
             }
         }
@@ -875,6 +897,23 @@ class HomeViewModel(
      * A falha de leitura NÃO diz "não tem nada": ela diz que não deu para ler, a mesma
      * distinção que a home já faz no cabeçalho. Uma agenda vazia por falha não é uma agenda
      * vazia.
+     *
+     * NENHUMA ocorrência do dia pode ficar de fora da resposta.
+     *
+     * A ocorrência de hoje que o aviso nunca alcançou não está em `sections.today` — aquela
+     * lista é só de pendentes —, então a resposta negava o dia com o remédio de hoje logo
+     * abaixo dela na tela: "Não tem nada marcado para hoje" sobre a seção "Não consegui
+     * avisar". Ela conclui que está em dia e a dose que o celular não avisou some da cabeça
+     * dela. A manchete conta as duas coisas de propósito (`AgendaFormat.headline`); a resposta
+     * conta agora as mesmas duas, pela mesma peça — uma segunda noção de "eu não avisei" aqui
+     * voltaria a contradizer a tela na frase logo abaixo dela.
+     *
+     * O recorte é o DIA perguntado, e não só a natureza da falha: a não realizada em que o
+     * aviso SAIU está na tela ("Não realizadas") e a negativa sobre ela é a mesma mentira. O
+     * que não pode é a resposta assumir o que não é dela — cada motivo tem o seu sujeito, como
+     * na manchete (ver [missedReason] e o `naoAvisados` de `AgendaFormat.headline`): a falha do
+     * aplicativo sai com o app como sujeito, e o que ela deixou de fazer sai sem verbo que a
+     * acuse.
      */
     private suspend fun answerFor(whenDay: AskWhen): String {
         val sections = try {
@@ -884,17 +923,37 @@ class HomeViewModel(
             return "Não consegui ler a sua agenda agora."
         }
         val today = container.clock.today()
-        val (day, items) = when (whenDay) {
-            AskWhen.TODAY -> today to sections.today
-            AskWhen.TOMORROW -> today.plusDays(1) to sections.upcoming.filter { it.occurrence.localDate == today.plusDays(1) }
-        }
+        val amanha = today.plusDays(1)
         val label = if (whenDay == AskWhen.TODAY) "hoje" else "amanhã"
-        if (items.isEmpty()) return "Não tem nada marcado para $label."
-        val lines = items.joinToString(" ") { item ->
-            "${item.series.title} às ${AgendaFormat.time(item.series.localTime)}."
+        val dia = if (whenDay == AskWhen.TODAY) today else amanha
+        val items = when (whenDay) {
+            AskWhen.TODAY -> sections.today
+            AskWhen.TOMORROW -> sections.upcoming.filter { it.occurrence.localDate == amanha }
         }
-        return "Para $label: $lines"
+        val doDia = sections.missed.filter { it.occurrence.localDate == dia }
+        if (items.isEmpty() && doDia.isEmpty()) return "Não tem nada marcado para $label."
+        val naoAvisadas = doDia.filter { missedReason(it) == MissedReason.NOT_WARNED }
+        val naoFeitas = doDia.filter { missedReason(it) == MissedReason.NOT_DONE }
+        val partes = buildList {
+            if (items.isNotEmpty()) {
+                val lines = items.joinToString(" ") { item ->
+                    "${item.series.title} às ${AgendaFormat.time(item.series.localTime)}."
+                }
+                add("Para $label: $lines")
+            }
+            if (naoAvisadas.isNotEmpty()) {
+                add("Não consegui avisar $label: ${titulos(naoAvisadas)}.")
+            }
+            if (naoFeitas.isNotEmpty()) {
+                val verbo = if (naoFeitas.size == 1) "Ficou" else "Ficaram"
+                add("$verbo para trás: ${titulos(naoFeitas)}.")
+            }
+        }
+        return partes.joinToString(" ")
     }
+
+    private fun titulos(itens: List<AgendaItem>): String =
+        itens.joinToString(", ") { it.series.title }
 
     /**
      * Casa o alvo falado com a agenda e só age sobre UM candidato. Nome ambíguo (dois
@@ -903,11 +962,18 @@ class HomeViewModel(
      */
     private fun resolveTarget(target: String, act: (AgendaItem) -> Unit) {
         viewModelScope.launch {
-            val (resolution, itemById) = lookupTarget(target) ?: return@launch
-            when (resolution) {
-                is SpeechTargetResolution.One -> itemById[resolution.id]?.let(act)
+            val encontrado = lookupTarget(target) ?: return@launch
+            when (val resolution = encontrado.resolution) {
+                is SpeechTargetResolution.One -> encontrado.itemById[resolution.id]?.let(act)
+                // "Não achei" e "já foi feita" são coisas diferentes, e a frase de "não achei"
+                // sobre uma tarefa que existe — na tela, com o nome exato que ela falou — a faz
+                // cadastrar de novo o que já está lá. A ação continua a mesma (nada acontece):
+                // o que muda é a frase.
                 SpeechTargetResolution.None ->
-                    publishStatus("Não achei nenhuma tarefa com esse nome.")
+                    publishStatus(
+                        if (encontrado.jaFeita) TARGET_ALREADY_DONE_MESSAGE
+                        else "Não achei nenhuma tarefa com esse nome.",
+                    )
                 is SpeechTargetResolution.Ambiguous -> publishStatus(AMBIGUOUS_TARGET_MESSAGE)
             }
         }
@@ -932,9 +998,7 @@ class HomeViewModel(
      * NADA: uma tarefa velha de outra série envenenava a fala mais usada. O mesmo vale para o
      * `apaga`, que é o irmão deste caminho; por isso os dois lados estão presos em teste.
      */
-    private suspend fun lookupTarget(
-        target: String,
-    ): Pair<SpeechTargetResolution, Map<String, AgendaItem>>? {
+    private suspend fun lookupTarget(target: String): TargetLookup? {
         val sections = try {
             withContext(Dispatchers.IO) { container.tasks.snapshotAgenda() }
         } catch (error: Exception) {
@@ -948,15 +1012,50 @@ class HomeViewModel(
         // "None" é o único caso que desce para o histórico: o alvo não casa nenhuma pendente.
         // Ambiguidade entre pendentes é decisão que fica onde está — perguntar é a resposta
         // certa, e o histórico não pode calar a pergunta.
-        if (soVivas != SpeechTargetResolution.None) return soVivas to itensPorId(daVez)
+        if (soVivas != SpeechTargetResolution.None) {
+            return TargetLookup(soVivas, itensPorId(daVez), jaFeita = false)
+        }
         // O histórico entra na MESMA ordem em que a home o mostra: `missedSections` é a fonte
         // dessa ordem (ver [eleitasPorSerie]).
         val comHistorico = eleitasPorSerie(
             abertas + missedSections(sections.missed).flatMap { it.items },
         )
-        return SpeechTargetMatcher.resolve(target, candidatos(comHistorico)) to
-            itensPorId(comHistorico)
+        val resolution = SpeechTargetMatcher.resolve(target, candidatos(comHistorico))
+        return TargetLookup(
+            resolution = resolution,
+            itemById = itensPorId(comHistorico),
+            // Nada de pé com esse nome, e o histórico casou: o app achou a tarefa e a descartou
+            // por já estar feita. Só o "None" cai aqui — a pergunta da ambiguidade continua
+            // sendo a resposta certa, e as concluídas nem chegam ao casamento.
+            jaFeita = resolution == SpeechTargetResolution.None &&
+                concluidas(sections).any { casa(target, it) },
+        )
     }
+
+    /** O que o alvo falado encontrou, e se o que ele achou já estava feito. */
+    private data class TargetLookup(
+        val resolution: SpeechTargetResolution,
+        val itemById: Map<String, AgendaItem>,
+        /**
+         * Existe uma tarefa **concluída** com esse nome, e nenhuma de pé.
+         *
+         * É o que separa "não achei nenhuma tarefa com esse nome" — verdade quando nada existe
+         * — de "essa tarefa já está feita", que é o que ela precisa ouvir quando o nome está na
+         * tela, na seção "Concluídas". A decisão de não agir é a mesma nos dois casos.
+         */
+        val jaFeita: Boolean,
+    )
+
+    /**
+     * O histórico de concluídas reduzido a um candidato por série, como as outras fontes: uma
+     * rotina já feita materializa várias linhas com o mesmo nome, e a pergunta é sobre o nome,
+     * não sobre cada dose.
+     */
+    private fun concluidas(sections: AgendaSections): List<AgendaItem> =
+        eleitasPorSerie(sections.completed)
+
+    private fun casa(target: String, item: AgendaItem): Boolean =
+        SpeechTargetMatcher.resolve(target, candidatos(listOf(item))) is SpeechTargetResolution.One
 
     /**
      * Um candidato por SÉRIE, não por ocorrência: uma rotina ("tomar remédio" todo dia)

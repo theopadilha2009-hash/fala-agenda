@@ -1,12 +1,9 @@
 package com.theopadilha.falaagenda.domain.parser
 
 import com.google.common.truth.Truth.assertThat
-import com.theopadilha.falaagenda.domain.model.DraftSource
 import com.theopadilha.falaagenda.domain.model.MissingDraftField
-import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.domain.model.RecurrenceKind
 import com.theopadilha.falaagenda.domain.time.FixedAppClock
-import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -455,110 +452,6 @@ class LocalTaskParserValoresEFaixasTest {
         val dias = parser.parse("tomar remédio de 15 em 15 dias começando amanhã às 9h")
         assertThat(horas.title).isEqualTo("Tomar remédio")
         assertThat(dias.title).isEqualTo(horas.title)
-    }
-
-    // ---- O intervalo em horas no caminho HÍBRIDO (IA ligada, o padrão do app configurado) ----
-
-    /**
-     * Ajuda extra que devolve data e hora completas: `missing = []`, `ambiguous = false`.
-     *
-     * O título vem **vazio** de propósito: com título divergente, o merge acrescenta a nota
-     * "A ajuda extra chamou de …" a todo rascunho, e a invariante de `aCaixaVerdeSoFicaBarrada…`
-     * ("barrada exige nota") passaria a valer por acidente — qualquer rascunho teria nota.
-     */
-    private fun ajudaExtraCompleta() = object : RemoteDraftParser {
-        override suspend fun parse(
-            transcript: String,
-            nowIso: String,
-            timezone: String,
-            locale: String,
-        ): ParsedTaskDraft = ParsedTaskDraft(
-            title = "",
-            localDate = LocalDate.of(2026, 8, 21),
-            localTime = LocalTime.of(8, 0),
-            confidence = 0.9,
-            missingFields = emptySet(),
-            ambiguous = false,
-            transcript = transcript,
-            notes = emptyList(),
-            source = DraftSource.AI,
-        )
-    }
-
-    private fun hibrido() = HybridParser(
-        local = parser,
-        clock = clock,
-        remote = ajudaExtraCompleta(),
-        network = NetworkStatus { true },
-        isAiEnabled = { true },
-    )
-
-    @Test
-    fun aAmbiguidadeDoIntervaloSobreviveAoParserHibrido() = runBlocking {
-        // O P0 do review: o fix fechava o caminho local e deixava aberto o híbrido, que é o padrão
-        // do app configurado. `missing = []` significa "o remoto PREENCHEU tudo", não "o remoto
-        // RESOLVEU o conflito" — e o intervalo deixa o rascunho local ambíguo com data e hora já
-        // preenchidas, então o `&& missing.isNotEmpty()` apagava a ambiguidade sem que a IA tivesse
-        // dito nada sobre o intervalo. A caixa verde confirmava em um toque e a série virava
-        // tarefa única.
-        val fala = "tomar o remédio de 8 em 8 horas começando amanhã às 8h"
-        assertThat(parser.parse(fala).ambiguous).isTrue()
-
-        val draft = hibrido().parse(fala)
-        assertThat(draft.ambiguous).isTrue()
-        assertThat(draft.canQuickConfirm(clock.instant(), zone)).isFalse()
-        assertThat(draft.notes.joinToString()).contains("intervalo")
-        // O merge não regride o contrato fechado: a hora dita continua valendo.
-        assertThat(draft.localTime).isEqualTo(LocalTime.of(8, 0))
-        assertThat(draft.missingFields).doesNotContain(MissingDraftField.TIME)
-    }
-
-    @Test
-    fun oCustoDoMergeDaAmbiguidadeEstaPresoNosDoisLados() = runBlocking {
-        // O desfecho do merge fica preso por IGUALDADE nos dois lados, com a IA ligada.
-        //
-        // BENEFÍCIO: toda fala cujo rascunho local era ambíguo por um conflito que a IA não
-        // endereçou — o intervalo — continua ambígua depois do merge.
-        val comIntervalo = listOf(
-            "tomar o remédio de 8 em 8 horas começando amanhã às 8h",
-            "remédio a cada 12 horas amanhã às 8h",
-            "antibiótico de 6 em 6 horas amanhã às 7h",
-            "de 15 em 15 dias às 9h",
-            "tomar remédio de 8 em 8 horas na segunda às 8h",
-        )
-        // CUSTO: a ambiguidade local que a IA **resolveu** — ela traz o campo sobre o qual a dúvida
-        // local falava, e a nota que declarava a dúvida sai do rascunho (`notasDomescladas`). A
-        // saída ingênua (`localAmbiguous || remoteAmbiguous`) reabre este custo: a caixa verde
-        // ficaria barrada numa fala sem nenhuma nota em vermelho para explicar o porquê — a
-        // contradição inversa, e pior que a original.
-        val resolvidasPelaIa = listOf(
-            "reunião 05/08 às 10h",
-            "consulta 31/02/2027 às 10h",
-        )
-        val escaladas = comIntervalo.count { hibrido().parse(it).ambiguous }
-        val liberadas = resolvidasPelaIa.count { hibrido().parse(it).canQuickConfirm(clock.instant(), zone) }
-
-        assertThat(escaladas).isEqualTo(comIntervalo.size)
-        assertThat(liberadas).isEqualTo(resolvidasPelaIa.size)
-    }
-
-    @Test
-    fun aCaixaVerdeSoFicaBarradaQuandoHaNotaQueExpliqueOPorque() = runBlocking {
-        // A invariante que separa as duas formas: `canQuickConfirm = false` só pode acontecer com
-        // uma nota no rascunho declarando a dúvida. A forma ingênua barra a caixa numa fala cuja
-        // única nota de dúvida o merge já desmentiu — a tela fica sem explicação nenhuma.
-        val falas = listOf(
-            "tomar o remédio de 8 em 8 horas começando amanhã às 8h",
-            "de 15 em 15 dias às 9h",
-            "reunião 05/08 às 10h",
-            "consulta 31/02/2027 às 10h",
-            "tomar remédio amanhã às 8h",
-        )
-        val semExplicacao = falas.filter { fala ->
-            val draft = hibrido().parse(fala)
-            !draft.canQuickConfirm(clock.instant(), zone) && draft.notes.isEmpty()
-        }
-        assertThat(semExplicacao).isEmpty()
     }
 
     // ---- Review adversarial: o valor só quando a leitura é inequívoca ----

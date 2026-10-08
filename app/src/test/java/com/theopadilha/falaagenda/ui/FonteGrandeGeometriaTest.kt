@@ -14,6 +14,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.unit.IntSize
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
@@ -187,6 +188,25 @@ class FonteGrandeGeometriaTest {
         compose.onAllNodesWithText(texto).fetchSemanticsNodes().first().boundsInRoot
 
     /**
+     * O tamanho **proprio** do no, medido no lugar dele na arvore — nao o que sobra depois do
+     * recorte da janela.
+     *
+     * Esta e a distincao que este arquivo existe para fazer. `boundsInRoot` e o retangulo do no
+     * **cortado** pelas bordas de rolagem: com a fonte em 2,0x o cartao e mais alto que a lista,
+     * entao o "Concluir" que esta no fim dele aparece com a altura que sobrou — 60 px — mesmo
+     * tendo os mesmos 119 px de altura de layout que tem quando cabe inteiro. Ou seja: a altura
+     * recortada depende do que esta acima do botao na tela, e um piso em cima dela mede a lista,
+     * nao o botao.
+     *
+     * O defeito real do pre-fix nao era "o botao ficou curto": era `boundsInRoot = (0,0,0,0)`,
+     * porque a lista de 228 px nem compunha o cartao inteiro e o `TextButton` saia da arvore de
+     * toque. `size` e o mesmo (276x119) nos dois estados — quem separa o defeito do conserto e o
+     * lugar do no, nao a altura dele.
+     */
+    private fun tamanhoDoTexto(texto: String): IntSize =
+        compose.onAllNodesWithText(texto).fetchSemanticsNodes().first().size
+
+    /**
      * O cenario dela: a lista do dia tem uma tarefa, e o atalho "Concluir" tem que continuar
      * tocavel. A assercao e a geometria real — altura > 0 e o botao dentro da janela —, nao
      * "a tela nao crashou".
@@ -223,16 +243,26 @@ class FonteGrandeGeometriaTest {
         // menos um cartao, senao a tarefa do dia nao existe na tela.
         assertWithMessage("a lista em $escala ($janela) tem que caber um cartao")
             .that(lista.height).isAtLeast(280f)
-        // O atalho de um toque: era `boundsInRoot = (0,0,0,0)` em 2,0x. O piso e o alvo de
-        // toque minimo (48dp) e o botao tem que estar dentro da janela. Em 2,0x o cartao e
-        // mais alto que o viewport, entao o botao aparece cortado pela borda de baixo — mas
-        // com area de toque real, que e o que o defeito tirava.
-        assertWithMessage("o \"Concluir\" em $escala ($janela) nao pode ter 0 dp de altura")
-            .that(concluir.height).isAtLeast(px(48f))
+        // O atalho de um toque. O defeito do pre-fix e `boundsInRoot = (0,0,0,0)` em 2,0x: com a
+        // lista em 228 px o cartao nao e composto inteiro e o botao sai da arvore de toque. O
+        // que descreve isso e a **presenca** do no, nao a altura que a janela deixa ver: com o
+        // cartao mais alto que o viewport, o "Concluir" aparece recortado pela borda de baixo —
+        // 60 px dos 119 de layout, medido igual no macOS e no CI (Linux) —, e essa sobra depende
+        // do que esta acima dele na tela, nao do botao. Um piso de 48 dp em cima do recorte mede
+        // a lista (e a metrica de fonte do SO), nao o atalho: por isso ele falhava no codigo ja
+        // consertado, com o mesmo valor nos dois SOs.
+        assertWithMessage("o \"Concluir\" em $escala ($janela) nao pode sair da arvore de toque")
+            .that(concluir.height).isGreaterThan(0f)
         assertWithMessage("o \"Concluir\" em $escala ($janela) tem que estar dentro da janela")
             .that(concluir.top).isAtLeast(0f)
         assertWithMessage("o \"Concluir\" em $escala ($janela) tem que estar dentro da janela")
             .that(concluir.bottom).isAtMost(janelaPx.height)
+        // O alvo de toque minimo se mede no layout do botao, nao no recorte: `size` e 276x119 no
+        // defeito e no conserto, entao ele nao pega a regressao sozinho — prende que o botao
+        // continua com altura de alvo de toque, o que o `heightIn(min = 56.dp)` do `TextButton`
+        // garante em qualquer metrica de fonte (112 px no pior caso, o piso de 56 dp).
+        assertWithMessage("o \"Concluir\" em $escala ($janela) tem que manter o alvo de toque")
+            .that(tamanhoDoTexto("Concluir").height.toFloat()).isAtLeast(px(48f))
         compose.onNodeWithText("Concluir").assertIsDisplayed()
 
         // O outro lado: em 1,0x nada muda. Os numeros sao os medidos antes do conserto, e a

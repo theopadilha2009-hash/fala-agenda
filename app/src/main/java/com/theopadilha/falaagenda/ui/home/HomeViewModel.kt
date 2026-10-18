@@ -918,6 +918,11 @@ class HomeViewModel(
      * na manchete (ver [missedReason] e o `naoAvisados` de `AgendaFormat.headline`): a falha do
      * aplicativo sai com o app como sujeito, e o que ela deixou de fazer sai sem verbo que a
      * acuse.
+     *
+     * A não realizada de OUTRA data nega o dia do mesmo jeito — a seção de baixo não tem
+     * janela, então o remédio de ontem estava na tela quando a resposta dizia "não tem nada
+     * para hoje". Quando o dia perguntado está vazio mas a tela mostra recado, a resposta diz
+     * as duas coisas: o dia vazio (verdade) e o que ficou para trás, com o dia real no rótulo.
      */
     private suspend fun answerFor(whenDay: AskWhen): String {
         val sections = try {
@@ -935,7 +940,17 @@ class HomeViewModel(
             AskWhen.TOMORROW -> sections.upcoming.filter { it.occurrence.localDate == amanha }
         }
         val doDia = sections.missed.filter { it.occurrence.localDate == dia }
-        if (items.isEmpty() && doDia.isEmpty()) return "Não tem nada marcado para $label."
+        // As não realizadas de FORA do dia perguntado estão na tela do mesmo jeito que as do
+        // dia — a seção de baixo não tem janela (`missedSections`) e a manchete as conta sem
+        // janela também (`AgendaFormat.headline`). Negar o dia com o remédio de ontem na seção
+        // "Não consegui avisar" mente do mesmo jeito que negava o remédio de hoje antes do
+        // #116: ela ouve que está em dia e a dose que o celular não avisou some da cabeça dela.
+        val foraDoDia = sections.missed
+            .filter { it.occurrence.localDate != dia }
+            .groupBy { it.occurrence.localDate }
+        if (items.isEmpty() && doDia.isEmpty() && foraDoDia.isEmpty()) {
+            return "Não tem nada marcado para $label."
+        }
         val naoAvisadas = doDia.filter { missedReason(it) == MissedReason.NOT_WARNED }
         val naoFeitas = doDia.filter { missedReason(it) == MissedReason.NOT_DONE }
         val partes = buildList {
@@ -951,6 +966,31 @@ class HomeViewModel(
             if (naoFeitas.isNotEmpty()) {
                 val verbo = if (naoFeitas.size == 1) "Ficou" else "Ficaram"
                 add("$verbo para trás: ${titulos(naoFeitas)}.")
+            }
+            // O dia vazio continua dito — para o dia perguntado é verdade —, mas a não
+            // realizada visível entra logo depois, com o dia real no rótulo e o mesmo sujeito
+            // de `missedReason`: "Não tem nada marcado para hoje. Mas não consegui avisar
+            // ontem: Tomar remédio." O rótulo vem do `dateLabel` que a tela já usa; uma
+            // segunda tabela de datas aqui divergiria dela na primeira mudança.
+            //
+            // atalho: o extra só entra quando a resposta negaria o dia (com itens do dia na
+            // resposta nada é negado), e datas muito antigas saem uma frase por dia; revisitar
+            // se a resposta passar a resumir a tela inteira.
+            if (items.isEmpty() && doDia.isEmpty()) {
+                add("Não tem nada marcado para $label.")
+                foraDoDia.toSortedMap(compareByDescending { it })
+                    .forEach { (data, doDiaFora) ->
+                        val rotulo = AgendaFormat.dateLabel(data, today).lowercase()
+                        val avisadas = doDiaFora.filter { missedReason(it) == MissedReason.NOT_WARNED }
+                        val feitas = doDiaFora.filter { missedReason(it) == MissedReason.NOT_DONE }
+                        if (avisadas.isNotEmpty()) {
+                            add("Mas não consegui avisar $rotulo: ${titulos(avisadas)}.")
+                        }
+                        if (feitas.isNotEmpty()) {
+                            val verbo = if (feitas.size == 1) "Ficou" else "Ficaram"
+                            add("$verbo para trás $rotulo: ${titulos(feitas)}.")
+                        }
+                    }
             }
         }
         return partes.joinToString(" ")

@@ -75,27 +75,72 @@ class LocalTaskParser(
             remaining = hit.remaining
         }
 
-        val timeHit = extractTime(remaining)
-        remaining = timeHit.remaining
-        var localTime = timeHit.time
-        if (timeHit.ambiguous) {
+        // A correção na própria fala ("amanhã às oito, não, hoje") é uma FRONTEIRA: o trecho antes
+        // do conector foi descartado por ela. O valor que vale é o do ÚLTIMO trecho que falou
+        // daquele campo — ela pode trocar só o dia, só a hora, ou os dois, e o campo que ela NÃO
+        // trocou continua vindo do trecho descartado ("amanhã às oito, não, hoje" mantém as 08:00).
+        // Antes desta fronteira o parser lia a primeira expressão da fala inteira e jogava o resto
+        // fora: o app gravava "amanhã" com o título dizendo "hoje", sem ambiguidade nenhuma, e a
+        // caixa rápida confirmava a dose do dia errado com um toque.
+        val leituras = leiturasTemporais(remaining, recurrence)
+        // O campo vale pelo ÚLTIMO trecho que falou dele — falar é trazer valor ou trazer dúvida.
+        // A dúvida entra na conta porque uma data recusada ("31 de fevereiro") não tem valor, e
+        // olhar só o valor a faria sumir do rascunho: o app salvaria sem data, calado, em vez de
+        // escalar. Dúvida de um trecho ANTERIOR não volta: ela era sobre o valor que ela descartou.
+        // `duasTomadas` entra na conta pelo mesmo motivo que `timeAmbiguous`: o trecho FALOU do
+        // horário — disse dois e o modelo guarda um. Sem ele o trecho ficava com `time = null` e
+        // caía fora daqui, e a dúvida que ele carregava sumia do rascunho em silêncio.
+        val idxHora = leituras.indexOfLast { it.time != null || it.timeAmbiguous || it.duasTomadas }
+        val idxData = leituras.indexOfLast { it.date != null || it.dateAmbiguous }
+        val comHora = leituras.getOrNull(idxHora)
+        val comData = leituras.getOrNull(idxData)
+        var localTime = comHora?.time
+        var localDate = comData?.date
+        // O período dito acompanha a hora: vale o ÚLTIMO trecho a partir de onde a hora valeu
+        // ("amanhã às oito, não, de tarde" → 20:00). Um período ANTERIOR à hora corrigida não volta
+        // — ele pertencia à hora que ela descartou.
+        //
+        // `extractPeriodHint` devolve um `PeriodHit` NÃO-NULO sempre (o vazio é `hint = null`), então
+        // `mapNotNull { it.periodHit }` não filtrava nada e o `firstOrNull()` pegava o período VAZIO
+        // do primeiro trecho — o período corrigido era descartado e "amanhã às oito, não, de tarde"
+        // saía 08:00, completa e confirmável num toque. O filtro é o `hint`, e o vencedor é o ÚLTIMO
+        // que nomeia um período, que é a mesma doutrina dos outros campos ("vale o último trecho que
+        // falou dele").
+        val periodHit = (if (idxHora >= 0) leituras.drop(idxHora) else leituras)
+            .mapNotNull { it.periodHit?.takeIf { hit -> hit.hint != null } }
+            .lastOrNull()
+        val periodHint = periodHit?.hint
+        val timeHadPeriod = comHora?.hadPeriod == true
+        // Duas tomadas no mesmo dia ("às 8 da manhã e 8 da noite"): o período dito FECHOU a primeira
+        // hora, então o "e <horário>" que vem depois é uma SEGUNDA tomada — não o minuto da primeira.
+        // O relógio acha uma hora só e o `trailingMinutes` lia o "8" da noite como minuto, cravando
+        // 08:08 sem nota e com `qc=true`: a caixa "Pode salvar?" oferecia um horário que ela não
+        // falou, e a segunda dose (20h) não existia em campo nenhum. A checagem vive DENTRO do
+        // trecho (`leituraTemporal`) — um "e 8 da noite" no trecho DESCARTADO por uma correção não
+        // pode anular o horário que ela acabou de escolher.
+        //
+        // As duas notas de horário são exclusivas: `hadPeriod` (que as duas tomadas exigem) só é
+        // verdadeiro quando o período foi DITO, e é exatamente aí que a hora incerta deixa de
+        // existir ("às três" sem período). Cada uma entra por si — e a que vier depois não apaga a
+        // anterior: "de 8 em 8 dias às 8 da manhã e 8 da noite" deve mostrar as duas razões.
+        val duasTomadas = timeHadPeriod && comHora?.duasTomadas == true
+        if (comHora?.timeAmbiguous == true) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += timeHit.note ?: "O horário ficou ambíguo."
+            notes += comHora.timeNote ?: "O horário ficou ambíguo."
         }
-
-        val dateHit = extractDate(remaining, recurrence)
-        remaining = dateHit.remaining
-        var localDate = dateHit.date
-        if (dateHit.ambiguous) {
+        if (comData?.dateAmbiguous == true) {
             ambiguous = true
             confidence = minOf(confidence, 0.5)
-            notes += dateHit.note ?: NotasDoRascunho.DATA_AMBIGUA
+            notes += comData.dateNote ?: NotasDoRascunho.DATA_AMBIGUA
         }
-
-        val periodHit = extractPeriodHint(remaining)
-        remaining = periodHit.remaining
-        val periodHint = periodHit.hint
+        if (duasTomadas) {
+            ambiguous = true
+            confidence = minOf(confidence, 0.5)
+            notes += NOTA_DUAS_TOMADAS
+            localTime = null
+        }
+        remaining = TextNormalizer.compactSpaces(leituras.joinToString(" ") { it.remaining })
         if (periodHint != null && periodHint.contains("-")) {
             // Faixa do dia ("meio da tarde às quatro"): é um horário aproximado, não a hora que ela
             // disse. Sem hora, fica ambíguo (nunca inventa). Com hora, o período da faixa resolve o
@@ -118,7 +163,7 @@ class LocalTaskParser(
         } else if (periodHint != null) {
             // O PERÍODO EXPLÍCITO vence o marco: "antes do jantar às seis da manhã" é 06:00 — o "da
             // manhã" que ela disse não pode ser sobrescrito pelo jantar (≈20h).
-            if (timeHit.hadPeriod) {
+            if (timeHadPeriod) {
                 // Horário já resolvido pelo período dito; nada a fazer.
             } else if (periodHint == "jantar") {
                 // "jantar" é ≈20h. No "depois", a hora 1–6 somada dá 13–18h — a tarde, que é ANTES
@@ -159,6 +204,13 @@ class LocalTaskParser(
         // Duas tarefas numa frase ("marcar médico terça e tomar remédio às oito"): antes o parser
         // colava tudo num título só, com o primeiro dia e a primeira hora, e a caixa rápida prometia
         // "Terça às 08:00" para as duas coisas. Ambíguo para escalar/confirmar, nunca adivinhar.
+        // O gate julga a FALA INTEIRA, e não o último trecho: medido, escopá-lo ao trecho final
+        // deixa DUAS tarefas reais passarem quando a correção vem depois da conjunção ("marcar
+        // médico amanhã e tomar remédio às 14 da tarde, não, hoje" virava UM evento "Médico tomar
+        // remédio" hoje às 14, confirmável num toque). O custo do lado de cá é spurious: a correção
+        // de uma frase de duas tomadas ganha um "duas tarefas" falso — mas ambíguo é o lado seguro,
+        // e é o comportamento da base. Fechar os dois lados no mesmo gate é decisão de design
+        // separada (o gate precisaria dos trechos que ainda falam, não só do último).
         if (looksLikeTwoTasks(folded)) {
             ambiguous = true
             confidence = minOf(confidence, 0.45)
@@ -779,6 +831,275 @@ class LocalTaskParser(
     }
 
     /**
+     * A correção na própria fala: ela dita, percebe que errou e se corrige sem parar de falar.
+     *
+     * É o mesmo fenômeno que o `SpeechIntentClassifier` já trata para o ALVO ("cancela o médico,
+     * não, o dentista"), aqui aplicado aos campos de data e hora: o conector é uma **fronteira**,
+     * e o que vem depois dele é o que ela quis dizer. A leitura da frase é feita por trecho, e o
+     * parser fica com o último valor dito de cada campo — não com o primeiro da fala inteira.
+     *
+     * Um conector só é fronteira quando o trecho seguinte **nomeia o campo**: a correção segue com
+     * um valor ("hoje", "às nove"), e a continuação segue com uma oração ("não vou poder ir", "não
+     * tomei hoje"). A pergunta é a mesma que o [SpeechIntentClassifier] faz no eixo do alvo ("o que
+     * vem depois nomeia um alvo novo?"), com o desfecho adaptado: lá o classificador, que não tem a
+     * agenda, ESCALA quando o alvo não decide; aqui o parser é o dono do campo, e uma cauda que não
+     * nomeia tempo nenhum não é dúvida — é continuação, e o valor dito antes dela continua valendo.
+     *
+     * Um "não" que termina a frase ("me lembra amanhã, não") não corrige nada e também não é
+     * descartado em silêncio: ele sobrevive no título, que é o que ela disse.
+     */
+    private data class LeituraTemporal(
+        val date: LocalDate?,
+        val time: LocalTime?,
+        val periodHit: PeriodHit?,
+        val hadPeriod: Boolean,
+        val remaining: String,
+        val dateAmbiguous: Boolean,
+        val dateNote: String?,
+        val timeAmbiguous: Boolean,
+        val timeNote: String?,
+        /**
+         * Este trecho, SOZINHO, diz mais de um horário no mesmo dia ("às 8 da manhã e 8 da noite").
+         * A série guarda um horário por vez, então não há valor a guardar — mas a dúvida é DESTE
+         * trecho e morre com ele: o trecho descartado por uma correção não contamina o que ficou.
+         */
+        val duasTomadas: Boolean = false,
+    )
+
+    /**
+     * Os trechos em que a fala se divide: um antes de cada conector de correção e um depois do
+     * último. Cada trecho é lido por inteiro (`extractTime` + `extractDate`) e as leituras voltam
+     * na ordem da fala, para o `parse` escolher o último valor dito de cada campo.
+     */
+    private fun leiturasTemporais(text: String, recurrence: RecurrenceRule): List<LeituraTemporal> {
+        val trechos = trechosDeCorrecao(text)
+        if (trechos.size == 1) return listOf(leituraTemporal(text, recurrence))
+        return trechos.map { leituraTemporal(it, recurrence) }
+    }
+
+    private fun leituraTemporal(text: String, recurrence: RecurrenceRule): LeituraTemporal {
+        val timeHit = extractTime(text)
+        val dateHit = extractDate(timeHit.remaining, recurrence)
+        // As duas tomadas são lidas DESTE trecho, com o valor em reais fora do caminho: "pagar às 8
+        // da manhã e 12 reais" tem o "12" como dinheiro, não como horário. A checagem roda aqui
+        // dentro, e não sobre a fala inteira, porque a fronteira de correção é do parser: um "e 8 da
+        // noite" que ela descartou ("amanhã às 8 da manhã e 8 da noite, não, hoje às 8 da manhã")
+        // não pode tornar ambíguo o trecho que ela escolheu.
+        val semValor = extractAmount(text)?.remaining ?: text
+        val segunda = if (timeHit.time != null && timeHit.hadPeriod) {
+            segundaTomadaNoMesmoDia(semValor)
+        } else {
+            null
+        }
+        // A segunda tomada sai ANTES do período ser lido: `extractPeriodHint` consome o "da noite"
+        // que fecha a tomada, e a limpeza seguinte já não teria o que apagar — o "oito" sobrava no
+        // título ("Tomar remédio oito") com a hora anulada. A ordem é a da fala, não a da conveniência.
+        val semTomada = if (segunda == null) {
+            dateHit.remaining
+        } else {
+            TextNormalizer.compactSpaces(
+                dateHit.remaining.replace(segunda.value.trim(), " ").replace(PERIODO_PENDURADO, " "),
+            )
+        }
+        val periodHit = extractPeriodHint(semTomada)
+        return LeituraTemporal(
+            date = dateHit.date,
+            time = if (segunda == null) timeHit.time else null,
+            periodHit = periodHit,
+            hadPeriod = timeHit.hadPeriod,
+            remaining = periodHit.remaining,
+            dateAmbiguous = dateHit.ambiguous,
+            dateNote = dateHit.note,
+            timeAmbiguous = timeHit.ambiguous,
+            timeNote = timeHit.note,
+            duasTomadas = segunda != null,
+        )
+    }
+
+    /**
+     * Onde a fala se parte. Só os trechos INTERIORES (entre dois conectores, ou entre um conector
+     * e o fim) podem ser descartados: o primeiro é a fala inteira, e é ele que carrega o que ela
+     * não corrigiu — o título e o campo que ela não trocou. Sem conector não há corte, e a leitura
+     * é exatamente a de antes.
+     */
+    private fun trechosDeCorrecao(text: String): List<String> {
+        val marcadores = correcaoMarcadores(text)
+        if (marcadores.isEmpty()) return listOf(text)
+        val partes = mutableListOf<String>()
+        var inicio = 0
+        marcadores.forEach { marcador ->
+            partes += text.substring(inicio, marcador.first)
+            inicio = marcador.second
+        }
+        partes += text.substring(inicio)
+        return partes
+    }
+
+    /**
+     * As fronteiras de correção na fala já normalizada: o par (começo do conector, fim do
+     * conector).
+     *
+     * A lista de conectores é CANDIDATA, e não veredito: cada um deles só vira fronteira depois de
+     * passar pelo teste de [nomeiaTempo], que é o mesmo para todos. Isso é o que permite o "não"
+     * SEM vírgula entrar aqui — a forma mais comum da correção falada, que a versão anterior só
+     * reconhecia com a vírgula ("amanhã, não, hoje") e deixava passar calada sem ela ("amanhã não
+     * hoje"): o reconhecedor não pontua de forma confiável, e a vírgula não é o que separa a
+     * correção da continuação.
+     */
+    private fun correcaoMarcadores(text: String): List<Pair<Int, Int>> {
+        val semSobreposicao = candidatosDeCorrecao(text)
+        // ...e o conector só vale quando o trecho seguinte NOMEIA um campo de tempo. A pergunta é
+        // feita sobre o trecho inteiro, e não sobre o primeiro token do conector.
+        return semSobreposicao.filterIndexed { i, m ->
+            val fim = semSobreposicao.getOrNull(i + 1)?.first ?: text.length
+            val cauda = text.substring(m.second, fim)
+            val terminadoComVirgula = m.second < text.length && text[m.second] == ','
+            nomeiaTempo(cauda) && !negaODiaRelativo(text.substring(m.first, m.second), terminadoComVirgula, cauda)
+        }
+    }
+
+    /**
+     * Os conectores CANDIDATOS da fala, já sem sobreposição — antes de qualquer veredito.
+     *
+     * A lista é candidata porque o mesmo conjunto responde duas perguntas diferentes: onde a fala se
+     * CORRIGE (as caudas que nomeiam tempo) e onde ela CONTINUA (as que não nomeiam). Quem separa é
+     * [nomeiaTempo], e as duas leituras precisam ver a mesma lista para não divergir.
+     */
+    private fun candidatosDeCorrecao(text: String): List<Pair<Int, Int>> {
+        val candidatos = mutableListOf<Pair<Int, Int>>()
+        CORRECAO_FRASE.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
+        NAO_VIRGULA_ANTES.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
+        NAO_BARE.findAll(text).forEach { m -> candidatos += m.range.first to m.range.last + 1 }
+        val ordenados = candidatos.sortedBy { it.first }
+        // Um conector não pode começar dentro do outro ("não, quer dizer"): vale o que começa
+        // antes, e o conector que morre dentro dele é descartado em vez de partir a fala duas vezes
+        // no mesmo ponto.
+        val semSobreposicao = mutableListOf<Pair<Int, Int>>()
+        ordenados.forEach { m ->
+            if (semSobreposicao.isEmpty() || m.first >= semSobreposicao.last().second) semSobreposicao += m
+        }
+        return semSobreposicao
+    }
+
+    /**
+     * Os trechos que CONTINUAM a fala em vez de corrigi-la: a cauda de um conector que não abre com
+     * um valor de tempo ("não tomei hoje", "não deu ontem", "não quero mais").
+     *
+     * É a fronteira gêmea da correção, e o único ponto em que as duas doutrinas do campo de tempo se
+     * tocam. A correção descarta o valor dito antes do conector; a continuação não descarta nada — e
+     * o dia que aparece DENTRO dela não é dia dito, é a RAZÃO ("não tomei hoje" explica por que o
+     * lembrete existe). O guard dos dois dias relativos (PR #98) conta os dias DITOS: contando
+     * também este, "amanhã, não tomei hoje" virava duas datas, o rascunho escalava e o dia que ela
+     * disse — e nunca corrigiu — se perdia na pergunta. Medido em `main`: 60 das 200 falas da
+     * família (20 verbos × 3 valores com dia relativo na cauda).
+     */
+    private fun trechosDeContinuacao(text: String): List<Pair<Int, Int>> {
+        val candidatos = candidatosDeCorrecao(text)
+        return candidatos.mapIndexedNotNull { i, m ->
+            val fim = candidatos.getOrNull(i + 1)?.first ?: text.length
+            if (nomeiaTempo(text.substring(m.second, fim))) null else m.second to fim
+        }
+    }
+
+    /**
+     * O `não` sem a vírgula de fechamento seguido de um DIA RELATIVO não é correção — é a NEGAÇÃO
+     * que o guard dos dois dias relativos (PR #98) resolve: "amanhã, não hoje" diz amanhã e RECUSA
+     * hoje, e a leitura do app é 21/08.
+     *
+     * Este é o único ponto em que as duas doutrinas se cruzam de verdade, e quem separa é a
+     * vírgula depois do conector:
+     *
+     * - `"amanhã, não, hoje"` — a vírgula fecha o conector: é CORREÇÃO, e vale hoje (20/08);
+     * - `"amanhã, não hoje"` / `"amanhã não hoje"` — sem a vírgula, o "não" nega o dia que segue:
+     *   é a leitura já em `main` pelo #98, e vale amanhã (21/08).
+     *
+     * A distinção não é arbitrária: em português o "não" que nega um termo fica colado nele ("não
+     * hoje"), e o que volta atrás do que foi dito vem isolado pela vírgula ("não, hoje"). Sem ela,
+     * as duas leituras são a mesma string e o app não tem como decidir — e aí vale a que já está
+     * em `main`, em vez de o PR novo trocar o desfecho de uma fala que o outro já prendia.
+     *
+     * O custo fica medido no corpus (`CORPUS-DESCOBERTAS`), e não escondido: a forma sem a vírgula
+     * de fechamento só corrige para um valor que NÃO seja dia relativo ("não sexta", "não às nove",
+     * "não de tarde" continuam valendo).
+     */
+    private fun negaODiaRelativo(conector: String, terminadoComVirgula: Boolean, cauda: String): Boolean {
+        if (terminadoComVirgula) return false
+        if (!NAO_BARE.containsMatchIn(conector)) return false
+        return versoesSemMoldura(cauda).any { DIAS_RELATIVOS.find(it)?.range?.first == 0 }
+    }
+
+    /**
+     * O que vem depois do conector NOMEIA um dia ou uma hora? É a pergunta que separa a correção
+     * ("amanhã, não hoje") da continuação ("amanhã, não vou poder ir"), e é a MESMA pergunta que o
+     * `SpeechIntentClassifier` faz no eixo do alvo — "o que vem depois nomeia um alvo novo?" —,
+     * com o desfecho adaptado: lá o classificador, sem a agenda na mão, escala quando o alvo não
+     * decide; aqui o parser é o dono do campo, e uma cauda que não nomeia tempo nenhum não é
+     * dúvida — é continuação, e o valor dito antes dela continua valendo.
+     *
+     * O veredito NÃO é uma lista de verbos. A versão anterior perguntava "a cauda tem um verbo de
+     * tarefa?" contra o `TASK_VERB` — 20 verbos —, e toda continuação fora dela ("não tomei hoje",
+     * "não deu hoje", "não consegui hoje") fazia a fronteira disparar e o valor DESCARTADO vencer:
+     * "me lembra de tomar remédio amanhã às oito, não tomei hoje" agendava 20/08, com
+     * `ambiguous=false` e a caixa rápida confirmando o dia errado em um toque. Medido: 36
+     * regressões em 200 falas (20 verbos × 10 valores). Um token não carrega essa informação; a
+     * FORMA do trecho carrega.
+     *
+     * E a forma é POSICIONAL: a correção de data/hora é o valor dito logo depois do conector
+     * ("não, hoje", "não, de tarde", "não, às nove"), e a continuação é uma oração, com o verbo
+     * antes do tempo ("não tomei **hoje**", "não vou poder ir **amanhã**"). Por isso o sinal de
+     * tempo tem de ABRIR o trecho, e não apenas aparecer nele — a versão que só perguntava "tem
+     * tempo na cauda?" continuava disparando em "não tomei hoje", que é exatamente o defeito.
+     *
+     * Os sinais são três, e cada um cobre uma correção de verdade:
+     *
+     * - a DATA (`DATE_SIGNAL`: "hoje", "amanhã", "segunda", "dia 25", "25/10");
+     * - o PERÍODO do dia (`PERIOD_PHRASE`: "de tarde", "de manhã"), que é a correção de hora mais
+     *   comum depois do "não" e sozinho já nomeia um horário;
+     * - a HORA (`TIME_SIGNAL`: "às N", "meio-dia", "daqui a...").
+     *
+     * A moldura vem antes do valor em fala natural ("errei, **é na** sexta"), e por isso até dois
+     * tokens de moldura são pulados — só de moldura, e só dois: pular qualquer coisa abriria a
+     * porteira para a continuação ("não **vou poder** ir amanhã"), que é o caso clínico.
+     */
+    private fun nomeiaTempo(cauda: String): Boolean = versoesSemMoldura(cauda).any { abreComTempo(it) }
+
+    /**
+     * O trecho e o que sobra depois de pular até dois tokens de [MOLDURA_TEMPORAL] — a MESMA régua
+     * para quem pergunta "nomeia tempo?" ([nomeiaTempo]) e para quem pergunta "o dia que abre é um
+     * dia relativo?" ([negaODiaRelativo]).
+     *
+     * A régua é uma só de propósito: as duas perguntas são sobre a mesma posição da cauda, e quando
+     * cada uma pulava um número diferente de tokens, `"amanhã às quinze, não era hoje"` passava pela
+     * primeira (o "hoje" nomeia tempo, então não era continuação) e era recusada pela segunda (o
+     * `DIAS_RELATIVOS` não casava em "era hoje") — nada consumia a cauda, o último trecho falado
+     * vencia e o app cravava o dia RECUSADO, calado. Medido: `main` escalava (lado seguro) e o
+     * rascunho saía 20/08 `qc=true`.
+     *
+     * A lista para no primeiro token que não é moldura: pular qualquer coisa abriria a porteira para
+     * a continuação ("não **vou poder** ir amanhã"), que é o caso clínico.
+     */
+    private fun versoesSemMoldura(cauda: String): List<String> {
+        val versoes = mutableListOf<String>()
+        var dito = cauda.trimStart(' ', ',', '.', '!', '?', ';', ':')
+        versoes += dito
+        var pulados = 0
+        while (pulados < 2 && dito.isNotBlank()) {
+            val primeiro = dito.substringBefore(' ')
+            if (primeiro !in MOLDURA_TEMPORAL) break
+            dito = dito.substringAfter(' ', "").trimStart(' ', ',', '.', '!', '?', ';', ':')
+            versoes += dito
+            pulados++
+        }
+        return versoes
+    }
+
+    /** Um sinal de data, de período do dia ou de hora ABRINDO o trecho. */
+    private fun abreComTempo(text: String): Boolean =
+        text.isNotBlank() && (DATE_SIGNAL.find(text)?.range?.first == 0 ||
+            PERIOD_PHRASE.find(text)?.range?.first == 0 ||
+            TIME_SIGNAL.find(text)?.range?.first == 0)
+
+    /**
      * O relógio da frase: dígito, por extenso e o "às N" sem "h". Extraído de `extractTime` porque
      * a faixa ("das 14 às 16h") precisa da mesma leitura depois de tirar a faixa do texto — duas
      * cópias divergiriam, e é justamente a hora do compromisso que não pode divergir.
@@ -915,6 +1236,31 @@ class LocalTaskParser(
     }
 
     /**
+     * A frase diz DUAS tomadas no mesmo dia: uma hora já fechada por um período dito ("da manhã") e,
+     * depois do "e", um segundo horário. "às 8 da manhã e 8 da noite" são dois horários; o
+     * `trailingMinutes` lia o segundo como minuto da primeira e cravava 08:08. Devolve o casamento
+     * do segundo horário — quem chama o usa também para tirá-lo do texto que segue para o título.
+     *
+     * A leitura é sobre o texto ainda inteiro — o "e" é a conjunção que separa as duas tomadas, e o
+     * `stripWeekDays` o apaga junto com os dias da semana antes de o relógio rodar.
+     *
+     * O "e X" só é segunda tomada quando traz o PERÍODO PRÓPRIO ("e 8 da noite", "e oito da
+     * noite"). Todo o resto já fica de fora por não ter período:
+     *  - a DOSE ("e 2 comprimidos"): a unidade fica entre o número e qualquer período, então a
+     *    regex não casa — a quantidade não vira horário;
+     *  - o MINUTO da mesma tomada ("e quinze" depois de "8 da manhã"): número nu, sem período;
+     *  - a data ("e 12 do mês que vem"): o período que segue é "do mês", não do dia.
+     */
+    private fun segundaTomadaNoMesmoDia(text: String): MatchResult? {
+        val first = CLOCK_PERIOD.find(text) ?: return null
+        val tail = text.substring(first.range.last + 1)
+        // Ancorado no primeiro "e": um "e X" DISTANTE ("... e depois e cinco", "... e depois e 8 da
+        // noite") não abre tomada nenhuma — ele pertence a outra oração.
+        val m = SEGUNDA_TOMADA.find(tail) ?: return null
+        return if (m.range.first == 0) m else null
+    }
+
+    /**
      * "às 9 e meia", "às nove e vinte e cinco": o "e <minutos>" colado no relógio vira o minuto.
      * Dezena por extenso aceita a unidade: "quarenta e cinco" são 45, não 40 + "cinco" solto no título.
      */
@@ -991,6 +1337,20 @@ class LocalTaskParser(
         var remaining = text
         val today = clock.today()
 
+        // A fala que CONTINUA depois do conector não diz um segundo dia: "amanhã, não tomei hoje"
+        // diz UM dia (amanhã) e explica por que o lembrete existe. O dia dentro da continuação é a
+        // RAZÃO, não a data — e o guard abaixo conta dias DITOS. O trecho sai daqui antes de ele
+        // contar: sem isso o guard via duas datas, escalava, e o dia que ela disse (e nunca
+        // corrigiu) se perdia na pergunta. Medido em `main`: 60 das 200 falas da família.
+        val continuacao = trechosDeContinuacao(remaining)
+        val semContinuacao = if (continuacao.isEmpty()) {
+            remaining
+        } else {
+            var t = remaining
+            continuacao.reversed().forEach { (ini, fim) -> t = t.replaceRange(ini, fim, " ") }
+            TextNormalizer.compactSpaces(t)
+        }
+
         // DOIS dias relativos DISTINTOS na mesma fala ("hoje e amanhã às 9h", "hoje e daqui a dois
         // dias"): os ramos abaixo devolvem no PRIMEIRO que casa, e o segundo dia nunca era olhado —
         // a fala virava um dia só, completa e confirmável num toque, com o dia descartado sobrando
@@ -1005,7 +1365,7 @@ class LocalTaskParser(
         // O critério é o CONJUNTO de dias distintos, não a contagem de marcadores, e um dia NEGADO
         // não entra nele: "hoje e hoje" e "amanhã, não hoje" continuam cravando o que já cravavam.
         // A régua larga demais derruba fala legítima e é pior que a pergunta.
-        if (diasRelativosDistintosDitos(remaining, today).size > 1) {
+        if (diasRelativosDistintosDitos(semContinuacao, today).size > 1) {
             return DateHit(
                 null,
                 stripDiasRelativos(remaining),
@@ -1768,9 +2128,16 @@ class LocalTaskParser(
      * o "e" lista dias, não tarefas.
      */
     private fun looksLikeTwoTasks(text: String): Boolean {
+        // O "e" DENTRO de um conector de correção não separa orações. Sem esta poda, "amanhã, isto
+        // é, hoje" era lido como duas tarefas e o rascunho escalava por uma ambiguidade que não
+        // existe: a fala é uma correção só, e o corpus por classe gramatical foi quem a expôs.
+        var semConector = text
+        correcaoMarcadores(text).reversed().forEach { (ini, fim) ->
+            semConector = semConector.replaceRange(ini, fim, " ")
+        }
         // "vinte e cinco"/"quarenta e cinco": o "e" aqui é do número, não separa orações. Colar as
         // duas palavras antes de dividir evita partir "às vinte e cinco de maio" em duas orações.
-        val glued = text.replace(NUMBER_E, "$1$2")
+        val glued = semConector.replace(NUMBER_E, "$1$2")
         val clauses = glued.split(Regex("""\be\b"""))
         if (clauses.count { TASK_VERB.containsMatchIn(it) } >= 2) return true
 
@@ -1974,8 +2341,56 @@ class LocalTaskParser(
             """\bas\s+(\d{1,2})\b(?:\s*(?:a|da|de|na)\s+(manha|tarde|noite|madrugada))?""",
         )
         private val EM_PONTO_TAIL = Regex("""\bem\s+ponto\b""")
+
+        /**
+         * Uma hora dita COM o período dela ("..., 8 da manhã"): é este par que FECHA a tomada, e é
+         * depois dele que um "e <horário>" passa a ser uma segunda tomada em vez de minuto.
+         */
+        private val CLOCK_PERIOD = Regex(
+            """\b(?:\d{1,2}(?:\s*h(?:\d{2}|oras?)?|:\d{2})?|$WORD_HOUR_ALT)\s*(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)\b""",
+        )
         private val MINUTE_TAIL = Regex(
             """\s+e\s+(meia|quinze|vinte|trinta|quarenta|cinquenta|\d{1,2})(?:\s+e\s+(um|dois|duas|tres|quatro|cinco|seis|sete|oito|nove))?\b""",
+        )
+
+        /**
+         * O "e <horário>" que abre uma SEGUNDA tomada depois de o período já ter fechado a primeira.
+         *
+         * "às 8 da manhã e 8 da noite" são dois horários, não a hora 08:08. O que autoriza a leitura
+         * é um sinal só: o PERÍODO PRÓPRIO do segundo horário ("e 8 da noite", "e oito da noite",
+         * "e 20 da noite"), que vale igual para dígito e extenso. O marcador de relógio do próprio
+         * número ("e 20h", "e 8h30", "e às 20") não precisa de ramo: um segundo relógio já deixa o
+         * rascunho ambíguo pela via geral, e o ramo medido não mudava uma linha sequer.
+         *
+         * Nem o número NEM a palavra por extenso, ditos NUS depois do período, entram: os dois são o
+         * MINUTO da mesma tomada, e é o que faz "às 8 da manhã e quinze" somar 08:15 e "… e 12"
+         * somar 08:12. Não há teto numérico separando "hora" de "minuto" — a distinção é de NATUREZA
+         * (o número traz o período dele?), nunca de VALOR.
+         *
+         * A alternativa medida e descartada foi a do teto 0–23 (o alternador do head): ler o dígito
+         * nu como hora nova. Ela movia a fronteira de 20/30 para 23/24 — "e 15" (08:15) e "e 10"
+         * (08:10) viravam ambíguas enquanto "e 30" (08:30) e "e 45" (08:45) seguiam sendo minuto,
+         * sem critério. Medido no corpus de 130 falas: o teto desviava em 26, este critério em 17;
+         * as 9 linhas de diferença são exatamente as formas naturais de minuto que a base lia certo.
+         */
+        private val SEGUNDA_TOMADA = Regex(
+            """\s+e\s+(?:(?:a|as)\s+)?(?:""" +
+                """(?:\d{1,2}(?:\s*h(?:\d{2}|oras?)?|:\d{2})?|$WORD_HOUR_ALT)\s*(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)""" +
+                """)\b""",
+        )
+
+        /** A nota do desfecho "dois horários": o texto dela mora em um lugar só. */
+        private const val NOTA_DUAS_TOMADAS =
+            "Parece haver dois horários no mesmo dia. A série guarda um horário por vez — confirme o horário."
+
+        /**
+         * O período que fica pendurado no fim quando o segundo horário já saiu do texto: em
+         * "às 8 da manhã e vinte da noite" o `trailingMinutes` engole o "e vinte" como minuto e
+         * deixa só o "da noite" — que não é título de nada. Só roda quando a segunda tomada foi
+         * detectada, então o período no fim é comprovadamente o dela.
+         */
+        private val PERIODO_PENDURADO = Regex(
+            """\s+(?:a|da|de|na)\s+(?:manha|tarde|noite|madrugada)\s*$""",
         )
 
         private val MINUTE_TAIL_WORDS = mapOf(
@@ -2546,6 +2961,69 @@ class LocalTaskParser(
         /** Onde a oração fala de uma hora: "às N", "às <palavra>", meio-dia, "daqui a ...". */
         private val TIME_SIGNAL = Regex(
             """\bas\s+(?:\d{1,2}|[a-z])|\bmeio[-\s]?dia\b|\bmeia[-\s]?noite\b|\bdaqui\b""",
+        )
+
+        /**
+         * Os conectores de correção que voltam atrás do que ela acabou de dizer, com a fronteira
+         * de palavra dos dois lados — a fala chega pontuada de formas diferentes (", errei.", ",
+         * mentira", ", melhor,") e um conector que escapasse deixaria o valor descartado valendo,
+         * calado. O `não` não está aqui: ele é o único com ambiguidade de continuação ("não vou
+         * poder ir"), e por isso vive em [NAO_VIRGULA_ANTES]/[NAO_BARE], onde o teste é o mesmo
+         * [nomeiaTempo] que vale para todos.
+         *
+         * O vocabulário é o mesmo que o `SpeechIntentClassifier` já usa para o alvo, mais as
+         * formas de correção falada que só fazem sentido para data/hora ("hoje não, amanhã").
+         *
+         * Acrescentados aqui os conectores de reformulação que faltavam e que a fala real usa —
+         * "só que", "ou melhor", "ou seja", "isto é", "espera". Eles entram sem o custo que
+         * teriam na versão anterior desta fronteira: o gate de [nomeiaTempo] só os deixa valer
+         * quando o trecho seguinte ABRE com um dia ou uma hora, então "espera aí, o médico vem"
+         * continua exatamente o que era — não há valor novo para descartar nada.
+         */
+        private val CORRECAO_FRASE = Regex(
+            """\b(?:quer dizer|quis dizer|na verdade|ao inves disso|em vez disso|ta errado|""" +
+                """deixa pra la|me enganei|corrigindo|mentira|alias|esquece|perai|desculpa|""" +
+                """digo|errei|so que|ou melhor|ou seja|isto e|espera)\b|,\s*melhor\b""",
+        )
+
+        /**
+         * O `não` com a vírgula ANTES ("amanhã, não hoje") — a forma mais comum da correção falada.
+         * A vírgula antes é o que dá o corte: sem ela o "não" pode estar negando o que segue.
+         *
+         * O nome é `NAO_VIRGULA_ANTES` e não `NAO_ANTES` porque o guard dos dois dias relativos
+         * (PR #98) já usa `NAO_ANTES` para OUTRA coisa — o `não` que ENCOSTA no marcador pelo lado
+         * esquerdo (`\bnao\s*$`, para decidir se o dia entra no conjunto). As duas perguntas são
+         * vizinhas e distintas: aqui é "onde começa o conector de correção?", lá é "este dia foi
+         * recusado?". Nomes iguais com semânticas diferentes foi o que o rebase produziu, e o
+         * compilador pegou.
+         */
+        private val NAO_VIRGULA_ANTES = Regex(""",\s*\bnao\b""")
+
+        /**
+         * O `não` SEM vírgula nenhuma ("amanhã não hoje"), que a versão anterior deixava passar
+         * calada.
+         *
+         * O reconhecedor de fala não pontua de forma confiável — e o teclado entrega o texto CRU,
+         * sem normalizador que apague a vírgula (`WriteTaskScreen` → `understandSpeech`) —, então
+         * exigir a vírgula não filtra ruído: filtra a fala dela. O que separa a correção da
+         * continuação não é a pontuação, é o valor que vem depois, e quem responde isso é
+         * [nomeiaTempo] — o mesmo teste que o "não" com vírgula já respondia.
+         *
+         * O conector exige a fronteira de palavra dos dois lados para não roubar o "não" de dentro
+         * de uma palavra nem o "não" final de uma continuação ("não vou poder ir, não").
+         */
+        private val NAO_BARE = Regex("""\bnao\b""")
+
+        /**
+         * A moldura que a fala natural põe ANTES do valor corrigido ("errei, **é na** sexta",
+         * "**não é** amanhã", "**acho que é** hoje"). Ela não é o valor e não decide nada: só é
+         * pulada, até dois tokens, para o teste de [nomeiaTempo] olhar o que vem depois.
+         *
+         * Só as palavras DESTA lista são puladas. Pular qualquer coisa abriria a porteira para a
+         * continuação — "não **vou poder** ir amanhã" tem o dia na cauda e é o caso clínico.
+         */
+        private val MOLDURA_TEMPORAL = setOf(
+            "e", "eh", "era", "nao", "ate", "so", "agora", "melhor", "acho", "que", "pra", "para",
         )
 
         private val FILLERS = setOf(

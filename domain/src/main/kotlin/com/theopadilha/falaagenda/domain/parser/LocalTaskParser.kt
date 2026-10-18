@@ -204,7 +204,14 @@ class LocalTaskParser(
         // Duas tarefas numa frase ("marcar médico terça e tomar remédio às oito"): antes o parser
         // colava tudo num título só, com o primeiro dia e a primeira hora, e a caixa rápida prometia
         // "Terça às 08:00" para as duas coisas. Ambíguo para escalar/confirmar, nunca adivinhar.
-        if (looksLikeTwoTasks(trechosDeCorrecao(folded).last())) {
+        // O gate julga a FALA INTEIRA, e não o último trecho: medido, escopá-lo ao trecho final
+        // deixa DUAS tarefas reais passarem quando a correção vem depois da conjunção ("marcar
+        // médico amanhã e tomar remédio às 14 da tarde, não, hoje" virava UM evento "Médico tomar
+        // remédio" hoje às 14, confirmável num toque). O custo do lado de cá é spurious: a correção
+        // de uma frase de duas tomadas ganha um "duas tarefas" falso — mas ambíguo é o lado seguro,
+        // e é o comportamento da base. Fechar os dois lados no mesmo gate é decisão de design
+        // separada (o gate precisaria dos trechos que ainda falam, não só do último).
+        if (looksLikeTwoTasks(folded)) {
             ambiguous = true
             confidence = minOf(confidence, 0.45)
             notes += "Parece haver mais de uma tarefa na mesma frase. Vamos separar?"

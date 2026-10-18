@@ -53,7 +53,7 @@ class HomeHeadlineTest {
     @Test
     fun comALeituraFalhandoEComProximoAMancheteMantemOProximo() {
         val comTarefa = AgendaSections(
-            today = listOf(item("Tomar remédio", hoje, LocalTime.of(8, 0), Instant.EPOCH)),
+            today = listOf(item("Tomar remédio", hoje, LocalTime.of(8, 0))),
             upcoming = emptyList(),
             completed = emptyList(),
             missed = emptyList(),
@@ -94,11 +94,11 @@ class HomeHeadlineTest {
     fun aMancheteAnunciaOCompromissoMaisProximoDosDoisBlocos() {
         val agenda = AgendaSections(
             today = listOf(
-                item("Cabelo", hoje, LocalTime.of(15, 0), Instant.EPOCH.plusSeconds(15 * 3600)),
-                item("Tomar remédio", hoje, LocalTime.of(9, 0), Instant.EPOCH.plusSeconds(9 * 3600)),
+                item("Cabelo", hoje, LocalTime.of(15, 0)),
+                item("Tomar remédio", hoje, LocalTime.of(9, 0)),
             ),
             upcoming = listOf(
-                item("Consulta", hoje.plusDays(1), LocalTime.of(8, 0), Instant.EPOCH.plusSeconds(32 * 3600)),
+                item("Consulta", hoje.plusDays(1), LocalTime.of(8, 0)),
             ),
             completed = emptyList(),
             missed = emptyList(),
@@ -120,7 +120,7 @@ class HomeHeadlineTest {
             today = emptyList(),
             upcoming = emptyList(),
             completed = emptyList(),
-            missed = listOf(item("Remédio", hoje, LocalTime.of(8, 0), Instant.EPOCH)),
+            missed = listOf(item("Remédio", hoje, LocalTime.of(8, 0))),
         )
 
         val text = homeHeadline(
@@ -145,8 +145,8 @@ class HomeHeadlineTest {
             upcoming = emptyList(),
             completed = emptyList(),
             missed = listOf(
-                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), Instant.EPOCH),
-                item("Consulta", hoje.minusDays(2), LocalTime.of(8, 0), Instant.EPOCH),
+                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0)),
+                item("Consulta", hoje.minusDays(2), LocalTime.of(8, 0)),
             ),
         )
 
@@ -173,7 +173,7 @@ class HomeHeadlineTest {
             upcoming = emptyList(),
             completed = emptyList(),
             missed = listOf(
-                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), Instant.EPOCH, avisada = false),
+                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), avisada = false),
             ),
         )
 
@@ -199,8 +199,8 @@ class HomeHeadlineTest {
             upcoming = emptyList(),
             completed = emptyList(),
             missed = listOf(
-                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), Instant.EPOCH, avisada = false),
-                item("Consulta", hoje.minusDays(2), LocalTime.of(9, 0), Instant.EPOCH, avisada = true),
+                item("Remédio", hoje.minusDays(1), LocalTime.of(8, 0), avisada = false),
+                item("Consulta", hoje.minusDays(2), LocalTime.of(9, 0), avisada = true),
             ),
         )
 
@@ -223,7 +223,7 @@ class HomeHeadlineTest {
             upcoming = emptyList(),
             completed = emptyList(),
             missed = listOf(
-                item("Consulta", hoje.minusDays(2), LocalTime.of(9, 0), Instant.EPOCH, avisada = true),
+                item("Consulta", hoje.minusDays(2), LocalTime.of(9, 0), avisada = true),
             ),
         )
 
@@ -242,12 +242,19 @@ class HomeHeadlineTest {
      * separa: `lastReminderAt == null` é "o aplicativo não avisou" (a seção "Não consegui
      * avisar" da home), e preenchido é "avisou e ela não fez" (a seção "Não realizadas").
      * O default é o segundo — um teste que quer o primeiro passa `avisada = false`.
+     *
+     * O instante da ocorrência sai de [localDate] e [localTime] no fuso da série, e o aviso
+     * armado é ele mesmo — como no aparelho. Antes o `scheduledAt` era um instante arbitrário de
+     * `Instant.EPOCH` desalinhado do horário local, e o teste passava porque a manchete lia
+     * `series.localTime`. Desde que ela anuncia o **aviso** (o `nextReminderAt`, com o
+     * `scheduledAt` como piso), o fixture mentiroso produziria uma frase absurda ("01/01 às
+     * 06:00") e o caso deixaria de medir o que mede: qual compromisso a manchete escolhe e como
+     * ela o descreve.
      */
     private fun item(
         title: String,
         localDate: LocalDate,
         localTime: LocalTime,
-        scheduledAt: Instant,
         avisada: Boolean = true,
     ): AgendaItem {
         val serie = TaskSeries(
@@ -260,13 +267,15 @@ class HomeHeadlineTest {
             createdAt = Instant.EPOCH,
             updatedAt = Instant.EPOCH,
         )
+        val marcadoPara = localDate.atTime(localTime).atZone(zone).toInstant()
         return AgendaItem(
             occurrence = TaskOccurrence(
                 id = "${serie.id}:$localDate",
                 seriesId = serie.id,
                 localDate = localDate,
-                scheduledAt = scheduledAt,
+                scheduledAt = marcadoPara,
                 status = OccurrenceStatus.PENDING,
+                nextReminderAt = marcadoPara,
                 lastReminderAt = if (avisada) Instant.EPOCH else null,
             ),
             series = serie,

@@ -14,13 +14,15 @@ import org.junit.Test
  * que o classificador NÃO conhece ("da", "to", "esta", "me", "gosto", "recebi"), que é
  * exatamente o que o corpus anterior não podia representar.
  *
- * Este arquivo tem [caudasNaturais] = 82 caudas, e com [alvosNaturais] (6) × [verbosNaturais] (5)
- * o espaço é de **2460 casos**. Contra o desenho ANTERIOR (a heurística de token, commit
- * `8f41bc3`), esse mesmo espaço bloqueava **1320 de 2460 (53,7%)** — o número que o review
- * independente mediu fora da árvore, e maior do que o que este KDoc declarava.
+ * Este arquivo tem [caudasNaturais] = 81 caudas, e com [alvosNaturais] (6) × [verbosNaturais] (5)
+ * o espaço é de **2430 casos** (é o número que o log imprime: `casos=2430`). Contra o desenho
+ * ANTERIOR (a heurística de token, commit `8f41bc3`), o espaço de então — 82 caudas, **2460
+ * casos** — bloqueava **1320 (53,7%)**: o número que o review independente mediu fora da árvore, e
+ * maior do que o que este KDoc declarava. O espaço encolheu uma cauda depois disso (a lista perdeu
+ * `"não é o momento"`), então 2460 é o denominador daquela medição, não o de hoje.
  *
  * A quarta rodada acrescentou a família que FALTAVA aqui, e a ausência dela é o defeito que
- * sobreviveu a três rodadas: das 82 caudas, **zero** tinham a forma `MOLDURA + determinante`
+ * sobreviveu a três rodadas: das 81 caudas, **zero** tinham a forma `MOLDURA + determinante`
  * ("não tenho **a** receita"). Enquanto o corpus é construído com as formas que a lista do código
  * já cobre, a suíte fica verde com o defeito vivo. Elas estão em [caudasComAlvoMencionado], com o
  * custo DECLARADO em vez de escondido.
@@ -143,7 +145,7 @@ class SpeechIntentCorrecaoCorpusIndependenteTest {
     /**
      * A família que FALTAVA nas três rodadas anteriores (F-C do review): a continuação que MENCIONA
      * um substantivo, abrindo com um verbo de [MOLDURA] seguido de determinante — "não tenho **a**
-     * receita", "não quero **o** remédio". Zero das 82 caudas acima tinham essa forma, e é por isso
+     * receita", "não quero **o** remédio". Zero das 81 caudas acima tinham essa forma, e é por isso
      * que a suíte ficava verde com o defeito vivo.
      *
      * Ela é a fronteira entre duas falas que a FORMA da frase não separa:
@@ -198,6 +200,10 @@ class SpeechIntentCorrecaoCorpusIndependenteTest {
      * é puro e não tem léxico. O desfecho é o lado seguro — deixa de agir, não age sobre o alvo
      * descartado —, e o número fica preso para não subir calado.
      *
+     * A lista é a mesma de `SpeechIntentCorrecaoInvarianteTest.caudasQueACopulaBloqueia` (17
+     * caudas), e não as 2 que estavam aqui: o número preso em teste cobria 2 caudas quando a
+     * família medida é de 17 — 13 de custo marginal (agiam na base) e 4 que já bloqueavam.
+     *
      * O que NÃO entra aqui é a família clínica (`"não quero mais"`, `"não tenho como"`, `"não vou
      * poder ir"`): nenhuma delas tem cópula, então o critério não as toca e elas continuam em
      * [caudasNaturais] com tolerância zero.
@@ -205,6 +211,21 @@ class SpeechIntentCorrecaoCorpusIndependenteTest {
     private val caudasQueACopulaBloqueia = listOf(
         "não é possível",
         "não é pra mim",
+        "não é o momento",
+        "não é meu médico",
+        "não é assim",
+        "não é bom",
+        "não é o caso",
+        "não é necessário",
+        "não é urgente",
+        "não é pra agora",
+        "não é da minha conta",
+        "não é muito longe",
+        "não é aqui",
+        "não é verdade",
+        "não é certo",
+        "não é bem assim",
+        "não é hoje",
     )
 
     @Test

@@ -124,6 +124,99 @@ class FalaComandoTest {
         assertThat(proximoRecado()).contains("Não tem nada marcado para hoje")
     }
 
+    /**
+     * A resposta NÃO pode negar o que a MESMA tela está mostrando.
+     *
+     * O estado do defeito: uma ocorrência de HOJE que o aviso nunca alcançou
+     * (`lastReminderAt` nulo, a seção "Não consegui avisar"), e nenhuma pendente. A manchete
+     * conta as duas coisas de propósito ("Nada marcado agora. Não consegui avisar 1 tarefa."),
+     * e a resposta falada contava só as pendentes — ela perguntava "o que tenho hoje?" e ouvia
+     * "Não tem nada marcado para hoje", com o remédio de hoje logo abaixo. Ela conclui que
+     * está em dia, e a dose que o celular não avisou some da cabeça dela.
+     */
+    @Test
+    fun oQueTenhoHojeNaoNegaONaoAvisadoDeHoje() {
+        val serie = serie("s-rem", "Tomar remédio", hoje)
+        semear(serie, listOf(ocorrenciaNaoRealizada(serie, hoje, ultimoAviso = null)))
+
+        // O estado como a tela o mostra: nada pendente, e a seção "Não consegui avisar" com o
+        // remédio de hoje. Sem este par a asserção de baixo não prova nada.
+        assertThat(agenda().today + agenda().upcoming).isEmpty()
+        assertThat(missedSections(agenda().missed).first().items.map { it.series.title })
+            .containsExactly("Tomar remédio")
+
+        viewModel.understandSpeech("o que tenho hoje?")
+
+        val resposta = proximoRecado()
+        assertThat(resposta).doesNotContain("Não tem nada marcado")
+        assertThat(resposta).contains("Não consegui avisar")
+        assertThat(resposta).contains("Tomar remédio")
+    }
+
+    /**
+     * O outro lado do mesmo ramo: com a pendente de hoje E a não avisada de hoje, a resposta
+     * diz as duas — a pendente com o horário e a falha do app sem ele. Antes o aviso que não
+     * saiu sumia por completo, e a resposta ficava mais otimista que a tela.
+     */
+    @Test
+    fun oQueTenhoHojeDizAPendenteEONaoAvisado() {
+        val pendente = serie("s-con", "Consulta médica", hoje)
+        val naoAvisada = serie("s-rem", "Tomar remédio", hoje)
+        semear(pendente, listOf(ocorrenciaPendente(pendente, hoje)))
+        semear(naoAvisada, listOf(ocorrenciaNaoRealizada(naoAvisada, hoje, ultimoAviso = null)))
+
+        viewModel.understandSpeech("o que tenho hoje?")
+
+        val resposta = proximoRecado()
+        assertThat(resposta).contains("Consulta médica")
+        assertThat(resposta).contains("08:30")
+        assertThat(resposta).contains("Não consegui avisar")
+        assertThat(resposta).contains("Tomar remédio")
+    }
+
+    /**
+     * A não realizada de hoje em que o aviso SAIU é outra coisa: a falta é dela, e a resposta
+     * não pode acusar o aplicativo. A separação é o mesmo `missedReason` que a home usa para
+     * montar as seções — uma segunda noção de "eu não avisei" aqui voltaria a contradizer a
+     * tela, agora na resposta.
+     */
+    @Test
+    fun oQueTenhoHojeNaoAcusaOAppDoQueElaNaoFez() {
+        val serie = serie("s-rem", "Tomar remédio", hoje)
+        semear(
+            serie,
+            listOf(
+                ocorrenciaNaoRealizada(
+                    serie,
+                    hoje,
+                    ultimoAviso = quando(serie, hoje).plusSeconds(600),
+                ),
+            ),
+        )
+
+        viewModel.understandSpeech("o que tenho hoje?")
+
+        val resposta = proximoRecado()
+        assertThat(resposta).doesNotContain("Não consegui avisar")
+        // E também não pode dizer que não há nada: a dose de hoje está lá.
+        assertThat(resposta).doesNotContain("Não tem nada marcado")
+        assertThat(resposta).contains("Tomar remédio")
+    }
+
+    /**
+     * A não avisada de AMANHÃ não entra na resposta de hoje: a janela da resposta é o dia
+     * perguntado, como na lista da tela.
+     */
+    @Test
+    fun oQueTenhoHojeIgnoraONaoAvisadoDeAmanha() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.plusDays(1))
+        semear(serie, listOf(ocorrenciaNaoRealizada(serie, hoje.plusDays(1), ultimoAviso = null)))
+
+        viewModel.understandSpeech("o que tenho hoje?")
+
+        assertThat(proximoRecado()).contains("Não tem nada marcado para hoje")
+    }
+
     // --- concluir e cancelar: agem de verdade ----------------------------------------
 
     @Test
@@ -241,6 +334,175 @@ class FalaComandoTest {
         // A data eleita volta; as outras nunca saíram.
         assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje))).isNotNull()
         assertThat(agenda().find(OccurrenceIds.of(salvo.series.id, hoje.plusDays(1)))).isNotNull()
+    }
+
+    // --- o alvo que existe e já foi feito -------------------------------------------
+    //
+    // Ela concluiu o remédio ("já tomei o remédio" → "Feito.") e a tarefa continua na tela,
+    // na seção "Concluídas". Falando de novo sobre ela, o app dizia "Não achei nenhuma tarefa
+    // com esse nome" — para uma tarefa que existe, com o nome exato que ela falou. A decisão
+    // de NÃO agir sobre uma concluída é certa; a frase é que descrevia um mundo que não é o
+    // dela: ela conclui que nunca cadastrou e cadastra de novo.
+
+    @Test
+    fun cancelarAlvoJaConcluidoDizQueJaFoiFeitoEmVezDeNaoAchar() {
+        val serie = serie("s-den", "Dentista", hoje)
+        semear(serie, listOf(ocorrenciaConcluida(serie, hoje)))
+
+        viewModel.understandSpeech("cancela o dentista")
+
+        val resposta = proximoRecado()
+        assertThat(resposta).doesNotContain("Não achei")
+        assertThat(resposta).contains("já está feita")
+        // A decisão de não agir continua: a linha está onde estava.
+        assertThat(statusDa(serie.id, hoje)).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    @Test
+    fun concluirAlvoJaConcluidoDizQueJaFoiFeitoEmVezDeNaoAchar() {
+        val serie = serie("s-rem", "Tomar remédio", hoje)
+        semear(serie, listOf(ocorrenciaConcluida(serie, hoje)))
+
+        viewModel.understandSpeech("já tomei o remédio")
+
+        val resposta = proximoRecado()
+        assertThat(resposta).doesNotContain("Não achei")
+        assertThat(resposta).contains("já está feita")
+        // E não é "Feito.": concluir de novo uma ocorrência já concluída é um no-op, e anunciar
+        // sucesso aqui seria a resposta confirmar o que não aconteceu.
+        assertThat(resposta).isNotEqualTo("Feito.")
+        assertThat(statusDa(serie.id, hoje)).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    /**
+     * O outro lado, e o que impede o conserto de virar defeito: com a pendente viva da MESMA
+     * série, a fala é a de sempre e o app age — a concluída de outro dia não pode transformar
+     * a rotina em "já está feita".
+     */
+    @Test
+    fun comPendenteVivaOAlvoConcluidoNaoMudaAFala() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(1), diario())
+        semear(
+            serie,
+            listOf(
+                ocorrenciaConcluida(serie, hoje.minusDays(1)),
+                ocorrenciaPendente(serie, hoje),
+            ),
+        )
+
+        viewModel.understandSpeech("cancela o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje))).isNull()
+        assertThat(statusDa(serie.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    /** Nome que não existe em lugar nenhum continua dizendo que não achou. */
+    @Test
+    fun nomeQueNaoExisteContinuaDizendoNaoAchei() {
+        val serie = serie("s-rem", "Tomar remédio", hoje)
+        semear(serie, listOf(ocorrenciaPendente(serie, hoje)))
+
+        viewModel.understandSpeech("cancela o dentista")
+
+        assertThat(proximoRecado()).contains("Não achei nenhuma tarefa com esse nome")
+    }
+
+    /**
+     * Duas concluídas com o mesmo nome: a resposta é a mesma do caso de uma só.
+     *
+     * A mensagem de ambiguidade existe para o app não escolher no chute o alvo sobre o qual
+     * vai AGIR. Aqui não há ação nenhuma a tomar — as duas já estão feitas —, e "tem mais de
+     * uma tarefa com esse nome" mandaria ela procurar uma escolha que não existe.
+     */
+    @Test
+    fun duasConcluidasComOMesmoNomeDizemQueJaEstaoFeitas() {
+        val uma = serie("s-rem-1", "Tomar remédio", hoje)
+        val outra = serie("s-rem-2", "Tomar remédio", hoje)
+        semear(uma, listOf(ocorrenciaConcluida(uma, hoje)))
+        semear(outra, listOf(ocorrenciaConcluida(outra, hoje)))
+
+        viewModel.understandSpeech("cancela o remédio")
+
+        val resposta = proximoRecado()
+        assertThat(resposta).doesNotContain("Não achei")
+        assertThat(resposta).contains("já está feita")
+        assertThat(agenda().completed).hasSize(2)
+    }
+
+    /**
+     * O `apaga` com uma CONCLUÍDA homônima continua sendo um recado.
+     *
+     * O outro lado do [apagaALuzSemTarefaViraRecadoNovo], e o que aquele teste não cobria: com
+     * uma "Tirar o lixo" já feita no banco, "tira o lixo" (querendo criar a de amanhã) tem de
+     * nascer como rascunho do mesmo jeito. Recusar aqui engolia a captura para sempre — o
+     * `sections.completed` não tem poda nem janela, então qualquer nome que colidisse com
+     * qualquer concluída histórica nunca mais viraria tarefa, e ela não ficaria sabendo.
+     *
+     * O rascunho é recuperável (a confirmação mostra o título e ela não salva); o engolimento
+     * não é. É a mesma assimetria de `SpeechIntent.Capture`: criar uma tarefa a mais é menos
+     * grave que engolir uma que ela queria.
+     */
+    @Test
+    fun apagaComConcluidaHomonimaContinuaVirandoRecado() {
+        val antiga = serie("s-lixo", "Tirar o lixo", hoje.minusDays(1))
+        semear(antiga, listOf(ocorrenciaConcluida(antiga, hoje.minusDays(1))))
+
+        viewModel.understandSpeech("tira o lixo")
+
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("lixo")
+        // A concluída continua onde estava: o rascunho não a tocou.
+        assertThat(statusDa(antiga.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    /**
+     * A mesma colisão com um nome curto e uma concluída VELHA — o caso do revisor: "apaga a
+     * luz" com uma "Luz" concluída há um mês. O tempo não pode ser o critério, porque não há
+     * janela nenhuma em "Concluídas" para servir de referência.
+     */
+    @Test
+    fun apagaALuzComLuzConcluidaAntigaContinuaVirandoRecado() {
+        val antiga = serie("s-luz", "Luz", hoje.minusDays(30))
+        semear(antiga, listOf(ocorrenciaConcluida(antiga, hoje.minusDays(30))))
+
+        viewModel.understandSpeech("apaga a luz")
+
+        val draft = runBlocking {
+            withTimeout(TEMPO_LIMITE) {
+                viewModel.speech.state.filter { it.draft != null }.first().draft
+            }
+        }
+        assertThat(draft).isNotNull()
+        assertThat(draft!!.title.lowercase()).contains("luz")
+        assertThat(statusDa(antiga.id, hoje.minusDays(30))).isEqualTo(OccurrenceStatus.COMPLETED)
+    }
+
+    /**
+     * O `apaga` com pendente viva continua APAGANDO: a distinção acima vale só para o desfecho
+     * sem alvo de pé, e a colisão com o histórico não pode roubar a ação de quem tem alvo.
+     */
+    @Test
+    fun apagaComPendenteVivaApagaMesmoComConcluidaHomonima() {
+        val serie = serie("s-rem", "Tomar remédio", hoje.minusDays(1), diario())
+        semear(
+            serie,
+            listOf(
+                ocorrenciaConcluida(serie, hoje.minusDays(1)),
+                ocorrenciaPendente(serie, hoje),
+            ),
+        )
+
+        viewModel.understandSpeech("apaga o remédio")
+
+        assertThat(proximoRecado()).isEqualTo("Tarefa excluída.")
+        assertThat(agenda().find(OccurrenceIds.of(serie.id, hoje))).isNull()
+        assertThat(statusDa(serie.id, hoje.minusDays(1))).isEqualTo(OccurrenceStatus.COMPLETED)
     }
 
     // --- reconhecer e não fazer ------------------------------------------------------
@@ -703,6 +965,22 @@ class FalaComandoTest {
             scheduledAt = quando,
             status = OccurrenceStatus.PENDING,
             nextReminderAt = quando,
+        )
+    }
+
+    private fun ocorrenciaConcluida(
+        serie: TaskSeries,
+        data: LocalDate,
+        completadaEm: Instant = quando(serie, data).plusSeconds(3_600),
+    ): TaskOccurrence {
+        val quando = quando(serie, data)
+        return TaskOccurrence(
+            id = OccurrenceIds.of(serie.id, data),
+            seriesId = serie.id,
+            localDate = data,
+            scheduledAt = quando,
+            status = OccurrenceStatus.COMPLETED,
+            completedAt = completadaEm,
         )
     }
 

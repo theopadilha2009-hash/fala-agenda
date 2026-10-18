@@ -146,6 +146,214 @@ class EditarDoseDaSerieNaoPerdeAsOutrasTest {
         )
     }
 
+    /**
+     * Semeia a tarefa única "Remédio" das 08:00 de hoje já CONCLUÍDA por ela: é o estado do
+     * aparelho depois do toque em "Concluir" — `completedAt` gravado, alarme cancelado.
+     */
+    private suspend fun serieUnicaConcluida(): TaskRepository {
+        val series = TaskSeries(
+            id = seriesId,
+            title = "Remédio",
+            zoneId = zone,
+            localTime = LocalTime.of(8, 0),
+            startLocalDate = hoje,
+            recurrence = RecurrenceRule(),
+            createdAt = Instant.parse("2026-08-19T10:00:00Z"),
+            updatedAt = Instant.parse("2026-08-19T10:00:00Z"),
+        )
+        seriesDao.upsert(series.toEntity())
+        occurrenceDao.upsert(
+            TaskOccurrence(
+                id = idDe(20),
+                seriesId = seriesId,
+                localDate = hoje,
+                scheduledAt = emSaoPaulo(20, 8),
+                status = OccurrenceStatus.PENDING,
+                nextReminderAt = emSaoPaulo(20, 8),
+            ).toEntity(),
+        )
+        val repo = repo()
+        repo.complete(idDe(20))
+        return repo
+    }
+
+    /**
+     * O registro que ela fez não é desfeito por uma correção de horário.
+     *
+     * Ela toma o remédio das 08:00 e toca "Concluir". À noite lembra que o médico mudou para as
+     * 09:00 e corrige o horário — e a escolha, com o instante já vencido, arquivava a linha como
+     * NÃO REALIZADA: `completedAt` zerado, `missedAt` recebendo a hora da edição, e a dose que
+     * ela tomou migrando de "Concluídas" para "Não realizadas". O aplicativo passava a acusá-la
+     * de não ter tomado o remédio que ela tomou.
+     *
+     * O `sameWhen` do fast path não cobre este caso: ele exige data, hora e regra idênticas, e
+     * mudar o horário — justamente o motivo da correção — sai dele.
+     */
+    @Test
+    fun editarOHorarioDeUmaDoseJaConcluidaPreservaORegistro() {
+        runBlocking {
+            val repo = serieUnicaConcluida()
+            val antes = occurrenceDao.get(idDe(20))!!.toDomain()
+            assertThat(antes.status).isEqualTo(OccurrenceStatus.COMPLETED)
+            assertThat(antes.completedAt).isEqualTo(emSaoPaulo(20, 10))
+
+            repo.editOccurrence(idDe(20), "Remédio", hoje, LocalTime.of(9, 0), RecurrenceRule())
+
+            val depois = occurrenceDao.get(idDe(20))!!.toDomain()
+            // A linha continua concluída, com o mesmo instante do toque dela...
+            assertThat(depois.status).isEqualTo(OccurrenceStatus.COMPLETED)
+            assertThat(depois.completedAt).isEqualTo(antes.completedAt)
+            // ...e não vira "não realizada": a falta é dela, e ela não faltou.
+            assertThat(depois.missedAt).isNull()
+            // O horário corrigido é o que fica gravado, e a linha não carrega alarme nenhum:
+            // uma dose já tomada não tem o que avisar.
+            assertThat(depois.localDate).isEqualTo(hoje)
+            assertThat(depois.nextReminderAt).isNull()
+            assertThat(alarmesDeDose().keys).doesNotContain(idDe(20))
+        }
+    }
+
+    /**
+     * Corrigir só o título da própria dose adiada não pode desfazer o adiamento dela.
+     *
+     * A dose de amanhã está adiada para as 08:30 e o degrau já andou. Ela abre ESSA dose e
+     * corrige só o título — não mexeu no horário. O `materialize` do cartão tocado era chamado
+     * sem a linha que já existia, e o adiamento sumia junto com o degrau: o aviso que ela pediu
+     * para depois voltava para as 08:00, ou seja, tocava na hora que ela adiou.
+     *
+     * O teste irmão (`editarOutraDoseNaoApagaOAdiamentoDaDoseDeAmanha`) prende o adiamento
+     * quando ela edita OUTRA dose; este prende a própria.
+     */
+    @Test
+    fun editarSoOTituloDaPropriaDoseAdiadaPreservaOAdiamento() {
+        runBlocking {
+            val repo = serieComQuatroDosesArmadas()
+            adiarADoseDeAmanha()
+            val adiada = emSaoPaulo(21, 8, 30)
+
+            repo.editOccurrence(
+                idDe(21),
+                "Remédio da pressão",
+                LocalDate.of(2026, 8, 21),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val depois = occurrenceDao.get(idDe(21))!!.toDomain()
+            assertThat(depois.status).isEqualTo(OccurrenceStatus.PENDING)
+            assertThat(depois.snoozedUntil).isEqualTo(adiada)
+            assertThat(depois.reminderStep).isEqualTo(3)
+            assertThat(depois.nextReminderAt).isEqualTo(adiada)
+            // E o alarme entregue ao `AlarmManager` continua no instante que ela pediu.
+            assertThat(alarmesDeDose()[idDe(21)]).isEqualTo(adiada)
+        }
+    }
+
+    /**
+     * O outro lado da preservação: mudar o HORÁRIO descarta a escada antiga.
+     *
+     * O degrau das 08:00 não diz nada sobre as 14:00 — preservar o adiamento das 08:30 num
+     * remédio que passou a ser das 14:00 faria o aviso tocar no instante errado. Este teste é o
+     * par do de cima: sem ele, um fix que passasse a linha existente sempre trocaria um defeito
+     * por outro, e o de cima continuaria verde.
+     */
+    @Test
+    fun editarOHorarioDeUmaDoseAdiadaReiniciaAEscadaNoHorarioNovo() {
+        runBlocking {
+            val repo = serieComQuatroDosesArmadas()
+            adiarADoseDeAmanha()
+
+            repo.editOccurrence(
+                idDe(21),
+                "Remédio",
+                LocalDate.of(2026, 8, 21),
+                LocalTime.of(14, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val depois = occurrenceDao.get(idDe(21))!!.toDomain()
+            // A escada velha foi descartada: o horário mudou, e o degrau era do horário antigo.
+            assertThat(depois.snoozedUntil).isNull()
+            assertThat(depois.reminderStep).isEqualTo(0)
+            // E o aviso nasce no horário NOVO, não no que ela tinha adiado.
+            assertThat(depois.nextReminderAt).isEqualTo(emSaoPaulo(21, 14))
+            assertThat(alarmesDeDose()[idDe(21)]).isEqualTo(emSaoPaulo(21, 14))
+        }
+    }
+
+    /**
+     * Mover o cartão para uma data que já tem história preserva o aviso MAIS NOVO.
+     *
+     * A dose de 23/08 tem o aviso das 08:00 dela; o cartão tocado é o de 22/08, cujo aviso é
+     * mais antigo. Ao mover o de 22/08 para 23/08, a linha que fica é a da data de destino, e o
+     * `lastReminderAt` dela não pode ser trocado pelo da origem: o cartão voltaria a dizer "o
+     * aviso não tocou" sobre um aviso que tocou.
+     */
+    @Test
+    fun moverParaUmaDataComAvisoMaisNovoPreservaOMaisRecente() {
+        runBlocking {
+            val repo = serieComQuatroDosesArmadas()
+            val avisoDaOrigem = emSaoPaulo(22, 8)
+            val avisoDaDestino = emSaoPaulo(23, 8, 5)
+            occurrenceDao.upsert(
+                occurrenceDao.get(idDe(22))!!.toDomain()
+                    .copy(lastReminderAt = avisoDaOrigem, reminderStep = 2).toEntity(),
+            )
+            occurrenceDao.upsert(
+                occurrenceDao.get(idDe(23))!!.toDomain()
+                    .copy(lastReminderAt = avisoDaDestino, reminderStep = 3).toEntity(),
+            )
+
+            repo.editOccurrence(
+                idDe(22),
+                "Remédio",
+                LocalDate.of(2026, 8, 23),
+                LocalTime.of(8, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val destino = occurrenceDao.get(idDe(23))!!.toDomain()
+            assertThat(destino.lastReminderAt).isEqualTo(avisoDaDestino)
+            assertThat(destino.reminderStep).isEqualTo(3)
+        }
+    }
+
+    /**
+     * A dose cujo aviso já tocou não ganha um SEGUNDO alarme ao ser editada.
+     *
+     * O aviso das 08:00 de 22/08 já saiu e a escada terminou ali (`nextReminderAt` nulo): não há
+     * repetição marcada. O `materialize` do cartão tocado era chamado sem a linha existente, e
+     * reconstruía a ocorrência do zero — o primeiro degrau voltava armado no horário novo da
+     * série, ou seja, um segundo aviso para uma dose que já tinha avisado.
+     */
+    @Test
+    fun editarNaoRearmaOPrimeiroAvisoDeUmaDoseQueJaTocou() {
+        runBlocking {
+            val repo = serieComQuatroDosesArmadas()
+            val linha = occurrenceDao.get(idDe(22))!!.toDomain()
+            occurrenceDao.upsert(
+                linha.copy(
+                    lastReminderAt = emSaoPaulo(22, 8),
+                    nextReminderAt = null,
+                    reminderStep = 4,
+                ).toEntity(),
+            )
+
+            repo.editOccurrence(
+                idDe(22),
+                "Remédio",
+                LocalDate.of(2026, 8, 22),
+                LocalTime.of(20, 0),
+                RecurrenceRule(RecurrenceKind.DAILY),
+            )
+
+            val depois = occurrenceDao.get(idDe(22))!!.toDomain()
+            // A escada encerrada continua encerrada: nada foi rearmado.
+            assertThat(depois.nextReminderAt).isNull()
+            assertThat(alarmesDeDose().keys).doesNotContain(idDe(22))
+        }
+    }
+
     @Test
     fun editarOHorarioDeUmaDoseNaoApagaNemDesarmaAsOutras() {
         runBlocking {

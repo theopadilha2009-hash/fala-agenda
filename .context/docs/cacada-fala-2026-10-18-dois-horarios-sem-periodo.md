@@ -54,6 +54,13 @@ O `MINUTE_TAIL_WORDS` não tem "oito": a hora fica 03:00 e o segundo número SOB
 20h (ou a 15h) desaparece e o nome da tarefa fica poluído. Mesma raiz: o "da noite" que pertence
 ao "oito" foi roubado para a primeira hora.
 
+**Fechado pelo follow-up** (`fix/fala-extenso-na-cauda`): o `HOUR_WORD_TAIL` casa a cauda
+"e <nome de hora>" (os mesmos nomes de `CLOCK_WORD`/`CLOCK_BARE_WORD`; "meia" e frações ficam de
+fora — minuto por natureza, B4) e só entra no gatilho quando o período vem COLADO na cauda e a
+coerência falha (noite × 1–6). Desfecho medido: `null · amb=true · nota de dois horários ·
+título "Tomar remédio"`. Fora do gatilho ("às tres e oito" sem período, "… da manha") o título
+sujo permanece como estava — travado em teste (`LocalTaskParserExtensoNaCaudaTest`).
+
 ---
 
 ## A tabela medida (26 formas)
@@ -64,10 +71,10 @@ ao "oito" foi roubado para a primeira hora.
 | `às 3 e 8 da noite` | 03:08 | false | **DEFEITO** |
 | `às duas e 8 da noite` | 02:08 | false | **DEFEITO** |
 | `às cinco e 8 da noite` | 05:08 | false | **DEFEITO** |
-| `às tres e oito da noite` | 03:00 · título "…oito" | false | **DEFEITO** (variante extenso) |
-| `às 3 e oito da noite` | 03:00 · título "…oito" | false | **DEFEITO** |
+| `às tres e oito da noite` | 03:00 · título "…oito" | false | **DEFEITO** (variante extenso) — **fechado pelo follow-up**: `null · amb=true · título "Tomar remédio"` |
+| `às 3 e oito da noite` | 03:00 · título "…oito" | false | **DEFEITO** — **fechado pelo follow-up**: `null · amb=true · título "Tomar remédio"` |
 | `às tres e 8 da manha` | 03:08 | false | OK — 3:08 da manhã é coerente |
-| `às tres e meia da noite` | 03:30 | false | **DEFEITO** — 03:30 ∉ noite |
+| `às tres e meia da noite` | 03:30 | false | OK — fração fora do gatilho: "meia" é minuto por natureza, nunca abre tomada; corpus B4 prevalece (`LocalTaskParserTest` 607/1422/1737, travado no #129) |
 | `às tres e 12 da noite` | 03:12 | false | **DEFEITO** |
 | `todo dia às tres e 8 da noite` | 03:08 · **qc=true** | false | **DEFEITO com dano máximo** |
 | `tres e 8 da noite` (sem "às") | 03:08 | false | **DEFEITO** (CLOCK_BARE_WORD) |
@@ -139,6 +146,8 @@ nada mais. O segundo par de apoio: `às 8 e 20 da noite` (20:20 — o período a
 com o período sendo "noite" — a única faixa que não alcança 1–6 —, devolver `TimeHit(null,
 remaining, true)` com nota de dois horários (a nota `NOTA_DUAS_TOMADAS` já existe). A variante
 extenso+extenso ("e oito") cai no mesmo ramo, pois a hora cravada 03:00 também contradiz a noite.
+(No #129 a frase acima era aspiração: a cauda em extenso nem chegava ao ramo — o `MINUTE_TAIL`
+não casa "oito". O follow-up a fez cair, com um detector próprio para a cauda em extenso.)
 Zone de extensão a medir antes: primeira hora 13–23 com "da noite" (`às 15 e 8 da noite` → 15:08
 hoje; "15 da noite" também é incoerente, mas "21 da noite" é coerente — o critério de coerência
 resolve, o de faixa fixa não).
@@ -166,8 +175,9 @@ confirmação em um toque — o dano exato que o #126 descreveu para a variante 
   eixo (período colado no relógio, sem "e <num>" no meio) e não foi medido aqui além do registro.
 - **A fala ponta a ponta por voz** (Vosk transcrevendo): medi o texto do parser; a transcrição
   real de "três" pode vir "3", "trez" etc. — os dois formatos foram medidos por texto.
-- **Título na variante extenso+extenso com fix proposto:** a sonda mediu o estado atual
-  ("Tomar remédio oito"); o comportamento do título DEPOIS do fix dependeria de onde o texto é
-  cortado — não simulei o fix.
+- ~~**Título na variante extenso+extenso com fix proposto**~~ **MEDIDO pelo follow-up**: no
+  gatilho (noite × 1–6) o título sai limpo ("Tomar remédio"); fora dele ("às tres e oito" sem
+  período, "… da manha") o título sujo permanece — pré-existente, fora do gatilho, travado em
+  teste como estado atual.
 - **A faixa `noite` incluindo "noitinha"/"noitezinha"** (`PERIOD_PHRASE` as tem, a
   `TRAILING_PERIOD` não): não medi essa divergência.

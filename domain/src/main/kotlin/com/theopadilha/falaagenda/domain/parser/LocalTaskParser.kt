@@ -1180,13 +1180,18 @@ class LocalTaskParser(
         }
         var minute = hit.minute
         var consumed = hit.match.value
+        // A cauda veio de um DÍGITO ("e 8") ou de uma palavra de fração ("e meia")? Só o dígito
+        // poderia ser OUTRA hora — "meia" é fração de hora por natureza e nunca abre tomada.
+        var caudaEDigito = false
         trailingMinutes(remaining, hit.match.range.last + 1)?.let { tail ->
             if (minute + tail.first <= 59) {
                 minute += tail.first
                 consumed += tail.second
+                caudaEDigito = Regex("""\s+e\s+\d{1,2}\b""").matches(tail.second)
             }
         }
         var period = hit.period
+        var periodoVeioDaCauda = false
         // "às 12 e meia da noite": o período vem depois do "e meia", não colado no número — sem
         // isto a hora saía 12:30 (meio-dia) em vez de 00:30.
         if (period.isBlank()) {
@@ -1195,8 +1200,33 @@ class LocalTaskParser(
                 if (p.range.first == after) {
                     period = p.groupValues[1]
                     consumed += p.value
+                    periodoVeioDaCauda = true
                 }
             }
+        }
+        // "às tres e 8 da noite": o período chegou pela CAUDA do "e <num>", e a noite não alcança
+        // 1–6 (`applyPeriodHour` só move 7–11 e 12) — a hora cravada 03:08 contradiz o período que
+        // ela disse. O "8" então não é minuto: "e 8 da noite" é uma SEGUNDA tomada (a doutrina do
+        // #126), só que detectada aqui dentro — o período pendurado na cauda fabricava um período
+        // para a primeira hora sem fechá-la, e nem a ambiguidade geral de 1–6 nem a regra das duas
+        // tomadas enxergavam o caso. Desfecho ambíguo com `time=null` e a nota de dois horários —
+        // o mesmo desfecho do #126 porque o desfecho é o MESMO (dois horários no mesmo dia);
+        // reutilizar a nota mantém o texto que ela vê em um lugar só.
+        //
+        // O gatilho é a COERÊNCIA período↔hora, não o valor: "às tres e 8 da manha" (03:08 ∈
+        // manhã) e "às 8 e meia da noite" (8→20, o período alcança) continuam cravando.
+        //
+        // atalho: só cauda numérica e só "noite" × 1–6 — a fração ("e meia", B4: 03:30 travado) e
+        // a zona 13–23 × noite ("15 da noite"?) e "madrugada" × 7–11 não foram medidas; revisitar
+        // quando houver corpus (24a leva, "Não confirmado").
+        if (periodoVeioDaCauda && caudaEDigito && period.contains("noite") && hit.hourRaw in 1..6) {
+            return TimeHit(
+                null,
+                TextNormalizer.compactSpaces(remaining.replace(consumed, " ")),
+                true,
+                NOTA_DUAS_TOMADAS,
+                hadPeriod = true,
+            )
         }
         // "às três" sem "da tarde"/"da manhã": 03:00 e 15:00 são igualmente plausíveis. Mantém o
         // palpite no rascunho, mas marca ambíguo para escalar — antes cravava madrugada com cara de

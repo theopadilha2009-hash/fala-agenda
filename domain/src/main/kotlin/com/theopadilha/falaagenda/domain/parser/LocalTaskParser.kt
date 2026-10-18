@@ -1234,10 +1234,43 @@ class LocalTaskParser(
         // O gatilho é a COERÊNCIA período↔hora, não o valor: "às tres e 8 da manha" (03:08 ∈
         // manhã) e "às 8 e meia da noite" (8→20, o período alcança) continuam cravando.
         //
-        // atalho: só cauda numérica e só "noite" × 1–6 — a fração ("e meia", B4: 03:30 travado) e
-        // a zona 13–23 × noite ("15 da noite"?) e "madrugada" × 7–11 não foram medidas; revisitar
+        // A variante EXTENSO+EXTENSO ("às tres e oito da noite") ficou fora deste gatilho no
+        // #129: o "oito" não está no MINUTE_TAIL nem no MINUTE_TAIL_WORDS, o trailingMinutes
+        // não consome a cauda, a cauda não é dígito e o TRAILING_PERIOD (que exige o período
+        // colado no fim do consumido) nem chega a rodar — a primeira hora crava 03:00 com
+        // ambiguous=false e a segunda (a 20h) SOBRA NO TÍTULO. O follow-up detecta a cauda em
+        // extenso como UNIDADE: "e <nome de hora>" seguido IMEDIATAMENTE do período — o mesmo
+        // par cauda+período do ramo numérico, só que o HOUR_WORD_TAIL casa o nome de hora (os
+        // mesmos de CLOCK_WORD/CLOCK_BARE_WORD; "meia" e as frações ficam de fora porque são
+        // minuto por natureza, B4: "às 3 e meia da noite" = 03:30 travado).
+        //
+        // atalho: só "noite" × 1–6 e o período COLADO na cauda — "às tres e oito da manha"
+        // (coerente) e "às tres e oito" (sem período) continuam com o título sujo de hoje; a
+        // zona 13–23 × noite ("15 da noite"?) e "madrugada" × 7–11 não foram medidas; revisitar
         // quando houver corpus (24a leva, "Não confirmado").
-        if (periodoVeioDaCauda && caudaEDigito && period.contains("noite") && hit.hourRaw in 1..6) {
+        var caudaEExtensa = false
+        if (period.isBlank()) {
+            HOUR_WORD_TAIL.find(remaining, hit.match.range.last + 1)?.let { ext ->
+                if (ext.range.first == hit.match.range.last + 1) {
+                    TRAILING_PERIOD.find(remaining, ext.range.last + 1)?.let { p ->
+                        if (p.range.first == ext.range.last + 1 &&
+                            p.groupValues[1] == "noite" &&
+                            hit.hourRaw in 1..6
+                        ) {
+                            period = "noite"
+                            consumed += ext.value + p.value
+                            periodoVeioDaCauda = true
+                            caudaEExtensa = true
+                        }
+                    }
+                }
+            }
+        }
+        if (periodoVeioDaCauda &&
+            (caudaEDigito || caudaEExtensa) &&
+            period.contains("noite") &&
+            hit.hourRaw in 1..6
+        ) {
             return TimeHit(
                 null,
                 TextNormalizer.compactSpaces(remaining.replace(consumed, " ")),
@@ -2929,6 +2962,13 @@ class LocalTaskParser(
 
         /** "às 12 e meia da noite": o período vem depois do minuto, não colado no número. */
         private val TRAILING_PERIOD = Regex("""\s+(?:a|da|de|na)\s+(manha|tarde|noite|madrugada)\b""")
+
+        /**
+         * A cauda "e <nome de hora>" que o `MINUTE_TAIL` não casa ("oito" não é minuto lá): os
+         * mesmos nomes de `CLOCK_WORD`/`CLOCK_BARE_WORD`. Frações ("meia", "quinze") ficam de
+         * fora — são minuto por natureza — e quem as consome é o `trailingMinutes` de sempre.
+         */
+        private val HOUR_WORD_TAIL = Regex("""\s+e\s+(?:$WORD_HOUR_ALT)\b""")
 
         /** "às vinte e cinco de maio": o "às" abre o dia do mês por extenso, não uma hora. */
         private val AS_DAY_OF_MONTH = Regex(

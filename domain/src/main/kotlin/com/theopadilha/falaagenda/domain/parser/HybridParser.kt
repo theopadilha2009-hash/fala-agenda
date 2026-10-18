@@ -88,6 +88,14 @@ class HybridParser(
          * A nota da recorrência **não** entra: o texto dela cobre as duas causas, e por isso o
          * juiz dela é o rascunho ([temConflito]).
          *
+         * [NotasDoRascunho.DATA_IMPOSSIVEL] entra, e também com uma ressalva que o texto não
+         * carrega: a forma do **mês deduzido** ("o dia 31 não existe em fevereiro") descreve uma
+         * fala coerente — o 31 existe, é o mês que o local deduziu que não o tem — e o remoto
+         * preenchendo o campo só a endereçou quando trouxe **o próprio dia dito** ([remotoRespondeuODiaDito]).
+         * A forma do **mês explícito** ("“31/02” não existe no calendário") é a fala inteira
+         * sendo a contradição, e qualquer data que o remoto trouxe já é a resposta a "o que ela
+         * quis?".
+         *
          * A lista mora aqui, e não em [NotasDoRascunho], por uma razão de contrato: este lote não
          * pode editar a origem das notas. O lugar certo dela é junto das outras marcas — o mesmo
          * argumento que fez `SOBRE_A_DATA` descer para lá vale aqui. **Não** é porque a origem é
@@ -96,6 +104,7 @@ class HybridParser(
          */
         val NOTAS_DE_CONFLITO = listOf(
             NotasDoRascunho.DATA_AMBIGUA,
+            NotasDoRascunho.DATA_IMPOSSIVEL,
             "O horário ficou ambíguo.",
             "e a hora dita não batem",
             "não a hora que você disse",
@@ -192,7 +201,13 @@ class HybridParser(
         //    recorrência com o campo ausente). São justamente as que o merge resolvia de propósito,
         //    e o custo que o `missing.isNotEmpty()` foi criado para conter.
         //  - este critério preserva **55**, todas de conflito e **nenhuma** de falta.
-        val ambiguidadeDoLocalAtropelada = localDraft.ambiguous && temConflito(localDraft)
+        //
+        // A última conjunção é a exceção da data impossível do mês deduzido: o remoto que trouxe o
+        // próprio dia dito (31/03 para o "dia 31" de fevereiro) resolveu de verdade, e aí o
+        // conflito acabou — [remotoRespondeuODiaDito].
+        val ambiguidadeDoLocalAtropelada = localDraft.ambiguous &&
+            temConflito(localDraft) &&
+            !remotoRespondeuODiaDito(localDraft, remoteDraft.localDate)
         val notes = notasDomescladas(
             locais = localDraft.notes,
             remotas = remoteDraft.notes,
@@ -247,6 +262,37 @@ class HybridParser(
         // Só a nota da recorrência precisa do rascunho: as outras causas estão no próprio texto.
         if (localDraft.notes.none { it.contains(NOTA_RECORRENCIA_AMBIGUA) }) return false
         return !regraRecorrenciaUtilizavel(localDraft.recurrence)
+    }
+
+    /**
+     * O remoto trouxe **o próprio dia que ela disse**?
+     *
+     * A pergunta só morde na nota de data impossível do **mês deduzido** — "o dia 31 não existe
+     * em fevereiro" dito em fevereiro. Ali a fala é coerente (o 31 existe em calendário algum), a
+     * contradição nasce da dedução do mês, e o remoto preenchendo o campo pode ter feito duas
+     * coisas opostas:
+     *
+     *  - **chutar** — 28/02 é o palpite de sempre, e o dia 31 que ela disse ficou intacto. O
+     *    conflito não foi endereçado: é o mesmo "preencheu por cima" que o merge já recusa, e a
+     *    ambiguidade do local sobrevive (`mergeRemote`);
+     *  - **resolver** — 31/03 é o dia dito em um mês em que ele existe: valor possível que ela
+     *    pode ter querido. Aí a nota cai e a caixa libera, como no caminho comum.
+     *
+     * A forma do **mês explícito** ("“31/02” não existe no calendário") não tem dia extraível, e
+     * aí qualquer data que o remoto trouxe já é a resposta a "o que ela quis?" — é o comportamento
+     * codificado pelo teste pré-existente de "consulta 31/02/2027 às 10h", que este lote mantém.
+     *
+     * Fora da nota, a resposta é `false`: sem data impossível no local, este juiz não é quem
+     * decide — e o remoto sem data não respondeu nada.
+     */
+    private fun remotoRespondeuODiaDito(localDraft: ParsedTaskDraft, dataRemota: LocalDate?): Boolean {
+        if (dataRemota == null) return false
+        val nota = localDraft.notes.firstOrNull { it.startsWith(NotasDoRascunho.DATA_IMPOSSIVEL) }
+            ?: return false
+        val diaDito = Regex("""o dia (\d{1,2}) não existe em""").find(nota)
+            ?.groupValues?.get(1)?.toIntOrNull()
+            ?: return true
+        return dataRemota.dayOfMonth == diaDito
     }
 
     /**

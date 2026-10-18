@@ -19,9 +19,10 @@ import org.junit.Test
  * Há um SEGUNDO corpus aqui, e ele existe por causa do review do PR #83: o de CONTINUAÇÃO. O
  * "não" é a palavra mais comum do português numa continuação ("não vou poder ir", "não deu
  * tempo"), e tratá-lo como conector de correção custava **2400 de 3360** frases com as 21 caudas
- * de então — o comando certo deixava de agir. Hoje a lista tem 22 caudas e o espaço é 3520; sob o
- * gatilho largo o bloqueio seria a família inteira. Os dois números juntos são o que prende o fix:
- * o corpus de correção prende o benefício, o de continuação prende o custo.
+ * de então — o comando certo deixava de agir. Hoje a lista tem 21 caudas e o espaço é 3360 (é o
+ * número que o log imprime: `casos=3360`); sob o gatilho largo o bloqueio seria a família inteira.
+ * Os dois números juntos são o que prende o fix: o corpus de correção prende o benefício, o de
+ * continuação prende o custo.
  *
  * O alvo esperado de cada caso é ESCRITO À MÃO aqui, e não calculado com o raciocínio do código
  * (um oráculo que recalcula a doutrina só concorda consigo mesmo).
@@ -164,10 +165,11 @@ class SpeechIntentCorrecaoInvarianteTest {
      * O eixo que o #83 deixou em aberto: o complemento depois da CÓPULA, por FORMA.
      *
      * O invariante é o mesmo de [nenhumaCorrecaoAgeSobreOAlvoDescartado] — nenhuma correção pode
-     * agir sobre o alvo que ela descartou —, mas o corpus é o que o primeiro não media. Antes do
-     * fix, este teste morre com **117 de 405** casos agindo no descartado (o substantivo nu em 36 de
-     * 36, a preposição em 36 de 36, o pronome em 18 de 36 e a correção explícita em 9 de 27); com o
-     * fix ele fica em zero.
+     * agir sobre o alvo que ela descartou —, mas o corpus é o que o primeiro não media. O corpus
+     * tem **135 casos** (3 preâmbulos × 3 verbos × 15 complementos) e **117 deles têm alvo novo**
+     * (`casosComAlvoNovo`, o número que o log imprime). Antes do fix, **81 de 135** agiam no
+     * descartado — 117 é o tamanho do subconjunto com alvo novo, não a contagem de violações; com o
+     * fix, as violações vão a zero.
      *
      * O custo é declarado e preso separadamente em [asFormasDeContinuacaoQueTemDeContinuarAgindo].
      */
@@ -278,14 +280,23 @@ class SpeechIntentCorrecaoInvarianteTest {
     )
 
     /**
-     * O custo DECLARADO do fix da cópula: a continuação cujo complemento tem a forma de sintagma
+     * A família AMBÍGUA do fix da cópula: a continuação cujo complemento tem a forma de sintagma
      * nominal é lida como correção, e o app pergunta em vez de agir.
      *
-     * `"não é possível"` e `"não é pra mim"` são as duas formas que a frase NÃO separa de uma
-     * correção: "possível" é adjetivo predicativo e "dentista" é substantivo, mas a FORMA do
-     * complemento é a mesma (palavra nua depois da cópula), e distingui-los pediria léxico, não
-     * sintaxe. O desfecho é o lado seguro — deixa de agir, não age sobre o descartado —, e o número
-     * fica preso para não subir calado.
+     * As caudas são as 17 medidas no corpus do custo (`SpeechIntentCorrecaoComplementoTest`), e
+     * não as 2 que estavam presas aqui antes — o "153 de 153" do corpo do #103 incluía 36 casos que
+     * JÁ bloqueavam na base, e o número preso em teste cobria só 2 caudas, quando a família medida
+     * é de 17 (13 delas custo marginal — agiam na base e passaram a bloquear; 4 já bloqueavam:
+     * `"não é o momento"`, `"não é meu médico"`, `"não é o caso"`, `"não é hoje"`).
+     *
+     * `"possível"` é adjetivo predicativo e `"dentista"` é substantivo, mas a FORMA do complemento
+     * é a mesma (palavra nua depois da cópula), e distingui-los pediria léxico, não sintaxe. O
+     * desfecho é o lado seguro — deixa de agir, não age sobre o descartado —, e o número fica preso
+     * por igualdade para não subir nem cair calado.
+     *
+     * O nome é AMBÍGUA, e não "custo", porque é o mesmo rótulo que
+     * `SpeechIntentCorrecaoComplementoTest` usa para a mesma família: a doutrina é uma só — quando a
+     * FORMA não decide entre correção e continuação, o desfecho escala.
      *
      * O que NÃO entrou aqui: a família clínica ("não quero mais", "não tenho como", "não vou poder
      * ir"), que não tem cópula e por isso não é tocada pelo critério. Ela segue em
@@ -294,6 +305,21 @@ class SpeechIntentCorrecaoInvarianteTest {
     private val caudasQueACopulaBloqueia = listOf(
         "não é possível",
         "não é pra mim",
+        "não é o momento",
+        "não é meu médico",
+        "não é assim",
+        "não é bom",
+        "não é o caso",
+        "não é necessário",
+        "não é urgente",
+        "não é pra agora",
+        "não é da minha conta",
+        "não é muito longe",
+        "não é aqui",
+        "não é verdade",
+        "não é certo",
+        "não é bem assim",
+        "não é hoje",
     )
 
     /** Os alvos do corpus de continuação, com o alvo que o app age hoje (sem correção nenhuma). */

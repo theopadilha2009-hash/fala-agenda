@@ -15,6 +15,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -54,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,7 +66,10 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
@@ -451,19 +456,7 @@ fun HomeScreen(
                 onShareDay = {
                     closeAnd {
                         val today = LocalDate.now()
-                        val text = AgendaFormat.todayShare(
-                            agenda.today.map {
-                                AgendaFormat.DayShareLine(
-                                    title = it.series.title,
-                                    time = it.series.localTime,
-                                    observation = it.series.observation,
-                                    // A pendente que atravessou a meia-noite entra em
-                                    // "Hoje": sem a marca, ela era mandada para a família
-                                    // como se fosse de hoje.
-                                    dayMark = AgendaFormat.shareDayMark(it.occurrence.localDate, today),
-                                )
-                            },
-                        )
+                        val text = AgendaFormat.todayShare(shareLinesOf(agenda.today, today))
                         openOrReport(
                             DeviceIntents.shareText(text, "Enviar o dia"),
                             "Não consegui abrir o compartilhamento neste celular.",
@@ -945,7 +938,12 @@ internal fun homeHeadline(
     today: LocalDate,
 ): String {
     val agenda = agendaUi.sections
-    val next = (agenda.today + agenda.upcoming).minByOrNull { it.occurrence.scheduledAt }
+    // O mais próximo pelo **aviso**, que é o instante que a frase anuncia logo abaixo: com
+    // `scheduledAt` ela escolhia por um campo e descrevia por outro, e os dois divergem por
+    // desenho — o adiamento das 08:00 para as 08:30 e o aviso deslocado pelo silêncio noturno
+    // fazem o compromisso mais próximo ser outro. O `sectionsOf` do repositório ordena pela
+    // hora marcada e chega à manchete assim; quem decide aqui não pode depender disso.
+    val next = (agenda.today + agenda.upcoming).minByOrNull { AgendaFormat.avisoInstant(it) }
     // O mesmo `missedReason` que decide as seções de baixo: a manchete não pode ter a sua
     // própria noção de "eu não avisei", senão o topo diz "3 recados ficaram para trás" e a
     // seção logo abaixo diz "Não consegui avisar" sobre o mesmo item. Uma conta, dois usos.
@@ -954,13 +952,48 @@ internal fun homeHeadline(
         nowTime = nowTime,
         today = today,
         nextTitle = next?.series?.title,
-        nextDate = next?.occurrence?.localDate,
-        nextTime = next?.series?.localTime,
+        // A manchete anuncia o **aviso**, como o cartão logo abaixo e o widget: a mesma peça
+        // (`AgendaFormat.occurrenceDay`/`occurrenceTime`), senão a home se contradiz dentro da
+        // própria tela — o cartão dizendo 08:00 e a frase do topo dizendo 14:00 sobre a mesma
+        // tarefa. Fechar uma superfície não fecha o eixo: foi assim que o #107 fechou o widget e
+        // deixou a home com o mesmo defeito.
+        nextDate = next?.let(AgendaFormat::occurrenceDay),
+        nextTime = next?.let(AgendaFormat::occurrenceTime),
         missedCount = agendaUi.sections.missed.size,
         leituraFalhou = agendaUi.failed,
         naoAvisados = naoAvisados,
     )
 }
+
+/**
+ * As linhas do "Enviar o dia" — o texto que sai do aplicativo para a família.
+ *
+ * Extraído do composable porque a hora que ele carrega é a do **aviso** que vai tocar, e não a
+ * da série: com a série, ela mandava "Remédio às 14:00" para quem cuida dela e o alarme tocava
+ * às 8h — e quem recebe não tem como conferir na tela, nem ela volta a ver o texto depois de
+ * enviado. A decisão é a mesma do cartão, da manchete e do widget (`AgendaFormat.occurrenceTime`),
+ * e o dia acompanha pela mesma peça.
+ *
+ * O `today` entra por parâmetro para a decisão ser pura, como em [homeHeadline]: é ela que decide
+ * a marca "ontem" da pendente que atravessou a meia-noite.
+ */
+internal fun shareLinesOf(items: List<AgendaItem>, today: LocalDate): List<AgendaFormat.DayShareLine> =
+    items
+        // A ordem acompanha a hora anunciada, e não a da lista: `sectionsOf` ordena por
+        // `scheduledAt`, que é a hora **marcada** e não a do aviso — e é o aviso que a linha
+        // carrega. Com o adiamento e o silêncio noturno, a dose das 08:00 que foi para as 08:30
+        // saía depois da das 09:00, e o texto chegava à família fora de ordem.
+        .sortedBy { AgendaFormat.avisoInstant(it) }
+        .map { item ->
+            AgendaFormat.DayShareLine(
+                title = item.series.title,
+                time = AgendaFormat.occurrenceTime(item),
+                observation = item.series.observation,
+                // A pendente que atravessou a meia-noite entra em "Hoje": sem a marca, ela era
+                // mandada para a família como se fosse de hoje.
+                dayMark = AgendaFormat.shareDayMark(AgendaFormat.occurrenceDay(item), today),
+            )
+        }
 
 private fun hasMicPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -1046,72 +1079,113 @@ internal fun MicDock(
         state == VoiceState.IDLE -> "Falar uma tarefa"
         else -> "Parar de ouvir"
     }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    // O dock é o `bottomBar` do `Scaffold` e não tinha teto nem rolagem: medido em 07/10/2026,
+    // em 2,0x o conteúdo dele mede 983 px dos 1600 da janela e sobram 228 px para a lista —
+    // menos que um cartão (280 px), então nenhuma tarefa aparece inteira e o "Concluir" do
+    // cartão sai da árvore de toque (`boundsInRoot = (0,0,0,0)`). A lista tem que continuar
+    // sendo a tela: o dock ganha um teto e o que não couber rola dentro dele, em vez de
+    // empurrar o dia dela para fora.
+    //
+    // O teto é a metade da janela. Ele só entra em cena com a **fonte do sistema aumentada**:
+    // em 1,0x a home fica exatamente como sempre foi — uma única área rolável, a lista — e
+    // nenhum teste de escala normal muda de resultado. Em 1,3x/1,5x o dock inteiro ainda cabe
+    // folgado (748-800 px dos 1600) e o teto também não morde; ele morde em 2,0x, que é onde o
+    // defeito mora.
+    //
+    // A altura que decide é a **natural**, medida no `Column` interno: com a rolagem no
+    // `Column` externo, o `verticalScroll` mede o filho com altura livre, então a medida do
+    // interno não é a já limitada pelo teto — sem isso o teto se confirmaria sozinho e o dock
+    // ficaria preso em metade da tela para sempre.
+    val teto = LocalConfiguration.current.screenHeightDp.dp / 2
+    var alturaNatural by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val fonteGrande = density.fontScale > 1f
+    val tetoEmPx = with(density) { teto.roundToPx() }
+    val precisaRolar = fonteGrande && alturaNatural > tetoEmPx
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.background)
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .navigationBarsPadding(),
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = TextAlign.Center,
-            // O anúncio da leitura de tela sai daqui, do texto que ela vê — e não da
-            // descrição do microfone, que descreve a *ação* do toque ("Falar uma tarefa" →
-            // "Parar de ouvir" já nasce em PREPARING). De PREPARING para LISTENING aquela
-            // descrição é a mesma string, e o "Pode falar agora" ficava mudo no momento em
-            // que ela precisa falar. Só a troca deste texto gera o anúncio, e ele muda nos
-            // três estados que interessam.
-            //
-            // Com o recado cortado, o anúncio passa para a linha do corte: dois anúncios no
-            // mesmo instante é pior que o silêncio, e o do corte é o que ela precisa ouvir.
-            modifier = Modifier.semantics {
-                if (!truncated) liveRegion = LiveRegionMode.Polite
-            },
-        )
-        if (truncated) {
-            Text(
-                TRUNCATED_NOTICE,
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
-        }
-        if (state == VoiceState.ERROR) {
-            Text("Toque de novo, ou escreva o recado.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-        }
-        if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
-            Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-        }
-        PulsingMic(
-            state = state,
-            contentDescription = action,
-            onClick = onMic,
-        )
-        // Entendendo o recado a saída continua à mão: com a IA o parse leva até 20 s, e
-        // sem estes botões ela ficava sem como escrever a tarefa nem usar os atalhos
-        // enquanto esperava — com o microfone fora da mão dela, era ficar sem saída.
-        if (state == VoiceState.IDLE || state == VoiceState.UNDERSTANDING || state == VoiceState.ERROR) {
-            // No erro a saída de escrever é obrigatória: se o microfone não vai, é por aqui que ele cria a tarefa.
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth(),
+        // A coluna de fora é quem rola (e só quando precisa); a de dentro é o conteúdo, e é a
+        // altura **dela** que decide — o `verticalScroll` mede o filho com altura livre, então
+        // a medida não é a já limitada pelo teto. Sem isso o teto se confirmaria sozinho e o
+        // dock ficaria preso em metade da tela para sempre.
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (precisaRolar) Modifier.heightIn(max = teto) else Modifier)
+                .then(if (precisaRolar) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { alturaNatural = it.height }
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                listOf(5L to "5 min", 15L to "15 min", 60L to "1 hora").forEach { (minutes, chip) ->
-                    FilterChip(
-                        selected = false,
-                        onClick = { onQuick(minutes) },
-                        modifier = Modifier.heightIn(min = 56.dp),
-                        label = { Text(chip, style = MaterialTheme.typography.labelLarge) },
-                    )
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                // O anúncio da leitura de tela sai daqui, do texto que ela vê — e não da
+                // descrição do microfone, que descreve a *ação* do toque ("Falar uma tarefa" →
+                // "Parar de ouvir" já nasce em PREPARING). De PREPARING para LISTENING aquela
+                // descrição é a mesma string, e o "Pode falar agora" ficava mudo no momento em
+                // que ela precisa falar. Só a troca deste texto gera o anúncio, e ele muda nos
+                // três estados que interessam.
+                //
+                // Com o recado cortado, o anúncio passa para a linha do corte: dois anúncios no
+                // mesmo instante é pior que o silêncio, e o do corte é o que ela precisa ouvir.
+                modifier = Modifier.semantics {
+                    if (!truncated) liveRegion = LiveRegionMode.Polite
+                },
+            )
+            if (truncated) {
+                Text(
+                    TRUNCATED_NOTICE,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+            if (state == VoiceState.ERROR) {
+                Text("Toque de novo, ou escreva o recado.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+            }
+            if (partial.isNotBlank() && (state == VoiceState.LISTENING || state == VoiceState.UNDERSTANDING)) {
+                Text(partial, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+            }
+            PulsingMic(
+                state = state,
+                contentDescription = action,
+                onClick = onMic,
+            )
+            // Entendendo o recado a saída continua à mão: com a IA o parse leva até 20 s, e
+            // sem estes botões ela ficava sem como escrever a tarefa nem usar os atalhos
+            // enquanto esperava — com o microfone fora da mão dela, era ficar sem saída.
+            if (state == VoiceState.IDLE || state == VoiceState.UNDERSTANDING || state == VoiceState.ERROR) {
+                // No erro a saída de escrever é obrigatória: se o microfone não vai, é por aqui que ele cria a tarefa.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    listOf(5L to "5 min", 15L to "15 min", 60L to "1 hora").forEach { (minutes, chip) ->
+                        FilterChip(
+                            selected = false,
+                            onClick = { onQuick(minutes) },
+                            modifier = Modifier.heightIn(min = 56.dp),
+                            label = { Text(chip, style = MaterialTheme.typography.labelLarge) },
+                        )
+                    }
+                }
+                TextButton(onClick = onWrite, modifier = Modifier.heightIn(min = 56.dp)) {
+                    Text("Escrever tarefa", style = MaterialTheme.typography.labelLarge)
                 }
             }
-            TextButton(onClick = onWrite, modifier = Modifier.heightIn(min = 56.dp)) {
-                Text("Escrever tarefa", style = MaterialTheme.typography.labelLarge)
             }
         }
     }
@@ -1149,16 +1223,19 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     } else {
         items(items, key = { it.occurrence.id }) { item ->
             val today = LocalDate.now()
-            val date = AgendaFormat.dateLabel(item.occurrence.localDate, today)
-            val time = AgendaFormat.time(item.series.localTime)
-            val relative = AgendaFormat.fromNow(item.occurrence.scheduledAt, Instant.now())
+            // A hora mostrada é a do **aviso**, não a da série: com o horário da série o cartão
+            // dizia 14:00 para a dose cujo alarme estava armado às 08:00. Mesma decisão do
+            // widget (#107), ver `AgendaFormat.occurrenceTime`. O dia acompanha — o aviso
+            // deslocado pelo silêncio noturno toca às 08:00 de amanhã.
+            val date = AgendaFormat.dateLabel(AgendaFormat.occurrenceDay(item), today)
+            val time = AgendaFormat.time(AgendaFormat.occurrenceTime(item))
+            val agora = Instant.now()
+            val relative = AgendaFormat.fromNow(AgendaFormat.avisoInstant(item), agora)
             // A pendente de ontem vive na seção "Hoje": ela diz que está atrasada em vez de
-            // um "há N h" que se lê igual ao das tarefas de hoje.
-            val late = if (item.occurrence.status == OccurrenceStatus.PENDING) {
-                AgendaFormat.lateMark(item.occurrence.localDate, today)
-            } else {
-                null
-            }
+            // um "há N h" que se lê igual ao das tarefas de hoje. E a de hoje cujo aviso já
+            // passou sem a escada estar aberta (`nextReminderAt` nulo) entra pela mesma peça:
+            // ela lia "Remédio, hoje · 08:00" às 10:00 sem nada dizendo que a hora passou.
+            val late = if (AgendaFormat.isLate(item, today, agora)) "atrasada" else null
             val detail = buildString {
                 append(date)
                 append(" · ")

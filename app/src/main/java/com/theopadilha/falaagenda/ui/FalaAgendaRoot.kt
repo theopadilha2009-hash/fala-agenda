@@ -170,18 +170,7 @@ fun FalaAgendaRoot(
     val openForEdit: (AgendaItem) -> Unit = { item ->
         editingItemId = item.occurrence.id
         draftTruncated = false
-        draft = ParsedTaskDraft(
-            title = item.series.title,
-            localDate = item.occurrence.localDate,
-            localTime = item.series.localTime,
-            recurrence = item.series.recurrence,
-            confidence = 1.0,
-            missingFields = emptySet(),
-            ambiguous = false,
-            transcript = "",
-            amountCents = item.series.amountCents,
-            observation = item.series.observation,
-        )
+        draft = editDraftOf(item)
         nav.navigate("confirm") {
             launchSingleTop = true
         }
@@ -765,6 +754,33 @@ internal fun confirmWrite(nav: NavController, viewModel: HomeViewModel, text: St
         nav.popBackStack()
     }
 }
+
+/**
+ * O rascunho com que a tela de edição abre: os campos da série, e a **hora do aviso** da
+ * ocorrência — não a da série.
+ *
+ * A série tem um horário só, e ele pode não ser o do alarme desta dose: a edição de uma dose de
+ * outra data preserva de propósito o `scheduledAt` das que ela não tocou, o adiamento grava
+ * `nextReminderAt`/`snoozedUntil` sem tocar em `localTime`, e o silêncio noturno desloca a
+ * repetição para as 08:00 do dia seguinte. Com o horário da série, ela abria "Editar tarefa" na
+ * dose de hoje lendo 14:00 e salvava por cima — o app dizia uma hora e o alarme tocava outra.
+ *
+ * A mesma peça que o cartão usa (`AgendaFormat.occurrenceTime`), para as duas pontas não
+ * voltarem a divergir. O **dia** continua o da ocorrência: é ele que a edição grava como data
+ * escolhida, e é o que o repositório mantém (ver `EditarDoseDaSerieNaoPerdeAsOutrasTest`).
+ */
+internal fun editDraftOf(item: AgendaItem): ParsedTaskDraft = ParsedTaskDraft(
+    title = item.series.title,
+    localDate = item.occurrence.localDate,
+    localTime = AgendaFormat.occurrenceTime(item),
+    recurrence = item.series.recurrence,
+    confidence = 1.0,
+    missingFields = emptySet(),
+    ambiguous = false,
+    transcript = "",
+    amountCents = item.series.amountCents,
+    observation = item.series.observation,
+)
 
 private const val NO_EPOCH_DAY = Long.MIN_VALUE
 private const val NO_SECOND_OF_DAY = -1

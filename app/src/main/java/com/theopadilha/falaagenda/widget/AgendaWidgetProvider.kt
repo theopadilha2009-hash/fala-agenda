@@ -13,6 +13,7 @@ import com.theopadilha.falaagenda.FalaAgendaApplication
 import com.theopadilha.falaagenda.MainActivity
 import com.theopadilha.falaagenda.R
 import com.theopadilha.falaagenda.data.prefs.ThemeMode
+import com.theopadilha.falaagenda.data.repo.AgendaItem
 import com.theopadilha.falaagenda.data.repo.AgendaSections
 import com.theopadilha.falaagenda.domain.model.OccurrenceStatus
 import com.theopadilha.falaagenda.ui.AgendaFormat
@@ -98,10 +99,14 @@ class AgendaWidgetProvider : AppWidgetProvider() {
             // continua acionável), e o `minByOrNull` sozinho elegia justamente ela: o widget
             // anunciava "Próxima — Tomar remédio — Ontem · 08:00" da meia-noite às 08:00, que
             // é a janela em que ela olha o telefone para planejar o dia.
+            //
+            // O instante da escolha é o do AVISO, não o da hora marcada: a dose adiada para as
+            // 08:30 tem `scheduledAt` às 08:00, e escolher por ele elegia a dose errada enquanto
+            // o `AlarmManager` tinha a outra armada (ver [instanteDoAviso]).
             val next = pendentes
-                .filter { !it.occurrence.scheduledAt.isBefore(now) }
-                .minByOrNull { it.occurrence.scheduledAt }
-                ?: pendentes.minByOrNull { it.occurrence.scheduledAt }
+                .filter { !instanteDoAviso(it).isBefore(now) }
+                .minByOrNull { instanteDoAviso(it) }
+                ?: pendentes.minByOrNull { instanteDoAviso(it) }
             return if (next == null) {
                 Snapshot(
                     title = "Nada marcado",
@@ -109,21 +114,51 @@ class AgendaWidgetProvider : AppWidgetProvider() {
                     empty = true,
                 )
             } else {
+                val avisoEm = instanteDoAviso(next)
+                val horaDoAviso = avisoEm.atZone(next.series.zoneId).toLocalTime()
                 Snapshot(
                     title = next.series.title,
-                    whenLabel = "${AgendaFormat.dateLabel(next.occurrence.localDate, today)} · ${AgendaFormat.time(next.series.localTime)}",
+                    whenLabel = "${AgendaFormat.dateLabel(avisoEm.atZone(next.series.zoneId).toLocalDate(), today)} · ${AgendaFormat.time(horaDoAviso)}",
                     empty = false,
                     // Sem nada à frente, o que sobrou é o que já passou — e o rótulo diz isso.
-                    // O critério aqui é a HORA (`scheduledAt`), e o da home é o DIA
-                    // (`AgendaFormat.headline` reserva "Atrasada" para a data vencida e mostra
-                    // a tarefa de hoje com horário passado como "há 7 h"): às 15:00, com o
-                    // remédio das 08:00 pendente e nada à frente, o widget diz
-                    // "Atrasada — Hoje · 08:00" e a home diz "há 7 h". A divergência é
-                    // decisão de produto e está registrada no PR.
-                    late = next.occurrence.scheduledAt.isBefore(now),
+                    // O critério aqui é a HORA, e o da home é o DIA (`AgendaFormat.headline`
+                    // reserva "Atrasada" para a data vencida e mostra a tarefa de hoje com
+                    // horário passado como "há 7 h"): às 15:00, com o remédio das 08:00 pendente
+                    // e nada à frente, o widget diz "Atrasada — Hoje · 08:00" e a home diz
+                    // "há 7 h". A divergência é decisão de produto e está registrada no PR.
+                    //
+                    // A hora comparada é a do aviso, a mesma que o rótulo mostra: com o remédio
+                    // das 22:00 cuja repetição foi deslocada para as 08:00, o widget diz
+                    // "Próxima — Amanhã · 08:00" em vez de anunciar como atrasado um instante
+                    // que ele mesmo já não anuncia.
+                    late = avisoEm.isBefore(now),
                 )
             }
         }
+
+        /**
+         * O instante do aviso que vai tocar nesta ocorrência: o que o `AlarmManager` tem armado.
+         *
+         * `scheduledAt` é a hora marcada e `series.localTime` o horário da série — os dois podem
+         * estar defasados do aviso real, e é o aviso que o widget precisa anunciar. Quem decide é
+         * a mesma peça que decide o disparo: [ReminderScheduler.schedule] entrega ao alarme
+         * exatamente `occurrence.nextReminderAt`, e é essa a verdade.
+         *
+         * Sem aviso armado (`nextReminderAt` nulo: escada encerrada, ou ocorrência nascida vencida
+         * sem alarme) não há instante de aviso, e o que resta é a hora marcada — o que o widget
+         * sempre mostrou.
+         *
+         * Era por aqui que o widget mentia sobre a hora em três situações medidas:
+         *  - a edição de uma dose de outra data preserva o `scheduledAt` das que ela não tocou
+         *    enquanto a série passa a carregar o horário novo: o widget lia `series.localTime` e
+         *    anunciava 14:00 para a dose cujo alarme estava armado às 08:00;
+         *  - o `snooze` grava `nextReminderAt` e não toca em `scheduledAt` nem em `localTime`:
+         *    o adiamento das 08:30 continuava anunciado como 08:00;
+         *  - o silêncio noturno desloca a repetição para as 08:00 do dia seguinte, e o widget
+         *    anunciava "Hoje · 22:00" sob o kicker "Próxima" — um instante já passado.
+         */
+        private fun instanteDoAviso(item: AgendaItem): Instant =
+            item.occurrence.nextReminderAt ?: item.occurrence.scheduledAt
 
         /**
          * Leitura que falha vira aviso no widget: em branco ela não saberia se não tem

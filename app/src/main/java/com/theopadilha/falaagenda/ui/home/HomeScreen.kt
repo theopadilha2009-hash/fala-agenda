@@ -89,6 +89,7 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.platform.DeviceIntents
 import com.theopadilha.falaagenda.platform.ManufacturerHint
 import com.theopadilha.falaagenda.reminders.NotificationHelper
+import com.theopadilha.falaagenda.reminders.SondaDeVoz
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.speech.unwrapActivity
@@ -193,6 +194,9 @@ fun HomeScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         // Voltou dos Ajustes: o cartão some sozinho quando o que faltava foi ligado.
         micGranted = hasMicPermission(context)
+        // Inclusive da instalação da voz: o `false` guardado pela sonda é do aparelho de antes
+        // dela instalar os dados, e o cartão "sem a voz" não pode sobreviver ao conserto.
+        SondaDeVoz.reMedirSeSemVoz(context)
         alerts = NotificationHelper.reminderAlerts(context)
         batteryOk = DeviceIntents.isBatteryUnrestricted(context)
         // A permissão de alarme exato também se lê de novo: sem isto, ligar o acesso nos

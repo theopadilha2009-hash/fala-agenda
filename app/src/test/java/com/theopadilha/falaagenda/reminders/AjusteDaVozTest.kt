@@ -144,9 +144,65 @@ class AjusteDaVozTest {
         assertThat(canal!!.sound).isNotNull()
     }
 
+    /**
+     * O fluxo de conserto inteiro: o ajuste disse SEM_VOZ, ela tocou no botão, instalou a voz e
+     * voltou. A home relê o veredito no ON_RESUME, e a sonda re-medida — o cartão que sobreviveu
+     * ao conserto até matarem o processo era o mesmo "avisos OK" na direção contrária.
+     */
+    @Test
+    fun aVozQueFaltouEMedidaDeNovoQuandoElaVoltaDaInstalacao() {
+        liberarNotificacoes()
+        aparelhoAudivel()
+        canalSaudavel()
+        sondaQueResponde(sabeFalar = false)
+        assertThat(NotificationHelper.reminderAlerts(contexto)).isEqualTo(ReminderAlerts.SEM_VOZ)
+
+        val nova = SintetizadorQueResponde(sabeFalar = true)
+        SondaDeVoz.criarVoz = { nova }
+        SondaDeVoz.reMedirSeSemVoz(contexto)
+        nova.responder()
+
+        assertThat(NotificationHelper.reminderAlerts(contexto)).isEqualTo(ReminderAlerts.OK)
+    }
+
+    /**
+     * A re-medição não apaga o `false` velho antes de a resposta nova chegar: enquanto o motor
+     * responde, o ajuste continua dizendo o que sabia. Zerar para `null` no meio faria a releitura
+     * do resume responder OK e o cartão piscar — sumir e voltar na leitura seguinte.
+     */
+    @Test
+    fun aRemedicaoNaoApagaOVereditoAntesDaResposta() {
+        liberarNotificacoes()
+        aparelhoAudivel()
+        canalSaudavel()
+        sondaQueResponde(sabeFalar = false)
+
+        val nova = SintetizadorQueResponde(sabeFalar = false)
+        SondaDeVoz.criarVoz = { nova }
+        SondaDeVoz.reMedirSeSemVoz(contexto)
+        // O motor da re-medição ainda não respondeu.
+
+        assertThat(NotificationHelper.reminderAlerts(contexto)).isEqualTo(ReminderAlerts.SEM_VOZ)
+    }
+
+    /** Quem tem voz não é re-medido: o conserto é para quem o cartão disse que estava sem voz. */
+    @Test
+    fun aRemedicaoIgnoraQuemTemVoz() {
+        liberarNotificacoes()
+        aparelhoAudivel()
+        canalSaudavel()
+        sondaQueResponde(sabeFalar = true)
+
+        val nova = SintetizadorQueResponde(sabeFalar = true)
+        SondaDeVoz.criarVoz = { nova }
+        SondaDeVoz.reMedirSeSemVoz(contexto)
+
+        assertThat(nova.perguntou).isFalse()
+        assertThat(NotificationHelper.reminderAlerts(contexto)).isEqualTo(ReminderAlerts.OK)
+    }
+
     /** Um sintetizador que só responde a "sabe falar?" — é a única pergunta da sonda. */
-    private class SintetizadorQueResponde(private val sabeFalar: Boolean) : SintetizadorDeVoz {
-        var perguntou = false
+    private class SintetizadorQueResponde(private val sabeFalar: Boolean) : SintetizadorDeVoz {        var perguntou = false
         private var esperando: ((Boolean) -> Unit)? = null
 
         override fun quandoPronto(bloco: (Boolean) -> Unit) {

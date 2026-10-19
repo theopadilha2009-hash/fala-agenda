@@ -42,6 +42,15 @@ internal fun reminderAlertCard(alerts: ReminderAlerts): ReminderAlertCard? = whe
         text = "Assim o lembrete aparece na tela, mas não faz barulho. Toque abaixo e aumente o volume do alarme.",
         button = "Aumentar o volume",
     )
+    // O alarme TOCA — o canal está certo e o volume está acima do zero —, mas o aparelho não tem a
+    // voz em português do Brasil, e o recado falado não sai. O cartão não mente em nenhuma direção:
+    // não diz "sem som" (o alarme soa) e não promete a fala que não vem. Ela reclamava que "o áudio
+    // nunca funciona" num app que se declarava saudável; este é o estado que faltava dizer.
+    ReminderAlerts.SEM_VOZ -> ReminderAlertCard(
+        title = "O celular está sem a voz em português",
+        text = "Assim o lembrete toca o alarme, mas não fala em voz alta. Toque abaixo para instalar a voz em português.",
+        button = "Instalar a voz",
+    )
 }
 
 /** O que o toque no cartão precisa abrir. */
@@ -54,6 +63,9 @@ internal enum class AlertFix {
 
     /** O canal está certo e o volume do aparelho não: os Ajustes de som, que é onde se sobe. */
     OPEN_SOUND_SETTINGS,
+
+    /** O alarme toca, mas o aparelho não tem a voz em português: instalar os dados de voz. */
+    INSTALAR_VOZ,
 }
 
 /**
@@ -78,6 +90,7 @@ internal fun alertFix(alerts: ReminderAlerts): AlertFix? = when (alerts) {
     ReminderAlerts.OFF -> AlertFix.ASK_NOTIFICATIONS
     ReminderAlerts.QUIET -> AlertFix.OPEN_CHANNEL_SETTINGS
     ReminderAlerts.APARELHO_MUDO -> AlertFix.OPEN_SOUND_SETTINGS
+    ReminderAlerts.SEM_VOZ -> AlertFix.INSTALAR_VOZ
 }
 
 /**

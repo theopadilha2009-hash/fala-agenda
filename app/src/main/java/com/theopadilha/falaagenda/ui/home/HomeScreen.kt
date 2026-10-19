@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
@@ -613,6 +614,13 @@ fun HomeScreen(
                                             AlertFix.OPEN_SOUND_SETTINGS -> openOrReport(
                                                 soundSettings(),
                                                 "Não consegui abrir os ajustes de som deste celular.",
+                                            )
+                                            // O alarme toca, mas o aparelho não tem a voz em
+                                            // português: a instalação dos dados de voz do motor é
+                                            // quem resolve — nem o canal nem o som têm nada a ver.
+                                            AlertFix.INSTALAR_VOZ -> openOrReport(
+                                                Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA),
+                                                "Não consegui abrir a instalação de voz deste celular.",
                                             )
                                             null -> Unit
                                         }

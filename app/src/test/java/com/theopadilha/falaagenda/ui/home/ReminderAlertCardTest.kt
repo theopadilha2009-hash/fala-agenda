@@ -23,8 +23,9 @@ class ReminderAlertCardTest {
         val desligados = reminderAlertCard(ReminderAlerts.OFF)!!
         val semSom = reminderAlertCard(ReminderAlerts.QUIET)!!
         val aparelhoMudo = reminderAlertCard(ReminderAlerts.APARELHO_MUDO)!!
+        val semVoz = reminderAlertCard(ReminderAlerts.SEM_VOZ)!!
 
-        val cartoes = listOf(desligados, semSom, aparelhoMudo)
+        val cartoes = listOf(desligados, semSom, aparelhoMudo, semVoz)
         assertThat(cartoes.map { it.title }.toSet()).hasSize(cartoes.size)
         assertThat(cartoes.map { it.text }.toSet()).hasSize(cartoes.size)
         assertThat(cartoes.map { it.button }.toSet()).hasSize(cartoes.size)
@@ -99,6 +100,33 @@ class ReminderAlertCardTest {
     fun pedidoAtendidoNaoAbreNada() {
         assertThat(needsNotificationSettings(granted = true, alerts = ReminderAlerts.OK, canAskAgain = false))
             .isFalse()
+    }
+
+    /**
+     * O aparelho sem voz tem cartão próprio, e o cartão não mente sobre o que continua valendo: o
+     * alarme TOCA (o canal está certo e o volume está acima do zero) — o que não sai é a fala.
+     * Dizer só "sem som" seria falso, e dizer que os avisos estão desligados seria pior: o lembrete
+     * continua chegando.
+     */
+    @Test
+    fun oAparelhoSemVozDizQueTocaMasNaoFala() {
+        val semVoz = reminderAlertCard(ReminderAlerts.SEM_VOZ)!!
+
+        assertThat(semVoz.title).contains("voz")
+        assertThat(semVoz.text).contains("toca")
+        assertThat(semVoz.text).contains("não fala")
+        assertThat(semVoz.button).contains("voz")
+    }
+
+    /**
+     * A voz que falta se instala: o botão abre a instalação dos dados de voz do motor do aparelho
+     * (`ACTION_INSTALL_TTS_DATA`) e não os Ajustes do canal nem os de som — lá não há nada para
+     * ligar, e um botão que não conserta nada é o mesmo cartão sem conserto.
+     */
+    @Test
+    fun oAparelhoSemVozVaiAInstalacaoDaVoz() {
+        assertThat(alertFix(ReminderAlerts.SEM_VOZ)).isEqualTo(AlertFix.INSTALAR_VOZ)
+        assertThat(alertFix(ReminderAlerts.SEM_VOZ)).isNotEqualTo(AlertFix.OPEN_SOUND_SETTINGS)
     }
 
     /**

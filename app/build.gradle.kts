@@ -28,8 +28,8 @@ android {
         applicationId = "com.theopadilha.falaagenda"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.6.0"
+        versionCode = 16
+        versionName = "0.6.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Só as duas ABIs de celular: arm64-v8a atende os aparelhos modernos e armeabi-v7a

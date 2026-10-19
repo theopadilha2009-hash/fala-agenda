@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
@@ -88,6 +89,7 @@ import com.theopadilha.falaagenda.domain.model.ParsedTaskDraft
 import com.theopadilha.falaagenda.platform.DeviceIntents
 import com.theopadilha.falaagenda.platform.ManufacturerHint
 import com.theopadilha.falaagenda.reminders.NotificationHelper
+import com.theopadilha.falaagenda.reminders.SondaDeVoz
 import com.theopadilha.falaagenda.speech.VoiceCaptureController
 import com.theopadilha.falaagenda.speech.VoiceState
 import com.theopadilha.falaagenda.speech.unwrapActivity
@@ -192,6 +194,9 @@ fun HomeScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         // Voltou dos Ajustes: o cartão some sozinho quando o que faltava foi ligado.
         micGranted = hasMicPermission(context)
+        // Inclusive da instalação da voz: o `false` guardado pela sonda é do aparelho de antes
+        // dela instalar os dados, e o cartão "sem a voz" não pode sobreviver ao conserto.
+        SondaDeVoz.reMedirSeSemVoz(context)
         alerts = NotificationHelper.reminderAlerts(context)
         batteryOk = DeviceIntents.isBatteryUnrestricted(context)
         // A permissão de alarme exato também se lê de novo: sem isto, ligar o acesso nos
@@ -613,6 +618,13 @@ fun HomeScreen(
                                             AlertFix.OPEN_SOUND_SETTINGS -> openOrReport(
                                                 soundSettings(),
                                                 "Não consegui abrir os ajustes de som deste celular.",
+                                            )
+                                            // O alarme toca, mas o aparelho não tem a voz em
+                                            // português: a instalação dos dados de voz do motor é
+                                            // quem resolve — nem o canal nem o som têm nada a ver.
+                                            AlertFix.INSTALAR_VOZ -> openOrReport(
+                                                Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA),
+                                                "Não consegui abrir a instalação de voz deste celular.",
                                             )
                                             null -> Unit
                                         }

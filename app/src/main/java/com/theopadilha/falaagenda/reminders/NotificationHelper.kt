@@ -78,8 +78,16 @@ object NotificationHelper {
      *
      * É um estado próprio, e não um [QUIET], porque o conserto é outro: o canal mudo se arruma
      * nos Ajustes DO CANAL, e o aparelho mudo se arruma no volume do próprio celular.
+     *
+     * [SEM_VOZ] é o último degrau, e o mais honesto: canal certo, volume acima do zero — o alarme
+     * TOCA —, mas o aparelho não sabe falar em português do Brasil, e o recado falado não sai. Era
+     * o "avisos OK" do eixo da voz: o motor existe, o som do canal existe, e a frase que ela
+     * precisava ouvir nunca vem. É estado próprio porque o conserto é outro de novo — não é o
+     * canal, não é o volume: é instalar a voz no aparelho ([ReminderAlerts.SEM_VOZ] abre a
+     * instalação dos dados de voz do motor). E não substitui o som de nada: a voz é complemento —
+     * com ela, os dois avisam; sem ela, o alarme continua.
      */
-    enum class ReminderAlerts { OK, OFF, QUIET, APARELHO_MUDO }
+    enum class ReminderAlerts { OK, OFF, QUIET, APARELHO_MUDO, SEM_VOZ }
 
     /**
      * O canal do lembrete, que é um alarme — e não um aviso de mensagem.
@@ -180,6 +188,14 @@ object NotificationHelper {
      * notificação e o aparelho descreve o que acontece com o som no fim dele: não adianta arrumar
      * o volume de um aparelho cujo canal está desligado, e o cartão que ela precisa ver primeiro é
      * o do canal. Com o canal saudável, sobra o volume — e é ele que este veredito não olhava.
+     *
+     * A voz entra por ÚLTIMO, e com a mesma lógica de precedência: o cartão que ela precisa ver
+     * primeiro é o do problema que silencia o lembrete inteiro; [SEM_VOZ] avisa só quem o alarme
+     * já alcança e a fala não. A pergunta é feita à [SondaDeVoz], que mede uma vez e guarda — e
+     * `null` (o `onInit` ainda não chegou) **não é** [SEM_VOZ]: afirmar ausência antes da resposta
+     * criaria o cartão falso que ensina a ser ignorado. A chamada é também quem acende a sonda, de
+     * modo que a resposta esteja pronta na próxima leitura — a home relê no resume, e o disparo do
+     * lembrete lê antes dela abrir o app.
      */
     fun reminderAlerts(context: Context): ReminderAlerts {
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return ReminderAlerts.OFF
@@ -190,7 +206,14 @@ object NotificationHelper {
         // Canal alto mas mudo é o mesmo desfecho que canal rebaixado: o lembrete sai, ninguém ouve.
         if (channelSilenced(canal)) return ReminderAlerts.QUIET
         // Canal certo, aparelho mudo: o lembrete sai e o celular não toca. Era o "avisos OK".
-        return if (alarmeDoAparelhoMudo(context)) ReminderAlerts.APARELHO_MUDO else ReminderAlerts.OK
+        if (alarmeDoAparelhoMudo(context)) return ReminderAlerts.APARELHO_MUDO
+        // Canal certo, volume acima do zero: o alarme toca. O que pode faltar agora é só a voz.
+        SondaDeVoz.medir(context)
+        return when (SondaDeVoz.sabe()) {
+            false -> ReminderAlerts.SEM_VOZ
+            // `null` é "medindo" — e medindo não é sem voz.
+            else -> ReminderAlerts.OK
+        }
     }
 
     /**
